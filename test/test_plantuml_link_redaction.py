@@ -235,3 +235,19 @@ def test_a_key_beside_a_diagram_streams_out_masked() -> None:
     stream = StreamRedactor()
     out = "".join(stream.feed(text[i : i + 7]) for i in range(0, len(text), 7)) + stream.flush()
     assert out == f"see {ROUTES[0]}{SAMPLE} then {TAG} done"
+
+
+def test_a_diagram_whose_url_query_apostrophe_would_hide_a_credential_is_masked() -> None:
+    """A note where a URL `?q='` would open a false enclosing literal that hides
+    a later `key=]'<secret>` must NOT be kept: the scheme span keeps the
+    apostrophe a query byte, so the pass claims the secret and warns, and
+    `redact` masks the link instead of preserving a reversible credential one."""
+    secret = "test-session-not-a-credential-0123"
+    source = (
+        "@startuml\nnote over A: https://h.example/p?q='x "
+        f"aws_secret_access_key=]'{secret}'\n@enduml"
+    )
+    encoded = _encode(source)
+    assert not _kept(encoded), "a diagram carrying a live credential must not be kept"
+    link = ROUTES[1] + encoded
+    assert redact(link) != link, "the credential-bearing link must be masked"

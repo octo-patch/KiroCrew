@@ -194,7 +194,7 @@ async def test_partially_claimed_token_split_across_deltas_loses_its_tail(
     stored, wire = await _stream_turn(tmp_path, monkeypatch, _MIXED_TEXT, cuts)
     assert _AWS_KEY not in stored
     assert _OPAQUE not in stored
-    assert stored == "Callback: approve-cb?token=[REDACTED: credential][REDACTED: credential] done."
+    assert stored == "Callback: approve-cb?token=[REDACTED: credential] done."
     assert _AWS_KEY not in wire
     assert _OPAQUE not in wire
 
@@ -232,14 +232,14 @@ class TestDeferTokenParamKeyword:
         deferred = redact_credentials(text, defer_token_param=True)
         assert deferred == redact_credentials(text)
         assert _OPAQUE not in deferred[0]
-        assert deferred[0] == "x?token=[REDACTED: credential][REDACTED: credential]"
+        assert deferred[0] == "x?token=[REDACTED: credential]"
 
     def test_whole_value_after_a_partially_claimed_one_is_still_deferred(self) -> None:
         """The first match is redacted, and the loop goes on to defer the second."""
         _install(frozenset({_PREFIX}))
         text = f"a?token={_AWS_KEY}{_OPAQUE} b?token={_SECRET}"
         out, warnings = redact_credentials(text, defer_token_param=True)
-        assert out == f"a?token=[REDACTED: credential][REDACTED: credential] b?token={_SECRET}"
+        assert out == f"a?token=[REDACTED: credential] b?token={_SECRET}"
         assert [w for w in warnings if "token parameter" in w] == [
             f"Redacted token parameter value ({len(_AWS_KEY) + len(_OPAQUE)} chars)"
         ]

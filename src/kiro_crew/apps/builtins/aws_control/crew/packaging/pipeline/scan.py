@@ -56,21 +56,95 @@ _VENDOR_TOKEN_COMPILED: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (label, re.compile(rf"\b{fragment}\b")) for label, fragment in _VENDOR_TOKEN_PATTERNS
 )
 
+# The redactor keeps the key that names a value and replaces the value alone, so a
+# skill stored already redacted reads ``aws_secret_access_key=[REDACTED: credential]``
+# -- and a labelled pattern that matched its ``[REDACTED:`` head as the value aborted
+# the crew build on text that holds no secret. The labelled entry below therefore
+# carries the canonical detector's one exemption: a value that IS a run of the
+# redactor's own tags filling it is cleaned text, never a secret. The registry of the
+# redactor's own tags is read from the scrubber so a tag added there reaches here
+# with no edit; the fallback restates the two literals for the standalone case.
+try:  # pragma: no cover - exercised by whichever branch the environment allows
+    from kiro_crew.security import CREDENTIAL_REDACTION_TAGS as _REDACTION_TAGS
+except Exception:  # pragma: no cover
+    _REDACTION_TAGS = ("[REDACTED: credential]", "[REDACTED: encoded credential]")
+
+_TAG_RUN = "(?:" + "|".join(re.escape(tag) for tag in _REDACTION_TAGS) + ")+"
+_TAG_RUN_RE = re.compile(_TAG_RUN)
+#: Boundaries after a tag-filled labelled value (a literal copy of the canonical
+#: detector's): where the base's value class stops (whitespace, a quote, ``,``,
+#: ``}``) plus ``&``, an escaped quote and the line's end after a QUOTED close; the
+#: same without ``,`` and ``}`` after a BARE run (a bare value runs to ``&`` in a
+#: URL query, so ``tag,<bytes>`` is a value).
+_QUOTED_TAG_BOUNDARY_RE = re.compile(r"(?:[\s\"'&,}]|\\[\"']|$)")
+_BARE_TAG_BOUNDARY_RE = re.compile(r"(?:[\s\"'&]|\\[\"']|$)")
+
+
+def _is_tag_filled_value(text: str, match: "re.Match[str]") -> bool:
+    """Whether a labelled match is the redactor's own output (its value, after one
+    quote wrapper, is exactly a run of the redactor's tags closed by the same quote
+    and followed by a boundary) and not a live secret. A literal copy of
+    ``security.exfil._is_tag_filled_value``; the regex's match set is the base's
+    and this check only subtracts from it."""
+    try:
+        value = match.group("value")
+    except IndexError:
+        return False
+    if value is None:
+        return False
+    start = match.start("value")
+    opener = ""
+    if text[start : start + 1] == "\\" and text[start + 1 : start + 2] in ('"', "'"):
+        opener = text[start : start + 2]
+    elif text[start : start + 1] in ('"', "'"):
+        opener = text[start : start + 1]
+    run = _TAG_RUN_RE.match(text, start + len(opener))
+    if run is None or run.end() < start + len(value):
+        return False
+    after = run.end()
+    if opener:
+        if text[after : after + len(opener)] != opener:
+            return False
+        after += len(opener)
+        if text[after : after + len(opener)] == opener:
+            return False
+        return _QUOTED_TAG_BOUNDARY_RE.match(text, after) is not None
+    return _BARE_TAG_BOUNDARY_RE.match(text, after) is not None
+
+
+def _first_live_hit(pattern: "re.Pattern[str]", text: str) -> "re.Match[str] | None":
+    """The first match of *pattern* in *text* that the tag-filled exemption does not
+    subtract; ``None`` when every match is the redactor's own output."""
+    for m in pattern.finditer(text):
+        if not _is_tag_filled_value(text, m):
+            return m
+    return None
+
+
 _HARD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("aws-access-key", re.compile(rf"\b(?:{_AWS_KEY_PREFIXES})[0-9A-Z]{{16}}\b")),
     # A LABELLED secret. The pattern above matches an AWS key ID, which has a
     # recognisable prefix; the secret access key is 40 characters of base64 with no
     # prefix at all, so nothing above can see it and `SecretAccessKey=<secret>` in a
     # prompt reached the deployed image. What makes it findable is the label, which is
-    # how this repo's own detector finds it (`security.py:_HARD_CREDENTIAL_RE`,
+    # how this repo's own detector finds it (``security.exfil.hard_credential_hit``,
     # described in security_posture.py as covering "labelled secret-access-key and
-    # session-token forms"). Spelled here from that same shape, and the canonical
-    # module is preferred over it below when importable.
+    # session-token forms"). Spelled here from that same shape, the base's regex
+    # byte for byte; the detector's one exemption, a value that IS a run of the
+    # redactor's own tags filling it, is a check applied after the match
+    # (`_is_tag_filled_value`, a literal copy of the canonical one), so the match
+    # set stays the base's and the exemption only subtracts from it. The canonical
+    # module is preferred below when importable.
     (
         "aws-secret-labelled",
         re.compile(
             r"(?:SecretAccessKey|aws_secret_access_key|SessionToken|aws_session_token)"
-            r"[\"']?\s*[:=]\s*[\"']?[^\s\"',}]+",
+            r"[\"']?\s*[:=]\s*"
+            # The value as the base reads it: an optional quote, then a run of
+            # anything but whitespace, a quote, ``,`` or ``}``. The match set is the
+            # base's; the exemption is applied AFTER the match (`_is_tag_filled_value`)
+            # and only subtracts from it.
+            r"(?P<value>[\"']?[^\s\"',}]+)",
             re.IGNORECASE,
         ),
     ),
@@ -124,11 +198,11 @@ class Leak:
 #: fallback that lets this module run without ``kiro_crew`` installed -- the same
 #: bargain ``_AWS_KEY_PREFIXES`` strikes, for the same reason.
 try:  # pragma: no cover - exercised by whichever branch the environment allows
-    from kiro_crew.security import _HARD_CREDENTIAL_RE
+    from kiro_crew.security import hard_credential_hit
 
-    _CANONICAL_CREDENTIAL_RE: re.Pattern[str] | None = _HARD_CREDENTIAL_RE
+    _CANONICAL_CREDENTIAL_HIT: Callable[[str], bool] | None = hard_credential_hit
 except Exception:  # pragma: no cover
-    _CANONICAL_CREDENTIAL_RE = None
+    _CANONICAL_CREDENTIAL_HIT = None
 
 #: The repo's redactor, imported for its ENCODED-credential detection. The patterns above
 #: all match a credential written literally, so a base64 of the same bytes matched none of
@@ -245,23 +319,20 @@ def scan_text(text: str, origin: str) -> list[Leak]:
     leaks: list[Leak] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
         for kind, pattern in _HARD_PATTERNS:
-            m = pattern.search(line)
+            m = _first_live_hit(pattern, line)
             if m:
                 token = m.group(0)
                 snippet = token[:4] + "…(%d chars)" % len(token)
                 leaks.append(Leak(origin=origin, kind=kind, line=lineno, snippet=snippet))
-        if _CANONICAL_CREDENTIAL_RE is not None:
-            m = _CANONICAL_CREDENTIAL_RE.search(line)
-            if m:
-                token = m.group(0)
-                leaks.append(
-                    Leak(
-                        origin=origin,
-                        kind="repo-credential-detector",
-                        line=lineno,
-                        snippet=token[:4] + "…(%d chars)" % len(token),
-                    )
+        if _CANONICAL_CREDENTIAL_HIT is not None and _CANONICAL_CREDENTIAL_HIT(line):
+            leaks.append(
+                Leak(
+                    origin=origin,
+                    kind="repo-credential-detector",
+                    line=lineno,
+                    snippet=line.lstrip()[:4] + "…(%d chars)" % len(line),
                 )
+            )
     # Encoded credentials, via the repo's OWN redactor rather than a fourth local pattern.
     #
     # ``_HARD_PATTERNS`` and the canonical detector both match a credential written
@@ -353,7 +424,7 @@ def _scan_decoded_runs(text: str, origin: str) -> list[Leak]:
             # literal patterns could read, so it is not a finding.
             continue
         for kind, pattern in _HARD_PATTERNS:
-            hit = pattern.search(decoded)
+            hit = _first_live_hit(pattern, decoded)
             if hit:
                 token = hit.group(0)
                 found.append(

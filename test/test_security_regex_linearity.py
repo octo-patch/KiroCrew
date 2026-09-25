@@ -24,12 +24,14 @@ Covered:
 
 from __future__ import annotations
 
+import json
 import re
 import time
 
 import pytest
 
-from kiro_crew.security import is_sensitive_path, redact_credentials
+from conftest import assert_linear_work
+from kiro_crew.security import is_sensitive_path, redact_credentials, redaction
 
 # ─────────────────────────────────────────────────────────────────────────────
 # redact_credentials pass 1 -- single sub() must be byte-identical
@@ -74,15 +76,17 @@ REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
             "Redacted credential pattern (26 chars)",
         ],
     ),
+    # Key-anchored branches redact the VALUE group only: the key and separator
+    # survive and the reported length is the value's, not the whole match's.
     (
         "SecretAccessKey=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-        _TAG,
-        ["Redacted credential pattern (56 chars)"],
+        f"SecretAccessKey={_TAG}",
+        ["Redacted credential pattern (40 chars)"],
     ),
     (
         "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG",
-        _TAG,
-        ["Redacted credential pattern (45 chars)"],
+        f"aws_secret_access_key = {_TAG}",
+        ["Redacted credential pattern (21 chars)"],
     ),
     (
         f"Token is {_XOXB}",
@@ -179,6 +183,60 @@ def test_pass1_is_linear_on_credential_dense_text() -> None:
     assert elapsed < 5.0, f"pass 1 took {elapsed:.2f}s -- per-match string rebuild is back"
 
 
+def test_pass4_is_linear_on_dense_partly_covered_token_values() -> None:
+    """Complexity guard for pass 4's coalescing of a partly-covered value.
+
+    A key-anchored pair nested in every `?token=` value is the shape that makes
+    each value PARTLY claimed (pass 1 takes the secret, the key prefix is the
+    gap). A per-match rescan and rebuild of every earlier claim would make N
+    such values O(N^2) on the event loop that runs ``redact_credentials``
+    synchronously; the sweep is O(M log C + C) for M matches over C claims --
+    a bisect per match into the sorted claims, and each claim visited once.
+    Measured as the lines of ``redaction`` executed (``assert_linear_work``), not
+    as a clock: a count is the same number on a loaded runner and under
+    coverage's tracer, where a wall-clock bound was a red with the property
+    intact. The per-match rebuild measured 4x per doubling here; the sweep 2x.
+    """
+
+    def build(n: int) -> str:
+        return "?token=aws_secret_access_key=test-secret-not-a-credential-0123456789 " * n
+
+    result, warnings = redact_credentials(build(300))
+    assert result == "?token=[REDACTED: credential] " * 300
+    assert len(warnings) == 600
+    assert_linear_work(redaction, build, redact_credentials)
+
+
+def test_pass1_quoted_value_scan_is_linear_on_dense_quoted_pairs() -> None:
+    """Complexity guard for the quoted-value scan of pass 1.
+
+    Every quoted key-anchored value scans forward for its closing quote. The
+    scan is bounded twice over: it ends at the next same-kind quote, which a
+    later quoted pair on the line carries, so a scan that runs to the line's
+    end is the LAST pair of its kind on that line; and a claim's reach skips the
+    matches inside it. Many pairs on one line (each pair's opening quote is the
+    previous pair's close) and many unterminated pairs, one per line, are both
+    linear; a scan that re-walked to the end of the text per match would be
+    O(N^2) on the event loop that runs ``redact_credentials`` synchronously.
+    Measured as executed lines, like the pass-4 guard above.
+    """
+
+    def one_line(n: int) -> str:
+        return '"aws_secret_access_key": "test-secret-not-a-credential-0123 tail ' * n
+
+    def per_line(n: int) -> str:
+        return "\n".join(
+            f'"SessionToken": "test-session-not-a-credential-0123 rest of line {i}'
+            for i in range(n)
+        )
+
+    for build in (one_line, per_line):
+        result, warnings = redact_credentials(build(300))
+        assert len(warnings) == 300, len(warnings)
+        assert "not-a-credential" not in result
+        assert_linear_work(redaction, build, redact_credentials)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # sensitive-path verdicts -- zero change (DENY surface)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -232,3 +290,138 @@ def test_credential_pattern_module_still_compiles_one_alternation() -> None:
     )
     assert "_might_contain_credential(text)" in body
     assert "re.compile(" not in body
+
+
+def test_url_re_quote_branch_is_linear() -> None:
+    """Complexity guard for _URL_RE's single-quote branch.
+
+    A `'` continues a URL only when a URL byte follows it (a one-character
+    lookahead), so a quote-dense URL stays linear. The cost of a per-quote
+    forward scan is regex-engine backtracking inside one `finditer` match, which
+    executed-line counting (`assert_linear_work`) cannot see, so the guard is a
+    bound relative to a span the test measures itself (D7): doubling the input at
+    most triples the time, well under the 4x of a per-quote forward scan. The
+    floor skips the ratio when the linear scan is below measurement noise on a
+    fast host; a quadratic regression makes the base measurable on any host, so
+    the ratio still catches it.
+    """
+    from kiro_crew.security import scan_exfiltration_urls
+
+    def seconds(n: int) -> float:
+        text = "https://a.example/" + ("a'" * n) + "bcolonmarker"
+        started = time.perf_counter()
+        scan_exfiltration_urls(text)
+        return time.perf_counter() - started
+
+    base = seconds(8000)
+    doubled = seconds(16000)
+    if base > 0.05:
+        assert doubled < 3 * base, (
+            f"_URL_RE: {doubled:.3f}s at 16000 vs {base:.3f}s at 8000 "
+            f"({doubled / base:.1f}x for 2x input)"
+        )
+
+
+def test_the_url_scan_is_linear_in_the_quoted_urls_on_a_line() -> None:
+    """Complexity guard for the URL iterator's two bounding rules (D7, same
+    shape as the quote-branch guard above). A line of N quoted URLs, each
+    glued to the next by a word, makes the iterator read the enclosing literal
+    at every URL (the line state advances anchor to anchor, never from the line
+    start) and bound every match at its literal's close and at the next scheme,
+    so doubling N at most triples the time; a per-URL walk from the line start
+    would quadruple it."""
+    from kiro_crew.security import scan_exfiltration_urls
+
+    def seconds(n: int) -> float:
+        text = "x = " + "".join(f"'https://h{i}.example/p?q='and" for i in range(n)) + "'end'"
+        started = time.perf_counter()
+        scan_exfiltration_urls(text)
+        return time.perf_counter() - started
+
+    base = seconds(2000)
+    doubled = seconds(4000)
+    if base > 0.05:
+        assert doubled < 3 * base, (
+            f"url iterator: {doubled:.3f}s at 4000 vs {base:.3f}s at 2000 "
+            f"({doubled / base:.1f}x for 2x input)"
+        )
+
+
+def test_the_url_scan_is_linear_in_the_separators_inside_a_query() -> None:
+    """Complexity guard (D7) for the iterator's second-URL bound: a query that
+    carries N `://` separators no `http`/`https` word precedes makes the bound
+    search walk past every one of them once for the URL that holds them, and
+    the main loop visits each once more, so doubling N at most triples the time."""
+    from kiro_crew.security import scan_exfiltration_urls
+
+    def seconds(n: int) -> float:
+        text = "https://h.example/p?d=" + "x://" * n + "end"
+        started = time.perf_counter()
+        scan_exfiltration_urls(text)
+        return time.perf_counter() - started
+
+    base = seconds(4000)
+    doubled = seconds(8000)
+    if base > 0.05:
+        assert doubled < 3 * base, (
+            f"url iterator separators: {doubled:.3f}s at 8000 vs {base:.3f}s at 4000 "
+            f"({doubled / base:.1f}x for 2x input)"
+        )
+
+
+def test_redact_credentials_is_linear_on_a_value_head_opener_run() -> None:
+    """Complexity guard for the key-anchored value memo (``_KeyedValueScans``).
+
+    A nested value at a ``]``/``}`` opener is read from the bare-run memo unless
+    a quote immediately follows (the ``]'<secret>`` case, which scans fresh), so
+    a run of bare ``]`` openers -- ``"SecretAccessKey=]" * n + "x"``, where each
+    anchor's value starts on ``]`` with no quote after -- is read once, not
+    rescanned to the run's end per anchor. The cost is a bound relative to a span
+    the test measures itself (D7): doubling the input at most triples the time,
+    well under the 4x of a per-anchor rescan. The floor skips the ratio when the
+    linear scan is below measurement noise on a fast host; a quadratic regression
+    makes the base measurable, so the ratio still catches it.
+    """
+    from kiro_crew.security import redact_credentials
+
+    def seconds(n: int) -> float:
+        text = "SecretAccessKey=]" * n + "x"
+        started = time.perf_counter()
+        redact_credentials(text)
+        return time.perf_counter() - started
+
+    base = seconds(400)
+    doubled = seconds(800)
+    if base > 0.05:
+        assert doubled < 3 * base, (
+            f"redact_credentials: {doubled:.3f}s at 800 vs {base:.3f}s at 400 "
+            f"({doubled / base:.1f}x for 2x input)"
+        )
+
+
+def test_a_covered_quoted_anchor_run_is_linear() -> None:
+    """Guard, not a fix: a covered quoted-anchor run measures linear.
+
+    A JSON line of N repeated key-anchored tags inside a leading escaped quote
+    doubles in time about 2x when N doubles, not 4x: ``value_of`` serves the
+    covered bare anchors from the memo, and a quoted anchor's scan ends at its
+    next quote, so no anchor rescans the whole suffix. Pins that ratio with a
+    doubling check and a noise floor, as the guards above do.
+    """
+
+    def seconds(n: int) -> float:
+        text = json.dumps('"' + "aws_session_token=[REDACTED: credential]" * n + "END")
+        best = float("inf")
+        for _ in range(3):
+            t0 = time.perf_counter()
+            redact_credentials(text)
+            best = min(best, time.perf_counter() - t0)
+        return best
+
+    base = seconds(2500)
+    doubled = seconds(5000)
+    if base > 0.05:
+        assert doubled < 3 * base, (
+            f"covered quoted anchor run: {doubled:.3f}s at 5000 vs {base:.3f}s at 2500 "
+            f"({doubled / base:.1f}x for 2x input)"
+        )
