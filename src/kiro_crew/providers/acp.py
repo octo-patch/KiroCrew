@@ -7,7 +7,7 @@ import functools
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any, AsyncContextManager
@@ -98,6 +98,7 @@ from kiro_crew.effort import (
 from kiro_crew.mcp_hot_reload import mcp_hot_reload_supported, parse_kiro_cli_version
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.platform_compat import pid_exists
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.providers.base import (
     CancelOutcome,
     LLMEvent,
@@ -2749,15 +2750,22 @@ class AcpProvider(LLMProvider):
         return resolve_prompt_timeout_for_deadline(deadline)
 
     async def stream(
-        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+        self,
+        message: str,
+        timeout: float | None = None,
+        *,
+        attachments: Sequence[PromptAttachment] = (),
     ) -> AsyncIterator[LLMEvent]:
         # The direct client can respawn in ensure_ready; resolve that BEFORE
         # comparing receipts so a recycled conversation receives the full text.
         if isinstance(self._client, AcpClient):
             await self._client.ensure_ready()
+        # The channel's attachment list rides beside the text: bound onto the
+        # send callable so the essential-delivery seam, which only rewrites
+        # text, stays unchanged. Both client shapes accept the keyword.
         send = self._client.stream_events
-        if not allow_image:
-            send = functools.partial(send, allow_image=False)
+        if attachments:
+            send = functools.partial(send, attachments=tuple(attachments))
         if timeout is not None:
             send = functools.partial(send, timeout=timeout)
         async with aclosing(

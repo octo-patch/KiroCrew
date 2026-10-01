@@ -65,7 +65,7 @@ class TestResolveLinkSummaries:
                 self.text = text
 
         class FakeClient:
-            async def prompt(self, prompt, *, allow_image=True):
+            async def prompt(self, prompt):
                 yield FakeEvent(EVENT_TEXT_CHUNK, "1. Nav Panel Feature CR\n2. Memory V2 Design Doc\n")
                 yield FakeEvent(EVENT_COMPLETE)
 
@@ -99,7 +99,7 @@ class TestResolveLinkSummaries:
                 self.text = text
 
         class FakeClient:
-            async def prompt(self, prompt, *, allow_image=True):
+            async def prompt(self, prompt):
                 yield FakeEvent(EVENT_TEXT_CHUNK, "2024 Design Roadmap\n3-phase rollout plan\n")
                 yield FakeEvent(EVENT_COMPLETE)
 
@@ -133,7 +133,7 @@ class TestResolveLinkSummaries:
                 self.text = text
 
         class FakeClient:
-            async def prompt(self, prompt, *, allow_image=True):
+            async def prompt(self, prompt):
                 yield FakeEvent(EVENT_TEXT_CHUNK, text)
                 yield FakeEvent(EVENT_COMPLETE)
 

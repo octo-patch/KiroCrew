@@ -62,6 +62,7 @@ from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
 from kiro_crew.dashboard.slot_projection import SlotProjection
 from kiro_crew.dashboard.slot_queue_repository import (
     EMPTY_QUEUE_SIGNATURE,
+    IMAGE_ATTACHMENT_META_KEY,
     SlotQueueRepository,
     durable_queue_entries,
     durable_queue_view,
@@ -5377,6 +5378,7 @@ class _ChatSlot:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        prompt_images: list[str] | None = None,
     ) -> str:
         return self._queue_repository.queue_append(
             self,
@@ -5385,6 +5387,7 @@ class _ChatSlot:
             meta,
             directive_user_origin=directive_user_origin,
             directive_channel_origin=directive_channel_origin,
+            prompt_images=prompt_images,
         )
 
     def _note_enqueue(self) -> None:
@@ -5401,6 +5404,7 @@ class _ChatSlot:
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        prompt_images: list[str] | None = None,
     ) -> str:
         return self._queue_repository.queue_insert(
             self,
@@ -5413,6 +5417,7 @@ class _ChatSlot:
             on_irreversibly_consumed,
             directive_user_origin,
             directive_channel_origin,
+            prompt_images=prompt_images,
         )
 
     def queue_pop(self, index: int = 0) -> dict[str, Any]:
@@ -5439,6 +5444,7 @@ class _ChatSlot:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        display_text: Callable[[str], str] | None = None,
     ) -> bool:
         return self._queue_repository.queue_edit_by_id(
             self,
@@ -5446,6 +5452,7 @@ class _ChatSlot:
             content,
             directive_user_origin=directive_user_origin,
             directive_channel_origin=directive_channel_origin,
+            display_text=display_text,
         )
 
     def queue_promote_by_id(self, queue_id: str) -> bool:
@@ -5798,6 +5805,10 @@ class _ChatSlot:
             # drain's authorization input must not be replaceable from here.
             _meta: dict[str, Any] = dict(extra_meta or {})
             _meta.update(containment_meta(state, self))
+            # A requeued or cross-session entry records its picture list like a
+            # queued send, empty when it carries none, so a restore never falls
+            # back to the text's shape for an entry this build wrote.
+            _meta.setdefault(IMAGE_ATTACHMENT_META_KEY, [])
             self.queue_append(prompt, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
             # queue, and until the drain writes its transcript row the queue is the

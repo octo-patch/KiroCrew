@@ -933,7 +933,7 @@ class DiscordDispatcher:
             built.append(renderer)
             return renderer
 
-        async def _prepare(provider: Any, prompt: str) -> str:
+        async def _prepare(provider: Any, prompt: str) -> str | ChannelTurns.Prepared:
             renderer = built[0]
             renderer.authorize_upload_root(provider.cwd)
             # The turn footer's context chip reads usage off the session provider,
@@ -951,7 +951,13 @@ class DiscordDispatcher:
                 result = await process_discord_attachments(client, msg.attachments)
                 attachment_temp_paths.extend(result.temp_paths)
                 attachments_fetched.append(result)
-            return append_attachment_context(prompt, attachments_fetched[0])
+            # The ingested images ride beside the text as the structured list,
+            # the ONLY way they reach the model; the paths written into the text
+            # are for agent file tools.
+            return ChannelTurns.Prepared(
+                append_attachment_context(prompt, attachments_fetched[0]),
+                attachments_fetched[0].prompt_attachments(),
+            )
 
         def _wake_still_current() -> bool:
             # The gateway authorized one exact conversation generation; a ``!new``

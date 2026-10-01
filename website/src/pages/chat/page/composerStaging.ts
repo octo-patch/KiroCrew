@@ -39,6 +39,12 @@ export function useComposerStaging({ activeSlot, splitMode, composerSlotRef, pic
   // crop completes. Threaded into uploadFiles as an explicit target.
   const snipSlotRef = useRef<string | null>(null)
   const pendingFilesRef = useRef(pendingFiles)
+  // The identity the gateway recorded for a picture a cancelled queued send
+  // handed back (`meta.image_ids`), keyed by the chip's path. A redacted path
+  // names no file, so the identity is what lets the resend recover it; the
+  // send reads only the entries of the pictures it carries, so a stale key
+  // for a removed chip is harmless.
+  const pendingImageIdsRef = useRef<Record<string, string>>({})
   // Collapsed paste blocks backing the `[ Paste #N · M lines ]` tokens in
   // `input`: the Paste atom's state. Persisted per-slot via chatPasteDrafts
   // (localStorage, 30-day TTL) so they survive slot switches / refresh;
@@ -104,7 +110,7 @@ export function useComposerStaging({ activeSlot, splitMode, composerSlotRef, pic
   const [resizedInfo, setResizedInfo] = useState<Record<string, ResizeInfo>>({})
   return {
     uploading, setUploading,
-    pendingFiles, setPendingFiles, pendingFilesRef,
+    pendingFiles, setPendingFiles, pendingFilesRef, pendingImageIdsRef,
     pickedFileTokens, currentSlotTokens, recordSlotToken, mergeSlotTokens,
     snipFrame, setSnipFrame, snipSlotRef,
     pasteBlocks, setPasteBlocks, pasteBlocksRef, pasteSlice,

@@ -64,6 +64,10 @@ export interface OutgoingTurnInput {
   text: string
   /** Staged attachment paths, in staging order. */
   files?: readonly string[]
+  /** The identity the gateway recorded for a staged picture, by its path
+   *  (`meta.image_ids` of the entry it was restored from). A redacted path
+   *  names no file; the identity is how the resend recovers it. */
+  imageIds?: Readonly<Record<string, string>>
   /** The blocks behind the text's `[ Paste #N ]` tokens. */
   pastes?: readonly PasteBlock[]
   /** Staged session references (send only). */
@@ -85,6 +89,13 @@ export interface KnowledgeMeta {
 
 /** The fields this module contributes to the message's `meta`, in wire order. */
 export interface OutgoingTurnMeta {
+  /** Staged pictures. The ONLY source of the turn's image blocks: the gateway
+   *  never scans the text for paths, so the `![image](dest)` lines in the wire
+   *  are a rendering for the bubble and history, not the attachment. */
+  images?: string[]
+  /** One identity per entry of `images`, blank where unknown; present only
+   *  when at least one staged picture carries one. */
+  image_ids?: string[]
   /** Non-image attachments; `[attached_file N]` names `files[N-1]`. */
   files?: string[]
   /** Folder paths; `[attached_dir N]` names `dirs[N-1]` (send only). */
@@ -136,6 +147,23 @@ export function knowledgeMeta(block: KnowledgeBlock): KnowledgeMeta {
   }
 }
 
+/** The knowledge block that opens *wire*, as this module's send wrote it
+ *  (`expandKnowledgeBlock(...) + '\n'` ahead of the rest), or `''` when none
+ *  does. Its opening and closing lines are read off the producer's own output
+ *  for an empty block, so there is one spelling of them. A cancel's restore
+ *  hands this to the parser: the block stays verbatim in the restored text and
+ *  the listed pictures are found behind it. */
+export function knowledgePrefixOf(wire: string): string {
+  const [open, , close] = expandKnowledgeBlock({ items: [], totalTokens: 0 }).split('\n')
+  const openLine = open + '\n'
+  const closeLine = '\n' + close + '\n'
+  if (!wire.startsWith(openLine)) return ''
+  const at = wire.indexOf(closeLine, openLine.length)
+  if (at < 0) return ''
+  const end = at + closeLine.length
+  return wire.startsWith('\n', end) ? wire.slice(0, end + 1) : wire.slice(0, end)
+}
+
 /** True when the submit carries nothing: no text, no quote, no file, no
  *  session reference. A knowledge block or a project alone is not a payload,
  *  and a paste is one only through its token in the text. */
@@ -146,7 +174,7 @@ export function isEmptyTurn(input: OutgoingTurnInput): boolean {
 export function buildOutgoingTurn(input: OutgoingTurnInput, mode: OutgoingTurnMode): OutgoingTurn {
   const send = mode === 'send'
   const quote = input.quote ?? null
-  const { txt, displayTxt, filePaths } = prepareSendPayload(input.text.trim(), [...(input.files ?? [])])
+  const { txt, displayTxt, imgPaths, filePaths } = prepareSendPayload(input.text.trim(), [...(input.files ?? [])])
   const { llm: typedWire, dirPaths } = send ? serializeDirTokens(txt, input.project || '') : { llm: txt, dirPaths: [] }
   const refs = send ? [...(input.sessionRefs ?? [])] : []
   const linked = appendSessionRefLinks(typedWire, refs)
@@ -160,6 +188,11 @@ export function buildOutgoingTurn(input: OutgoingTurnInput, mode: OutgoingTurnMo
   if (quote) wire = prependQuote(wire, quote)
   const bubble = !send ? wire : quote ? prependQuote(display, quote) : display
   const meta: OutgoingTurnMeta = {}
+  if (imgPaths.length) {
+    meta.images = imgPaths
+    const ids = imgPaths.map(p => input.imageIds?.[p] ?? '')
+    if (ids.some(Boolean)) meta.image_ids = ids
+  }
   if (filePaths.length) meta.files = filePaths
   if (dirPaths.length) meta.dirs = dirPaths
   if (send && pastes.length) meta.pastes = pastes

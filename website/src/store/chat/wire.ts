@@ -90,8 +90,9 @@ export function clampToolOutput(output: string): { text: string; cut: ToolPayloa
  *  the slot-detail `queue[]` item and the `queue_push` frame (the same `meta`
  *  the `queue_pop` frame already uses). `files` is the
  *  ORDERED non-image list an `[attached_file N]` marker indexes (`files[N-1]`),
- *  `dirs` the folder list `[attached_dir N]` indexes. */
-export type QueueEntryAttachments = { files?: string[]; dirs?: string[] }
+ *  `dirs` the folder list `[attached_dir N]` indexes. `imageIds` is one
+ *  identity per entry of `images`, blank where the gateway recorded none. */
+export type QueueEntryAttachments = { files?: string[]; dirs?: string[]; images?: string[]; imageIds?: string[] }
 
 /** Reduce a wire `meta` to its attachment lists. Only a non-empty list of
  *  strings is kept: the lists are indexed by marker number, so a malformed
@@ -109,10 +110,26 @@ export function queueEntryQuote(meta: unknown): { quote?: MessageQuote } {
 export function queueEntryAttachments(meta: unknown): QueueEntryAttachments {
   const out: QueueEntryAttachments = {}
   if (!meta || typeof meta !== 'object') return out
-  for (const key of ['files', 'dirs'] as const) {
+  for (const key of ['files', 'dirs', 'images'] as const) {
     const raw = (meta as Record<string, unknown>)[key]
     if (Array.isArray(raw) && raw.length && raw.every((p) => typeof p === 'string' && p)) out[key] = [...raw] as string[]
   }
+  // The picture key is written on every entry the gateway records, empty when
+  // the send had no picture, so its presence alone says the entry carries its
+  // list: an empty or malformed list is kept as an empty one (the restore then
+  // claims no picture), and only an entry without the key leaves it undefined.
+  if ('images' in (meta as Record<string, unknown>) && !out.images) out.images = []
+  // One identity per picture, as the gateway recorded them beside the list
+  // (`image_ids` on the wire, `imageIds` once hydrated into a row); a redacted
+  // path names no file and is recovered through it on a resend. Kept only
+  // aligned with the pictures and only when at least one is set: a list of
+  // the wrong shape is dropped, not trusted by position.
+  const m = meta as Record<string, unknown>
+  const ids = m.image_ids ?? m.imageIds
+  if (
+    out.images && Array.isArray(ids) && ids.length === out.images.length
+    && ids.every((i) => typeof i === 'string' && i.length <= 64) && ids.some((i) => i)
+  ) out.imageIds = [...ids] as string[]
   return out
 }
 

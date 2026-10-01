@@ -1937,12 +1937,11 @@ async def run_bg_oneliner(
             )
         # A one-liner's prompt is text ABOUT a session (a summary, a title, a
         # label), so any image path in it is quoted history, not an attachment.
-        # Inlined, every still-readable file became an image block: a session
-        # summary carried one per pasted screenshot, and a text-only background
-        # model rejected the whole request on each pass. So the turn goes out
-        # text-only, which holds for every shape a caller composes; the scrub
-        # only tidies the text, swapping a reference it can read for the marker.
-        async for event in session.prompt(strip_image_refs(prompt), allow_image=False):
+        # The builder emits image blocks only from an attachment list, which this
+        # turn never carries, so it goes out text-only whatever the text names;
+        # the scrub only tidies the text, swapping a reference it can read for
+        # the marker.
+        async for event in session.prompt(strip_image_refs(prompt)):
             if event.kind == EVENT_TEXT_CHUNK:
                 if max_output_bytes is not None:
                     output_bytes += len(event.text.encode("utf-8"))
@@ -2654,7 +2653,6 @@ async def stream_and_collect(
     app: str = "",
     model_fallback: bool = False,
     fallback_models: Sequence[str] = (),
-    allow_image: bool = True,
 ) -> str:
     """Stream a message through an LLM provider and collect the full response.
 
@@ -2726,8 +2724,6 @@ async def stream_and_collect(
             Every swap is logged at warning and published on the provider via
             :data:`TURN_FALLBACK_ATTR`; the swap is sticky for the session and
             a later call on the same provider probes one primary restore.
-        allow_image: ``False`` sends every attempt text-only (see
-            ``LLMProvider.stream``), for a prompt that is text ABOUT a session.
 
     Returns:
         The complete response text.
@@ -2783,12 +2779,7 @@ async def stream_and_collect(
         # baseline an attempt that was billed and then failed is invisible.
         attempt_stats_before = _billing_stats(provider)
         try:
-            events = (
-                provider.stream(message)
-                if allow_image
-                else provider.stream(message, allow_image=False)
-            )
-            async for event in events:
+            async for event in provider.stream(message):
                 if event.kind == EVENT_TEXT_CHUNK:
                     result_text += event.text
                     if on_chunk:
@@ -3126,7 +3117,6 @@ async def stream_and_collect_json(
     approval_policy: ToolApprovalPolicy = ToolApprovalPolicy.AUTO_APPROVE,
     hooks: HookManager | None = None,
     model_fallback: bool = False,
-    allow_image: bool = True,
 ) -> dict | None:
     """Stream a message and parse the response as JSON.
 
@@ -3139,7 +3129,6 @@ async def stream_and_collect_json(
         approval_policy=approval_policy,
         hooks=hooks,
         model_fallback=model_fallback,
-        allow_image=allow_image,
     )
     return parse_llm_json(text)
 

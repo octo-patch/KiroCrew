@@ -5,10 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+
+from kiro_crew import platform_compat
+from kiro_crew.hooks import safe_content_digest
+from kiro_crew.prompt_attachments import named_in_text, path_spans, probe_safe_path
 
 if TYPE_CHECKING:
     from kiro_crew.subagent import SubagentDelivery
@@ -81,6 +87,10 @@ MAX_DURABLE_QUEUE_SCAN = 4 * MAX_DURABLE_QUEUE_ENTRIES
 #: consumer asks instead of trying to tell the two apart from the actor alone.
 RESTORED_QUEUE_KEY = "_restored_from_disk"
 
+#: Redacting provider paths can make them name nonexistent files; this separate
+#: process-local copy keeps images usable while non-user-origin wire lists redact.
+PROMPT_IMAGES_ENTRY_KEY = "_prompt_images"
+
 _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
     "id",
     "content",
@@ -126,12 +136,15 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The json-safe copies of *queue* a metadata writer may persist.
 
     Copies rather than aliases, so a later in-memory mutation cannot rewrite a
-    dict a writer is holding. ``meta`` rides along VERBATIM (through one json
-    round-trip that also proves the writer can serialize it): it carries the
-    admission-time containment snapshot the drain re-validates against, and an
-    entry without one fails closed into the full current-constraint set — so
-    dropping it would make a restored prompt refusable for a boundary its
-    author was never subject to.
+    dict a writer is holding. Except for attachment lists, ``meta`` rides along
+    VERBATIM through one json round-trip that also proves it can be serialized:
+    it carries the admission-time containment snapshot the drain re-validates
+    against, and an entry without one fails closed into the full
+    current-constraint set, so dropping it would make a restored prompt
+    refusable for a boundary its author was never subject to.
+
+    Attachment lists are redacted because provenance does not survive a restart;
+    raw lists would not match the redacted paths on a restored card's edit.
 
     An entry whose ``meta`` cannot be serialized keeps its content and loses
     only the metadata, because the prompt is the part that cannot be
@@ -142,6 +155,9 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
     tick through ``queue_persist_pending`` and inside a retried snapshot, so a
     warning here would repeat for as long as the queue stayed over the cap.
     """
+    # circular import: chat_delivery imports this module at module level.
+    from kiro_crew.dashboard.chat_delivery import attachment_meta
+
     out: list[dict[str, Any]] = []
     budget = MAX_DURABLE_QUEUE_BYTES
     for item in queue:
@@ -161,6 +177,7 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     continue
                 if not isinstance(value, dict):
                     continue
+                value.update(attachment_meta(value))
             entry[key] = value
         entry_id = entry.get("id")
         if not isinstance(entry_id, str) or not entry_id:
@@ -427,6 +444,22 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                     CHANNEL_RECIPIENT_META_KEY,
                 )
             }
+            # The lists come off a writable line and are re-persisted by every
+            # later save, so they take the send path's bound; a refused marker
+            # list is dropped, never carried. The picture key is the entry's word
+            # that it carries its list, so a present one comes back empty rather
+            # than absent when its list is empty or refused: absent would read
+            # as an entry from before the list existed.
+            for key in ALL_ATTACHMENT_META_KEYS:
+                if key in entry["meta"]:
+                    bounded = bounded_attachment_list(key, entry["meta"][key])
+                    if bounded is not None:
+                        entry["meta"][key] = bounded
+                    elif key == IMAGE_ATTACHMENT_META_KEY:
+                        entry["meta"][key] = []
+                        entry["meta"].pop(IMAGE_IDENTITY_META_KEY, None)
+                    else:
+                        del entry["meta"][key]
         try:
             # Costed against the same key projection the WRITER admits
             # (:data:`_DURABLE_QUEUE_KEYS`, which has no ``kind``), not against
@@ -467,6 +500,152 @@ def _delivery_key(content: str) -> str:
 #: own module, because every dashboard module that reads them sits downstream.
 ATTACHMENT_META_KEYS: tuple[str, ...] = ("files", "dirs")
 _ATTACHMENT_MARKERS: dict[str, str] = {"files": "attached_file", "dirs": "attached_dir"}
+
+#: Meta key a send's IMAGE attachments ride under: the ordered list of local
+#: image paths the composer uploaded. Kept apart from ``ATTACHMENT_META_KEYS``
+#: because it indexes no ``[<marker> N]`` token -- the composer renders an image
+#: as a ``![image](path)`` line -- and because it is the STRUCTURED source the
+#: turn hands to the provider: the prompt builder emits image blocks from this
+#: list alone and never scans the message text for paths, so a send that puts
+#: the picture only in its text ships no picture.
+IMAGE_ATTACHMENT_META_KEY = "images"
+
+#: One entry per ``images`` entry: the file's identity as the send saw it, read
+#: BEFORE any redaction rewrote the path (``file_identity``). A rebuild that
+#: only has a redacted spelling recovers the picture from its own directory by
+#: this identity, never by the spelling: two credential-shaped names redact to
+#: one string, and the string must not let an edit swap in a file the send never
+#: attached. An empty entry means the identity could not be read.
+IMAGE_IDENTITY_META_KEY = "image_ids"
+
+
+def attachment_paths(meta: Any) -> list[str]:
+    """Every path of *meta*'s attachment lists, in key order; the identity list is not a path list."""
+    if not isinstance(meta, dict):
+        return []
+    return [
+        p for key in ALL_ATTACHMENT_META_KEYS for p in (meta.get(key) or []) if isinstance(p, str)
+    ]
+
+
+def file_identity(path: str) -> str:
+    """The portable identity of the picture at *path*, or ``""`` when none can be read.
+
+    ``<inode>:<size>:<digest>``: the file's index and size name the entry, the
+    content digest names its bytes, so a later file that inherits the inode and
+    matches the size is still refused at recovery. The same probe screen the
+    reader applies runs first (a Windows host name, a linked ancestor, a leaf
+    link, an over-long component), the token read refuses to follow a link, and
+    the bytes are read through the sensitive-path gate every dashboard read
+    uses, so a protected file is never hashed and no fingerprint of it exists.
+    Either part missing records nothing.
+    """
+    screened = probe_safe_path(path)
+    if screened is None:
+        return ""
+    token = platform_compat.file_identity_token(screened)
+    if not token:
+        return ""
+    digest = safe_content_digest(str(screened))
+    if not digest:
+        return ""
+    return f"{token}:{digest}"
+
+
+def split_identity(identity: str) -> tuple[str, str] | None:
+    """The ``inode:size`` part and the digest of a recorded identity, or None when
+    it carries only one of them: recovery needs both to match."""
+    stat_part, sep, digest = identity.rpartition(":")
+    if not sep or stat_part.count(":") != 1 or not digest:
+        return None
+    return stat_part, digest
+
+
+def aligned_image_identities(meta: Any, images: list[str]) -> list[str] | None:
+    """The identity list *meta* carries for *images*, or ``None`` when it does
+    not line up: a row is a writable file, so a list of the wrong shape is
+    dropped rather than trusted position by position."""
+    if not isinstance(meta, dict):
+        return None
+    ids = meta.get(IMAGE_IDENTITY_META_KEY)
+    if not isinstance(ids, list) or len(ids) != len(images):
+        return None
+    if not all(isinstance(i, str) and len(i) <= 64 for i in ids):
+        return None
+    return list(ids)
+
+
+#: Every attachment list a send's ``meta`` may carry.
+ALL_ATTACHMENT_META_KEYS: tuple[str, ...] = (*ATTACHMENT_META_KEYS, IMAGE_ATTACHMENT_META_KEY)
+
+# Upper bounds on a send's attachment lists (``meta.files`` / ``meta.dirs`` /
+# ``meta.images``) as RETAINED anywhere. Every retention site stores the
+# normalized result -- the queue entry, the pending-steer map, the persisted
+# row meta, the restart marker's opening-row copy, and the ``steer_push`` /
+# ``queue_pop`` frames. Redaction can rewrite credential content, but it does
+# not limit input size. The gateway caps request bodies at 60 MiB, still far
+# above the roughly 1 MiB per
+# list these bounds admit, so these per-field bounds are the only size check
+# before every retained copy. One named constant per bound, applied through
+# :func:`bounded_attachment_list` at the send-path normalizer
+# (``chat_delivery.attachment_meta``) AND wherever a list is read back off a
+# persisted row or rebuilt from two accepted lists
+# (:func:`retained_image_meta`, :func:`with_added_images`): a row is a
+# writable file and a union of two accepted lists can exceed one, so a bound
+# applied only at the send path is a bound the system's own writers bypass.
+# Generous against the composer (20 files per upload batch; a path is a
+# filesystem path, PATH_MAX 4096 on Linux) so a legitimate send never trips
+# them.
+ATTACHMENT_LIST_MAX_ITEMS = 256
+ATTACHMENT_PATH_MAX_LEN = 4096
+
+
+def image_list_refusal_text(count: int) -> str:
+    """The reason shown for a refused image list; the count is the one cause a caller can tell apart."""
+    if count > ATTACHMENT_LIST_MAX_ITEMS:
+        return (
+            "Too many pictures attached. A message can carry at most "
+            f"{ATTACHMENT_LIST_MAX_ITEMS}. Remove some and try again."
+        )
+    return "This picture couldn't be attached. Remove it and try again."
+
+
+def bounded_attachment_list(key: str, raw: Any) -> list[str] | None:
+    """*raw* as the attachment list *key* may carry, or ``None`` when refused.
+
+    Accepted: a non-empty list of non-empty strings, at most
+    ``ATTACHMENT_LIST_MAX_ITEMS`` long, no entry over ``ATTACHMENT_PATH_MAX_LEN``
+    chars. Anything else is refused WHOLE rather than sliced, and the two
+    bound refusals say so once in the log: the marker lists are indexed by
+    marker number, so a list cut at N leaves the markers past N resolving
+    through the renderer's whitespace-bounded fallback (a spaced path
+    truncated at its first space), and a path cut in place is a different
+    path -- so the refusal takes the same shape a malformed list already
+    gets. The image list indexes no marker but takes the same rule, so no two
+    stores can disagree about what was admitted. Returns a new list.
+    """
+    if not isinstance(raw, list) or not raw:
+        return None
+    if not all(isinstance(p, str) and p for p in raw):
+        return None
+    if len(raw) > ATTACHMENT_LIST_MAX_ITEMS:
+        logger.warning(
+            "attachment meta %r refused: %d entries over the %d-entry bound",
+            key,
+            len(raw),
+            ATTACHMENT_LIST_MAX_ITEMS,
+        )
+        return None
+    longest = max(len(p) for p in raw)
+    if longest > ATTACHMENT_PATH_MAX_LEN:
+        logger.warning(
+            "attachment meta %r refused: a %d-char path over the %d-char bound",
+            key,
+            longest,
+            ATTACHMENT_PATH_MAX_LEN,
+        )
+        return None
+    return list(raw)
 
 
 def _marker_spans(content: str, marker: str, index: int, path: str) -> list[tuple[int, int]]:
@@ -540,7 +719,14 @@ def prune_quote_meta(meta: Any, content: str) -> None:
         meta.pop("quote", None)
 
 
-def prune_attachment_meta(meta: Any, content: str, previous: str) -> str:
+def prune_attachment_meta(
+    meta: Any,
+    content: str,
+    previous: str,
+    *,
+    display_content: str = "",
+    display_previous: str = "",
+) -> str:
     """Reconcile an entry's attachment lists with an edited *content*.
 
     An edit to a queued message can remove a ``[attached_file N] path`` marker;
@@ -566,6 +752,13 @@ def prune_attachment_meta(meta: Any, content: str, previous: str) -> str:
     """
     if not isinstance(meta, dict):
         return content
+    _prune_image_meta(
+        meta,
+        content,
+        previous,
+        display_content=display_content,
+        display_previous=display_previous,
+    )
     for key in ATTACHMENT_META_KEYS:
         raw = meta.get(key)
         if not isinstance(raw, list):
@@ -587,6 +780,351 @@ def prune_attachment_meta(meta: Any, content: str, previous: str) -> str:
         else:
             meta.pop(key, None)
     return content
+
+
+_PICTURE_EXTENSION = re.compile(r"\.[^./\\]+$")
+
+
+def collision_labels(images: list[Any], ids: list[str] | None) -> list[Any]:
+    """The spelling the composer shows for each picture of *images*.
+
+    Two pictures stored under one redacted spelling come back to the composer
+    told apart by their identities: the first distinct identity keeps the plain
+    spelling and the n-th gets ``(picture n)`` before its extension, so an edit
+    made there names the second picture by that label. This is the composer's
+    own rule, reproduced so an edit's text can be read back position by
+    position; a repeated identity, a missing one or a list that does not line
+    up labels nothing.
+    """
+    labels = list(images)
+    if ids is None or len(ids) != len(images):
+        return labels
+    seen: dict[str, list[str]] = {}
+    for position, (image, identity) in enumerate(zip(images, ids)):
+        if not isinstance(image, str) or not image:
+            continue
+        group = seen.get(image)
+        if group is None:
+            seen[image] = [identity] if identity else []
+            continue
+        if not identity or identity in group or not group:
+            continue
+        group.append(identity)
+        suffix = f" (picture {len(group)})"
+        match = _PICTURE_EXTENSION.search(image)
+        labels[position] = (
+            image[: match.start()] + suffix + match.group(0) if match else image + suffix
+        )
+    return labels
+
+
+class AmbiguousImageRemoval(ValueError):
+    """An edit removed some, not all, lines of pictures that share one spelling.
+
+    The lines are identical, so the text cannot say which picture went; the
+    re-run refuses rather than guess or keep a picture the user deleted.
+    """
+
+    def __init__(self, spelling: str, count: int) -> None:
+        super().__init__(f"{count} pictures share the spelling {spelling!r}")
+        self.spelling = spelling
+        self.count = count
+
+
+#: What the re-run routes answer for :class:`AmbiguousImageRemoval`.
+AMBIGUOUS_IMAGE_REMOVAL_TEXT = (
+    "This message has several pictures that redact to the same name, and the "
+    "edit removed some but not all of them; the text cannot say which. "
+    "Re-send the message with all of its pictures or with none of them."
+)
+
+
+def _told_apart(labels: list[Any], images: list[Any], *texts: str) -> bool:
+    """Whether the edit was made on labelled text: any of *texts* names a label.
+
+    The label the composer wrote for a second picture survives into the row's
+    own text, so a text that still carries it and a text the edit took it out
+    of both read in label mode; the plain spelling then names the first picture.
+    """
+    return any(_names_a_label(labels, images, text) for text in texts if text)
+
+
+def _spelling_count(spelling: str, *texts: str) -> int:
+    """How often a plain spelling stands in the fullest of *texts*."""
+    return max((len(path_spans(spelling, text)) for text in texts if text), default=0)
+
+
+def _refuse_ambiguous_removal(
+    raw: list[Any], content: str, previous: str, display_content: str, display_previous: str
+) -> None:
+    """Raise when an unlabelled edit dropped some, not all, lines of one spelling.
+
+    Counted against the row's own text, not the picture count, so a row that
+    named its pictures fewer times than it carries them re-runs unchanged.
+    """
+    for spelling in dict.fromkeys(p for p in raw if isinstance(p, str) and p):
+        under = sum(1 for p in raw if p == spelling)
+        if under < 2:
+            continue
+        before = _spelling_count(spelling, previous, display_previous)
+        now = _spelling_count(spelling, content, display_content)
+        if 0 < now < before:
+            raise AmbiguousImageRemoval(spelling, under)
+
+
+def _names_a_label(labels: list[Any], images: list[Any], content: str) -> bool:
+    """Whether the edit was made on the composer's spellings: it names a real label.
+
+    Only a position the composer relabelled counts (``label != image``): the
+    plain spelling of the first picture is in every text that carries the
+    pictures, so it cannot tell an edit of the composer's text from an
+    unchanged row.
+    """
+    return any(
+        isinstance(label, str) and label != image and named_in_text(label, content)
+        for label, image in zip(labels, images)
+        if isinstance(image, str) and image
+    )
+
+
+def _prune_image_meta(
+    meta: dict,
+    content: str,
+    previous: str,
+    *,
+    display_content: str = "",
+    display_previous: str = "",
+    refuse_ambiguous: bool = False,
+) -> None:
+    """Drop from the image list every picture an edit took out of the text.
+
+    The image list is the structured source of the turn's image blocks, so an
+    entry left in it after the user deleted its ``![image](path)`` line would
+    hand the model a picture the drained row does not show. "Removed by the
+    edit" is decided the way the marker lists decide it: the path was in
+    *previous* and is not in *content*, judging the as-typed and display-redacted
+    copies together -- in ANY spelling the composer writes
+    (``prompt_attachments.named_in_text``: the bare path, its forward-slash
+    form, and the escaped or ``<...>``-wrapped destination), so a picture whose
+    destination the composer had to escape is pruned like a plain one, and a
+    picture sharing its spelling with another is named by the label the
+    composer shows for it (:func:`collision_labels`). A path *previous* never
+    spelled out at all is out of the edit's reach and kept, and an image line
+    is never renumbered because it carries no index.
+    """
+    raw = meta.get(IMAGE_ATTACHMENT_META_KEY)
+    if not isinstance(raw, list):
+        return
+    ids = aligned_image_identities(meta, raw)
+    # Two pictures under one spelling are named by their labels when the edit
+    # was made on the composer's text; a plain spelling then names only the first.
+    labels = collision_labels(raw, ids)
+    if _told_apart(labels, raw, content, previous, display_previous):
+        shown = labels
+    else:
+        shown = raw
+        if refuse_ambiguous:
+            _refuse_ambiguous_removal(raw, content, previous, display_content, display_previous)
+    kept_positions = [
+        i
+        for i, p in enumerate(raw)
+        if isinstance(p, str)
+        and p
+        and (
+            named_in_text(shown[i], content)
+            or named_in_text(shown[i], display_content)
+            or not (named_in_text(p, previous) or named_in_text(p, display_previous))
+        )
+    ]
+    if len(kept_positions) == len(raw):
+        return
+    if kept_positions:
+        meta[IMAGE_ATTACHMENT_META_KEY] = [raw[i] for i in kept_positions]
+        if ids is not None:
+            meta[IMAGE_IDENTITY_META_KEY] = [ids[i] for i in kept_positions]
+    else:
+        # The key stays, empty: the entry still says it carries its list.
+        meta[IMAGE_ATTACHMENT_META_KEY] = []
+        meta.pop(IMAGE_IDENTITY_META_KEY, None)
+
+
+def prune_queued_entry(
+    item: dict[str, Any],
+    content: str,
+    previous: str,
+    *,
+    display_content: str = "",
+    display_previous: str = "",
+) -> str:
+    """Reconcile a queue ENTRY with an edited *content*; return the new text.
+
+    Pruning only the entry's visible lists would leave the provider copy
+    carrying an image the user removed. The two lists need to be pruned
+    TOGETHER, with each picture
+    judged in BOTH spellings: the entry's stored text is raw, while the text
+    the client edited can be display-redacted, so
+    a picture whose filename the redactor rewrote is named by its raw spelling
+    in *previous* and by its redacted spelling in *content*. Judged on the
+    redacted list alone, such a picture reads as "never named before" and is
+    KEPT after the user removed its line -- and the provider copy, left alone,
+    would still hand it to the model. So each position is kept only when
+    either spelling names it now, or neither spelling named it before; the
+    two parallel lists are cut to the same positions, and an EMPTY provider
+    copy stays on the entry, because the drain reads a present list as
+    authoritative and falls back to ``meta.images`` only for an entry that never
+    carried one (restored from disk). Lengths that disagree mean the copy
+    cannot be trusted to line up: it is removed, and the meta prune alone
+    decides.
+    """
+    meta = item.get("meta")
+    raw = item.get(PROMPT_IMAGES_ENTRY_KEY)
+    shown = meta.get(IMAGE_ATTACHMENT_META_KEY) if isinstance(meta, dict) else None
+    if not isinstance(raw, list):
+        return prune_attachment_meta(
+            meta,
+            content,
+            previous,
+            display_content=display_content,
+            display_previous=display_previous,
+        )
+    if not isinstance(meta, dict) or not isinstance(shown, list) or len(shown) != len(raw):
+        item.pop(PROMPT_IMAGES_ENTRY_KEY, None)
+        return prune_attachment_meta(
+            meta,
+            content,
+            previous,
+            display_content=display_content,
+            display_previous=display_previous,
+        )
+    ids = aligned_image_identities(meta, shown)
+    labels = collision_labels(shown, ids)
+    told_apart = _told_apart(labels, shown, content, previous, display_previous)
+    kept: list[tuple[str, str, str]] = []
+    for position, (redacted, raw_path) in enumerate(zip(shown, raw)):
+        if not (isinstance(redacted, str) and redacted and isinstance(raw_path, str) and raw_path):
+            continue
+        named_now = named_in_text(
+            labels[position] if told_apart else redacted, content
+        ) or named_in_text(raw_path, content)
+        named_before = named_in_text(redacted, previous) or named_in_text(raw_path, previous)
+        if named_now or not named_before:
+            kept.append((redacted, raw_path, ids[position] if ids is not None else ""))
+    item[PROMPT_IMAGES_ENTRY_KEY] = [raw_path for _, raw_path, _ in kept]
+    # The marker lists take the ordinary prune with the image list out of its
+    # reach, so the redacted-only rule cannot second-guess the decision above.
+    meta.pop(IMAGE_ATTACHMENT_META_KEY, None)
+    meta.pop(IMAGE_IDENTITY_META_KEY, None)
+    new_content = prune_attachment_meta(meta, content, previous)
+    # The key stays even when the edit took out every picture: the entry
+    # still says it carries its list.
+    meta[IMAGE_ATTACHMENT_META_KEY] = [redacted for redacted, _, _ in kept]
+    if kept and ids is not None:
+        meta[IMAGE_IDENTITY_META_KEY] = [identity for _, _, identity in kept]
+    return new_content
+
+
+def retained_image_meta(
+    row_meta: Any,
+    content: str,
+    previous: str,
+    *,
+    display_content: str = "",
+    display_previous: str = "",
+) -> dict[str, list[str]]:
+    """The image list a re-run of a persisted user row still carries.
+
+    A regenerate, an edit-resend or a rewind re-runs a row's text through the
+    runner without the send's ``meta``, and the text alone puts no picture in
+    front of the model -- the builder emits image blocks from the structured
+    list only. So the re-run reads the list back off the row it re-runs and
+    keeps every picture the edit did not remove (the same presence rule
+    :func:`prune_attachment_meta` applies to a queued edit). Returns ``{}`` for
+    a row that carried no images, and only the image list otherwise: the
+    marker lists are the renderer's business and stay with the persisted row.
+
+    The list is re-bounded here (:func:`bounded_attachment_list`), not trusted
+    on a type check: the row is a writable file, and the send-path bound is
+    the send path's -- a persisted list over it would otherwise be retained
+    and forwarded to the provider whole.
+    """
+    if not isinstance(row_meta, dict):
+        return {}
+    raw = bounded_attachment_list(
+        IMAGE_ATTACHMENT_META_KEY, row_meta.get(IMAGE_ATTACHMENT_META_KEY)
+    )
+    if raw is None:
+        return {}
+    meta: dict[str, list[str]] = {IMAGE_ATTACHMENT_META_KEY: raw}
+    ids = aligned_image_identities(row_meta, raw)
+    if ids is not None:
+        meta[IMAGE_IDENTITY_META_KEY] = ids
+    _prune_image_meta(
+        meta,
+        content,
+        previous,
+        display_content=display_content,
+        display_previous=display_previous,
+        refuse_ambiguous=True,
+    )
+    # A re-run builds image blocks from a non-empty list only, so a list the
+    # edit emptied is no list for it; the empty key is a queue entry's business.
+    return meta if meta.get(IMAGE_ATTACHMENT_META_KEY) else {}
+
+
+def _same_picture(path: str, identity: str, other: str, other_identity: str) -> bool:
+    """Whether two list entries name one picture.
+
+    An inode number is unique only within a filesystem, and the token carries
+    no device, so equal tokens prove the same file only inside one directory
+    (one directory, one filesystem); elsewhere only an equal spelling does.
+    """
+    if identity and other_identity and _same_directory(path, other):
+        return identity == other_identity
+    return path == other
+
+
+def _same_directory(path: str, other: str) -> bool:
+    return os.path.normcase(os.path.normpath(os.path.dirname(path))) == os.path.normcase(
+        os.path.normpath(os.path.dirname(other))
+    )
+
+
+def with_added_images(
+    image_meta: dict[str, list[str]],
+    added: list[str],
+    *,
+    added_identities: Sequence[str] = (),
+) -> dict[str, list[str]] | None:
+    """Return the bounded union, {} when empty, or None on refusal.
+
+    Separately admitted lists can exceed the bound together; a None result
+    must not be committed as a row because it would erase retained pictures.
+    The retained pictures keep the identities the row recorded; an added one
+    carries the identity the send boundary read off the raw request path
+    (*added_identities*, aligned with *added*); nothing is read here, so an
+    entry without one is compared by its spelling.
+    """
+    kept = list(image_meta.get(IMAGE_ATTACHMENT_META_KEY) or [])
+    kept_ids = aligned_image_identities(image_meta, kept) or [""] * len(kept)
+    given = list(added_identities) if len(added_identities) == len(added) else [""] * len(added)
+    new: list[tuple[str, str]] = []
+    for path, identity in zip(added, given):
+        # Two pictures are the same only by identity; two redacted spellings
+        # that collide are two files when their identities differ, so both stay.
+        if any(_same_picture(path, identity, p, i) for p, i in [*zip(kept, kept_ids), *new]):
+            continue
+        new.append((path, identity))
+    merged = kept + [p for p, _ in new]
+    if not merged:
+        return {}
+    bounded = bounded_attachment_list(IMAGE_ATTACHMENT_META_KEY, merged)
+    if bounded is None:
+        return None
+    result = {IMAGE_ATTACHMENT_META_KEY: bounded}
+    ids = kept_ids + [i for _, i in new]
+    if any(ids):
+        result[IMAGE_IDENTITY_META_KEY] = ids
+    return result
 
 
 class SlotQueueRepository:
@@ -623,6 +1161,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        prompt_images: list[str] | None = None,
     ) -> str:
         """Append an entry and return its process-local queue ID."""
         queue_id = self._id_provider()
@@ -635,6 +1174,8 @@ class SlotQueueRepository:
         # sites can finish populating structured facts after constructing it.
         if meta:
             item["meta"] = meta
+        if prompt_images:
+            item[PROMPT_IMAGES_ENTRY_KEY] = list(prompt_images)
         if directive_user_origin:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
@@ -661,6 +1202,7 @@ class SlotQueueRepository:
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        prompt_images: list[str] | None = None,
     ) -> str:
         """Insert one entry while preserving retry callbacks and provenance."""
         queue_id = self._id_provider()
@@ -674,6 +1216,8 @@ class SlotQueueRepository:
         # snapshot, so later producer mutation must not rewrite queued facts.
         if meta:
             item["meta"] = dict(meta)
+        if prompt_images:
+            item[PROMPT_IMAGES_ENTRY_KEY] = list(prompt_images)
         if on_consumed is not None:
             item["_on_consumed"] = on_consumed
         if on_irreversibly_consumed is not None:
@@ -743,6 +1287,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        display_text: Callable[[str], str] | None = None,
     ) -> bool:
         """Edit a user-owned entry without changing its identity or position."""
         for item in owner._queue:
@@ -771,7 +1316,9 @@ class SlotQueueRepository:
             # The lists index the OLD text's markers; drop only what this edit
             # removed (named before, unnamed now) and renumber the survivors
             # (prune_attachment_meta). An entry the old text never named is
-            # not the edit's to drop.
+            # not the edit's to drop. The entry's provider copy of the image
+            # list is cut in step, or a removed picture would still reach the
+            # model through it (prune_queued_entry).
             previous = item.get("content")
             previous = previous if isinstance(previous, str) else ""
             # The quoted block is another message's words: a marker inside it
@@ -781,12 +1328,16 @@ class SlotQueueRepository:
             # card; one that changed it falls through to `prune_quote_meta`.
             block = quote_block((item.get("meta") or {}).get("quote"))
             if block and content.startswith(block) and previous.startswith(block):
-                body = prune_attachment_meta(
-                    item.get("meta"), content[len(block) :], previous[len(block) :]
-                )
-                item["content"] = block + body
+                body_content, body_previous = content[len(block) :], previous[len(block) :]
             else:
-                item["content"] = prune_attachment_meta(item.get("meta"), content, previous)
+                block, body_content, body_previous = "", content, previous
+            item["content"] = block + prune_queued_entry(
+                item,
+                body_content,
+                body_previous,
+                display_content=display_text(body_content) if display_text else "",
+                display_previous=display_text(body_previous) if display_text else "",
+            )
             prune_quote_meta(item.get("meta"), item["content"])
             if directive_user_origin:
                 item["_directive_user_origin"] = True

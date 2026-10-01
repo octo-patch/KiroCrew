@@ -3,7 +3,7 @@ import { StrictMode } from 'react'
 import { render, act, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { appendQueuedMessage } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import type { RootState } from '../store'
@@ -197,6 +197,116 @@ describe('useQueuedMessageActions — cancel', () => {
     const { get } = renderActions({ rows, restoreDraft })
     act(() => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('summarize the report', ['/tmp/report.docx'], undefined)
+  })
+
+  it.each([
+    { name: 'listed', images: ['/tmp/private.png'], text: '', files: ['/tmp/private.png'] },
+    // No key at all is an entry from before the list: it restores as main restores it (chip).
+    { name: 'missing', images: undefined, text: '', files: ['/tmp/private.png'] },
+    { name: 'empty', images: [], text: '![image](/tmp/private.png)', files: [] },
+    { name: 'unlisted', images: ['/tmp/other.png'], text: '![image](/tmp/private.png)', files: [] },
+    { name: 'malformed', images: ['/tmp/private.png', 42], text: '![image](/tmp/private.png)', files: [] },
+  ])('restores a typed image line as text unless structured images are valid and list it: $name', ({ images, text, files }) => {
+    const restoreDraft = vi.fn()
+    const row = queued('q1', '![image](/tmp/private.png)')
+    row.meta = { ...row.meta, ...(images === undefined ? {} : { images }) }
+    const { get } = renderActions({ rows: [row], restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith(text, files, undefined)
+  })
+
+  it('a text-only queue_push frame from another tab carries its empty picture list, so a cancel here keeps a typed image marker as text', () => {
+    // The sending tab held the composer state; this tab only ever saw the live
+    // frame. The gateway writes the picture list on the frame as on the record,
+    // empty when the send had no pictures, so the parser claims nothing and the
+    // typed marker is not restaged as a chip that a resend would upload.
+    const typed = '/home/me/private.png'
+    const sent = `![image](${typed})\n\nlook at this`
+    const restoreDraft = vi.fn()
+    // The row as the receiving tab's store builds it from the live frame.
+    const hydrated = makeStore('chat-1', [])
+    hydrated.dispatch(appendQueuedMessage({ slot: 'chat-1', content: sent, ts: 't', queue_id: 'q1', meta: { images: [] } }))
+    const row = hydrated.getState().chat.messages.find((m) => m.role === 'queued')!
+    expect(row.meta).toEqual({ queueId: 'q1', images: [] })
+    const { get } = renderActions({ rows: [row], restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith(sent, [], undefined)
+  })
+
+  it('a legacy entry hydrated without the picture key still takes the shape rule', () => {
+    // A record from before the list existed carries no key at all; the typed
+    // picture line restages as a chip the way it always did.
+    const typed = '/home/me/shot.png'
+    const sent = `![image](${typed})\n\nlook at this`
+    const restoreDraft = vi.fn()
+    const { get } = renderActions({ rows: [queued('q1', sent)], restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('look at this', [typed], undefined)
+  })
+
+  it('a parser-path cancel of a knowledge-prefixed send restores the picture behind the block', () => {
+    // The send wrote the knowledge block ahead of the picture line. Without a
+    // stash the parser is handed the block's extent by its owner, so the
+    // listed picture comes back as a chip and the block stays in the text.
+    const image = '/tmp/uploads/shot.png'
+    const kb = '[KNOWLEDGE CONTEXT — injected by user from knowledge library]\n\n## Doc\nkb text\n\n[END KNOWLEDGE CONTEXT]\n'
+    const restoreDraft = vi.fn()
+    const row = queued('q1', `${kb}\n![image](${image})\n\nwhat is this`)
+    row.meta = { ...row.meta, images: [image] }
+    const { get } = renderActions({ rows: [row], restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith(`${kb}\nwhat is this`, [image], undefined)
+  })
+
+  it('a parser-path cancel hands back the identity of each restored picture', () => {
+    // A redacted picture path names no file; the entry's `meta.image_ids`
+    // (one identity per picture, as the gateway recorded them) is what lets
+    // the resend recover the file, so the restore carries them keyed by the
+    // restored path and leaves out a picture whose identity is blank.
+    const redacted = '/tmp/uploads/[REDACTED: credential].png'
+    const plain = '/tmp/shots/b.png'
+    const restoreDraft = vi.fn()
+    const row = queued('q1', `![image](${redacted})\n![image](${plain})\n\nlook`)
+    row.meta = { ...row.meta, images: [redacted, plain], image_ids: ['1234:567:89abcdef01234567', ''] }
+    const { get } = renderActions({ rows: [row], restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('look', [redacted, plain], undefined, undefined, { [redacted]: '1234:567:89abcdef01234567' })
+  })
+
+  it('a parser-path cancel keeps two pictures whose names redact to one spelling, each with its identity', () => {
+    // Two distinct pictures, one redacted spelling: the entry's identities tell
+    // them apart, so the restore hands back two chips (the second under a
+    // distinguished spelling) and the identity of each, never the verbatim text.
+    const S = '/proj/diagram_[REDACTED: credential].png'
+    const idA = '1234:567:89abcdef01234567'
+    const idB = '1234:568:fedcba9876543210'
+    const restoreDraft = vi.fn()
+    const row = queued('q1', `![image](<${S}>)\n![image](<${S}>)\n\ncompare`)
+    row.meta = { ...row.meta, images: [S, S], image_ids: [idA, idB] }
+    const { get } = renderActions({ rows: [row], restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledTimes(1)
+    const [text, files, , , ids] = restoreDraft.mock.calls[0]
+    expect(text).toBe('compare')
+    expect(files).toHaveLength(2)
+    expect(files[0]).toBe(S)
+    expect(files[1]).not.toBe(S)
+    expect(ids).toEqual({ [files[0]]: idA, [files[1]]: idB })
+  })
+
+  it('a stash hit hands back the identities the send stashed beside its files', () => {
+    // A resend of a restored, redacted picture goes through the stash when it
+    // is cancelled again; the record carries the identities the composer held
+    // at send time, or the picture is restored as a path that names no file.
+    const redacted = '/tmp/uploads/[REDACTED: credential].png'
+    const restoreDraft = vi.fn()
+    const sent = `![image](${redacted})\n\nlook`
+    const row = queued('q1', sent)
+    row.meta = { ...row.meta, images: [redacted], image_ids: ['1234:567:89abcdef01234567'] }
+    const { get } = renderActions({ rows: [row], restoreDraft })
+    queuedSendStash.set('q1', { raw: 'look', files: [redacted], sent, imageIds: { [redacted]: '1234:567:89abcdef01234567' } })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('look', [redacted], undefined, undefined, { [redacted]: '1234:567:89abcdef01234567' })
   })
 
   it('a foreign card carrying the entry\'s attachment list restores a spaced path whole', () => {

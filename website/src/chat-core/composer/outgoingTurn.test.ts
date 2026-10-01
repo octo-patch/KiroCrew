@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest'
 
-import { buildOutgoingTurn, isEmptyTurn, type OutgoingTurnInput, type OutgoingTurnMode } from './outgoingTurn'
+import { buildOutgoingTurn, isEmptyTurn, knowledgePrefixOf, type OutgoingTurnInput, type OutgoingTurnMode } from './outgoingTurn'
 import { quoteBlock, type MessageQuote } from './messageQuote'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import type { KnowledgeBlock } from '../../pages/chat/useKnowledgeFetch'
 import { formatSessionRefLink } from '../../utils/sessionRefs'
+import { restoreQueuedContent } from '../../utils/fileTokens'
 
 const P1: PasteBlock = { id: 'p1', seq: 1, lines: 3, content: 'one\ntwo\nthree' }
 const P2: PasteBlock = { id: 'p2', seq: 2, lines: 3, content: 'x\ny\nz' }
@@ -38,9 +39,9 @@ interface Row {
 const ROWS: Row[] = [
   { name: 'plain text is sent as typed, trimmed', mode: 'send', input: { text: '  hello  ' }, wire: 'hello', bubble: 'hello', meta: {}, typedOnly: true },
   { name: 'a staged file becomes a marker on the wire only', mode: 'send', input: { text: 'read @a.txt', files: ['/r/a.txt'] }, wire: 'read [attached_file 1] /r/a.txt', bubble: 'read @a.txt', meta: { files: ['/r/a.txt'] }, typedOnly: true, inlined: 'read [attached_file 1] /r/a.txt' },
-  { name: 'an image opens both texts as markdown', mode: 'send', input: { text: 'look', files: ['/t/i.png'] }, wire: '![image](/t/i.png)\n\nlook', bubble: '![image](/t/i.png)\n\nlook', meta: {}, typedOnly: true },
-  { name: 'an image-only send is its markdown line, never an empty message', mode: 'send', input: { text: '', files: ['/t/only.png'] }, wire: '![image](/t/only.png)', bubble: '![image](/t/only.png)', meta: {}, typedOnly: true },
-  { name: 'images stay off meta.files, whose order the markers index', mode: 'send', input: { text: 'both', files: ['/t/a.png', '/t/n.txt', '/t/b c.pdf'] }, wire: '![image](/t/a.png)\n\nboth\n[attached_file 1] /t/n.txt\n[attached_file 2] /t/b c.pdf', bubble: '![image](/t/a.png)\n\nboth', meta: { files: ['/t/n.txt', '/t/b c.pdf'] }, typedOnly: true },
+  { name: 'an image opens both texts as markdown and is the turn\'s attachment', mode: 'send', input: { text: 'look', files: ['/t/i.png'] }, wire: '![image](/t/i.png)\n\nlook', bubble: '![image](/t/i.png)\n\nlook', meta: { images: ['/t/i.png'] }, typedOnly: true },
+  { name: 'an image-only send is its markdown line, never an empty message', mode: 'send', input: { text: '', files: ['/t/only.png'] }, wire: '![image](/t/only.png)', bubble: '![image](/t/only.png)', meta: { images: ['/t/only.png'] }, typedOnly: true },
+  { name: 'images ride meta.images and stay off meta.files, whose order the markers index', mode: 'send', input: { text: 'both', files: ['/t/a.png', '/t/n.txt', '/t/b c.pdf'] }, wire: '![image](/t/a.png)\n\nboth\n[attached_file 1] /t/n.txt\n[attached_file 2] /t/b c.pdf', bubble: '![image](/t/a.png)\n\nboth', meta: { images: ['/t/a.png'], files: ['/t/n.txt', '/t/b c.pdf'] }, typedOnly: true },
   { name: 'meta.dirs[N-1] is marker N, resolved against the project', mode: 'send', input: { text: 'see @src/ and @/abs/d/ and @src/', project: '/p' }, wire: 'see [attached_dir 1] /p/src and [attached_dir 2] /abs/d and [attached_dir 1] /p/src', bubble: 'see @src/ and @/abs/d/ and @src/', meta: { dirs: ['/p/src', '/abs/d'] }, typedOnly: true, inlined: 'see @src/ and @/abs/d/ and @src/' },
   { name: 'steer never emits a folder marker', mode: 'steer', input: { text: 'see @src/', project: '/p' }, wire: 'see @src/', bubble: 'see @src/', meta: {}, typedOnly: true },
   { name: 'session links are appended to both texts', mode: 'send', input: { text: 'about this', sessionRefs: [REF] }, wire: `about this\n\n${LINK}`, bubble: `about this\n\n${LINK}`, meta: {}, typedOnly: false, inlined: 'about this' },
@@ -99,5 +100,68 @@ describe('isEmptyTurn', () => {
     [{ text: '', sessionRefs: [REF] }, false],
   ] as Array<[OutgoingTurnInput, boolean]>)('%j is empty: %s', (input, empty) => {
     expect(isEmptyTurn(input)).toBe(empty)
+  })
+})
+
+describe('cancel restore of a knowledge-prefixed wire (parser path)', () => {
+  // The knowledge block opens the wire ahead of the picture block, so a cancel
+  // that reaches the strict parser (no stash hit: a reload, another tab) must
+  // find the listed picture BEHIND that producer prefix. The block itself
+  // stays verbatim in the restored text, like every expanded producer block.
+  it('stages the listed picture behind the knowledge block and keeps the block', () => {
+    const image = '/tmp/uploads/shot.png'
+    const turn = buildOutgoingTurn({ text: 'what is this', files: [image], knowledge: KB }, 'send')
+    expect(turn.meta.images).toEqual([image])
+    expect(turn.wire.startsWith(KB_TEXT)).toBe(true)
+    const restored = restoreQueuedContent(turn.wire, turn.meta.files, undefined, undefined, turn.meta.images, knowledgePrefixOf(turn.wire))
+    expect(restored.files).toEqual([image])
+    expect(restored.text).toBe(`${KB_TEXT}\nwhat is this`)
+  })
+
+  it('stages a redacted listed picture behind the knowledge block', () => {
+    const image = '/tmp/uploads/[REDACTED: credential].png'
+    const wire = `${KB_TEXT}\n![image](${image})\n\nlook`
+    const restored = restoreQueuedContent(wire, undefined, undefined, undefined, [image], knowledgePrefixOf(wire))
+    expect(restored).toEqual({ text: `${KB_TEXT}\nlook`, files: [image] })
+  })
+
+  it('leaves the wire verbatim when the picture behind the block is not the listed one', () => {
+    const wire = `${KB_TEXT}\n![image](/tmp/unlisted.png)\n\nlook`
+    expect(restoreQueuedContent(wire, undefined, undefined, undefined, ['/tmp/uploads/shot.png'], knowledgePrefixOf(wire))).toEqual({ text: wire, files: [] })
+  })
+
+  it('knowledgePrefixOf names the block the send wrote and nothing else', () => {
+    expect(knowledgePrefixOf(`${KB_TEXT}\nq`)).toBe(`${KB_TEXT}\n`)
+    expect(knowledgePrefixOf(KB_TEXT)).toBe(KB_TEXT)
+    expect(knowledgePrefixOf('q')).toBe('')
+    expect(knowledgePrefixOf(KB_TEXT.split('\n')[0] + '\n\n## Doc\nno closing line')).toBe('')
+  })
+})
+
+describe('picture identities on a resend', () => {
+  // A restored picture may carry the identity the gateway recorded for it (a
+  // redacted path names no file; the identity is how the resend recovers it).
+  // The list rides `meta.image_ids` aligned with `meta.images`, blank for a
+  // picture without one, and is left out entirely when no picture has one.
+  const redacted = '/tmp/uploads/[REDACTED: credential].png'
+  const plain = '/tmp/shots/b.png'
+
+  it('rides aligned with the pictures, blank where unknown', () => {
+    const turn = buildOutgoingTurn(
+      { text: 'look', files: [redacted, plain], imageIds: { [redacted]: '1234:567:89abcdef01234567' } }, 'send',
+    )
+    expect(turn.meta.images).toEqual([redacted, plain])
+    expect(turn.meta.image_ids).toEqual(['1234:567:89abcdef01234567', ''])
+  })
+
+  it('is absent when no staged picture has an identity', () => {
+    const turn = buildOutgoingTurn({ text: 'look', files: [plain], imageIds: { '/tmp/elsewhere.png': 'x' } }, 'send')
+    expect(turn.meta.images).toEqual([plain])
+    expect('image_ids' in turn.meta).toBe(false)
+  })
+
+  it('is absent without pictures', () => {
+    const turn = buildOutgoingTurn({ text: 'look', files: ['/tmp/report.pdf'], imageIds: { [plain]: 'x' } }, 'send')
+    expect('image_ids' in turn.meta).toBe(false)
   })
 })

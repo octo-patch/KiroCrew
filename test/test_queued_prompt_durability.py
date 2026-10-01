@@ -36,6 +36,8 @@ from kiro_crew.dashboard.chat_persistence import (
     restore_recent_sessions,
 )
 from kiro_crew.dashboard.slot_queue_repository import (
+    ATTACHMENT_LIST_MAX_ITEMS,
+    ATTACHMENT_PATH_MAX_LEN,
     EMPTY_QUEUE_SIGNATURE,
     MAX_DURABLE_QUEUE_BYTES,
     MAX_DURABLE_QUEUE_ENTRIES,
@@ -437,6 +439,39 @@ class TestRestore:
         assert "payload" not in restored[0]
         assert "_on_consumed" not in restored[0]
         assert "_on_irreversibly_consumed" not in restored[0]
+
+    @pytest.mark.parametrize(
+        ("key", "value", "kept"),
+        [
+            ("images", [f"/tmp/p{i}.png" for i in range(ATTACHMENT_LIST_MAX_ITEMS + 1)], []),
+            ("files", ["/" + "x" * ATTACHMENT_PATH_MAX_LEN + ".txt"], None),
+            ("dirs", ["/tmp/ok", ""], None),
+            ("images", "not-a-list", []),
+        ],
+    )
+    def test_restored_attachment_lists_are_bounded(self, key, value, kept) -> None:
+        # The line is writable outside the gateway and whatever is admitted here
+        # is re-persisted by every later save, so an unbounded list read back
+        # verbatim would outlive the bound the send path enforces. A refused
+        # marker list is dropped; a refused picture list leaves its key empty,
+        # since the key itself says the entry carries its list.
+        entries = sanitize_restored_queue(
+            [{"id": "q1", "content": "hi", "meta": {key: value, "sendId": "s-1"}}]
+        )
+        assert len(entries) == 1
+        if kept is None:
+            assert key not in entries[0]["meta"]
+        else:
+            assert entries[0]["meta"][key] == kept
+        assert entries[0]["meta"]["sendId"] == "s-1"
+
+    def test_restored_attachment_lists_within_bounds_are_kept(self) -> None:
+        images = [f"/tmp/p{i}.png" for i in range(ATTACHMENT_LIST_MAX_ITEMS)]
+        entries = sanitize_restored_queue(
+            [{"id": "q1", "content": "hi", "meta": {"images": images, "files": ["/tmp/a.txt"]}}]
+        )
+        assert entries[0]["meta"]["images"] == images
+        assert entries[0]["meta"]["files"] == ["/tmp/a.txt"]
 
     def test_a_tampered_metadata_line_restores_a_plain_prompt_only(self, tmp_path) -> None:
         state = _make_state(tmp_path)

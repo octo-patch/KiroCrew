@@ -140,7 +140,8 @@ class TestQuoteRidesTheQueue:
             for kind, payload in (c.args for c in state.broadcast_ws.call_args_list)
             if kind == "queue_push"
         )
-        assert frame["meta"] == {"quote": _QUOTE}
+        # The picture list rides every queue_push frame, empty included (review 5514250949).
+        assert frame["meta"] == {"quote": _QUOTE, "images": []}
 
     def test_queue_for_next_turn_without_a_quote_keeps_the_prior_shape(self):
         state = _make_state()
@@ -157,7 +158,8 @@ class TestQuoteRidesTheQueue:
             for kind, payload in (c.args for c in state.broadcast_ws.call_args_list)
             if kind == "queue_push"
         )
-        assert "meta" not in frame
+        # The picture list rides every queue_push frame, empty included (review 5514250949).
+        assert frame["meta"] == {"images": []}
 
     def test_queue_entry_view_redacts_the_quote_of_an_entry_that_is_not_the_human_s(self):
         # A restored entry carries no origin stamp: it is not the dashboard's
@@ -210,7 +212,8 @@ class TestQuoteThroughTheHandler:
         entry = next(i for i in slot._queue if i["content"] == "> q\n\nwhy?")
         assert entry["meta"]["quote"] == _QUOTE
         frames = [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_push"]
-        assert frames and frames[-1]["meta"] == {"quote": _QUOTE}
+        # The picture list rides every queue_push frame, empty included (review 5514250949).
+        assert frames and frames[-1]["meta"] == {"quote": _QUOTE, "images": []}
 
     @pytest.mark.asyncio
     async def test_an_oversized_quote_is_dropped_on_the_busy_path_too(self, tmp_path, monkeypatch):
@@ -308,7 +311,8 @@ class TestQuoteThroughTheHandler:
         assert slot._queue[0]["meta"]["quote"] == _QUOTE
         pushes = [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_push"]
         assert len(pushes) == 1
-        assert pushes[0]["meta"] == {"files": ["/tmp/a.pdf"], "quote": _QUOTE}
+        # The picture list rides every queue_push frame, empty included (review 5514250949).
+        assert pushes[0]["meta"] == {"files": ["/tmp/a.pdf"], "quote": _QUOTE, "images": []}
 
 
 class TestQueueEditPrunesTheQuote:

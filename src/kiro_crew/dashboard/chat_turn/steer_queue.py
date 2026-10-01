@@ -15,6 +15,7 @@ from kiro_crew.dashboard.chat_utils import (
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         COMMANDS_OFF_META_KEY,
+        IMAGE_ATTACHMENT_META_KEY,
         STEER_POSSIBLY_DELIVERED_META,
         STEER_STATE_CONSUMED,
         STEER_STATE_REQUEUED,
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
         is_synthetic_payload_item,
         is_system_injection_item,
         logger,
+        prompt_image_paths,
         queued_text_for_display,
         quote_meta,
         settle_consumed_steers,
@@ -284,6 +286,8 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         if _sid:
             _meta["sendId"] = _sid
         _meta.update(getattr(slot, "_steer_attachment_meta", {}).pop(steer_msg, {}))
+        # The requeued steer records its picture list, empty when it carried none.
+        _meta.setdefault(IMAGE_ATTACHMENT_META_KEY, [])
         # The decision receipt rides the entry for the same reason the two ids do:
         # the drain unions a consumed entry's meta onto the row it writes, so this is
         # the only writer a requeued steer has. Both outcomes a `message.steer`
@@ -338,6 +342,9 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             meta=_meta,
             directive_user_origin=_requeue_user_origin,
             directive_channel_origin=_channel,
+            # A channel steer's redacted list must still resolve to the real
+            # image rather than making the provider probe a nonexistent path.
+            prompt_images=prompt_image_paths(_meta),
         )
         try:
             _push: dict = {
@@ -356,13 +363,14 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             # restores, and a frame without the quote would show the raw
             # blockquote as text until a reload.
             _push_meta = {
-                **attachment_meta(_meta),
                 # Same rule the entry's text follows (`queue_entry_is_user_origin`):
                 # the human's own words stay as typed, anyone else's are redacted.
+                **attachment_meta(_meta, redact=not (_requeue_user_origin and not _channel)),
                 **quote_meta(_meta, user_origin=_requeue_user_origin and not _channel),
             }
-            if _push_meta:
-                _push["meta"] = _push_meta
+            # The picture list rides the frame as it rides the record, empty included.
+            _push_meta.setdefault(IMAGE_ATTACHMENT_META_KEY, list(_meta[IMAGE_ATTACHMENT_META_KEY]))
+            _push["meta"] = _push_meta
             state.broadcast_ws("queue_push", _push)
         except Exception:
             # Broadcast is best-effort — the message is already safely in the

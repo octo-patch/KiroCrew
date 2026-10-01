@@ -7,7 +7,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { selectSlotMessages, setActiveSlot, sseChatMessage } from '../store/chatSlice'
+import chatReducer, { appendQueuedMessage, selectSlotMessages, setActiveSlot, sseChatMessage } from '../store/chatSlice'
 import type { SendReceipt, SendTurnOptions } from '../chat-core/transport/sendTurn'
 import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
@@ -449,5 +449,128 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     const again = await composer()
     await waitFor(() => expect((again as HTMLTextAreaElement).value).toContain('about that'))
     expect((again as HTMLTextAreaElement).value).toContain('> the quoted reply')
+  })
+})
+
+describe('ChatPane keeps a restored picture identity through a refused or re-queued send', () => {
+  // A redacted picture path names no file; only the identity the gateway
+  // recorded lets a resend recover it, so the pane's composer must hold it
+  // beside the chip through every hand-back, not just the first cancel.
+  const REDACTED = '/tmp/uploads/[REDACTED: credential].png'
+  const IDENTITY = '1234:567:89abcdef01234567'
+  const sentMeta = () => lastSendTurnOpts!.meta as { images?: string[]; image_ids?: string[] }
+
+  async function mountWithRestoredPicture(slotKey: string) {
+    queuedSendStash.clear()
+    const r = renderPane(slotKey, { running: false })
+    const box = await composer() as HTMLTextAreaElement
+    // A restarted queue entry (hydrated with its lists): its cancel takes the
+    // parser path, which restores the chip AND its identity into this pane.
+    await act(async () => {
+      r.store.dispatch(appendQueuedMessage({ slot: slotKey, content: `![image](${REDACTED})\n\nlook`, ts: 'q-77-ts', queue_id: 'q-77', meta: { images: [REDACTED], image_ids: [IDENTITY] } }))
+    })
+    await cancelCard(box)
+    return { ...r, box }
+  }
+
+  async function cancelCard(box: HTMLTextAreaElement) {
+    const cancel = await screen.findByRole('button', { name: 'Cancel queued message' })
+    await act(async () => { fireEvent.click(cancel) })
+    await waitFor(() => expect(box.value).toBe('look'))
+    expect(await screen.findByRole('group', { name: REDACTED })).toBeInTheDocument()
+  }
+
+  it('a send the gateway queued stashes the identity, and the stash-hit cancel hands it back for the resend', async () => {
+    vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, queued: true, queue_id: 'q-2' }) } as unknown as Response)
+    const { store, box } = await mountWithRestoredPicture('member-ids-queued')
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
+    expect(sentMeta()).toEqual(expect.objectContaining({ images: [REDACTED], image_ids: [IDENTITY] }))
+    const wire = lastSendTurnOpts!.message
+    await waitFor(() => expect(queuedSendStash.get('q-2')).toEqual(expect.objectContaining({ files: [REDACTED], imageIds: { [REDACTED]: IDENTITY } })))
+    // The queue echo for that send carries no identities of its own: the
+    // card's cancel hits the stash, which must hold them.
+    lastSendTurnOpts = null
+    await act(async () => { store.dispatch(appendQueuedMessage({ slot: 'member-ids-queued', content: wire, ts: 'q-2-ts', queue_id: 'q-2' })) })
+    await cancelCard(box)
+    vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) } as unknown as Response)
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
+    expect(sentMeta()).toEqual(expect.objectContaining({ images: [REDACTED], image_ids: [IDENTITY] }))
+  })
+
+  it('two pictures whose names redact to one spelling come back as two chips and resend with both identities', async () => {
+    const S = '/proj/diagram_[REDACTED: credential].png'
+    const idB = '1234:568:fedcba9876543210'
+    queuedSendStash.clear()
+    const r = renderPane('member-ids-collide', { running: false })
+    const box = await composer() as HTMLTextAreaElement
+    await act(async () => {
+      r.store.dispatch(appendQueuedMessage({
+        slot: 'member-ids-collide', content: `![image](<${S}>)\n![image](<${S}>)\n\ncompare`, ts: 'q-9-ts', queue_id: 'q-9',
+        meta: { images: [S, S], image_ids: [IDENTITY, idB] },
+      }))
+    })
+    const cancel = await screen.findByRole('button', { name: 'Cancel queued message' })
+    await act(async () => { fireEvent.click(cancel) })
+    await waitFor(() => expect(box.value).toBe('compare'))
+    expect(await screen.findAllByRole('group', { name: /diagram_\[REDACTED: credential\]/ })).toHaveLength(2)
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
+    const meta = sentMeta()
+    expect(meta.images).toHaveLength(2)
+    expect(meta.images![0]).toBe(S)
+    expect(meta.images![1]).not.toBe(S)
+    expect(meta.image_ids).toEqual([IDENTITY, idB])
+  })
+
+  it('leaving and reopening the pane keeps the identity of a restored picture with its chip', async () => {
+    // The pane parks its composer on unmount and a new instance takes it back;
+    // the identities park and return with the chips, or the resend after the
+    // return goes out text-only.
+    vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) } as unknown as Response)
+    const first = await mountWithRestoredPicture('member-ids-reopen')
+    first.unmount()
+    const again = renderPane('member-ids-reopen', { running: false })
+    const box = await composer() as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe('look'))
+    expect(await screen.findByRole('group', { name: REDACTED })).toBeInTheDocument()
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
+    expect(sentMeta()).toEqual(expect.objectContaining({ images: [REDACTED], image_ids: [IDENTITY] }))
+    again.unmount()
+  })
+
+  it('a send from the pane bound to another member leaves the parked identity of this member in place', async () => {
+    vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) } as unknown as Response)
+    const { rebind, box } = await mountWithRestoredPicture('member-ids-park')
+    rebind('member-ids-elsewhere')
+    await waitFor(() => expect(box.value).toBe(''))
+    fireEvent.change(box, { target: { value: 'hello from elsewhere' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
+    expect((lastSendTurnOpts!.meta as { images?: string[] } | undefined)?.images).toBeUndefined()
+    lastSendTurnOpts = null
+    rebind('member-ids-park')
+    await waitFor(() => expect(box.value).toBe('look'))
+    expect(await screen.findByRole('group', { name: REDACTED })).toBeInTheDocument()
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
+    expect(sentMeta()).toEqual(expect.objectContaining({ images: [REDACTED], image_ids: [IDENTITY] }))
+  })
+
+  it('a refused send hands the identity back with the chip, so the retry still names the picture', async () => {
+    vi.mocked(api.sendChat).mockResolvedValue({ ok: false, status: 409, json: () => Promise.resolve({ ok: false, error: 'slot agent mismatch' }) } as unknown as Response)
+    const { box } = await mountWithRestoredPicture('member-ids-refused')
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
+    expect(sentMeta()).toEqual(expect.objectContaining({ images: [REDACTED], image_ids: [IDENTITY] }))
+    await waitFor(() => expect(box.value).toBe('look'))
+    expect(await screen.findByRole('group', { name: REDACTED })).toBeInTheDocument()
+    lastSendTurnOpts = null
+    vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) } as unknown as Response)
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
+    expect(sentMeta()).toEqual(expect.objectContaining({ images: [REDACTED], image_ids: [IDENTITY] }))
   })
 })

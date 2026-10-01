@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { useAppDispatch } from '../store'
 import { cancelQueuedMessage, editQueuedMessage, queueEntryAttachments } from '../store/chatSlice'
-import { restoreQueuedContent } from '../utils/fileTokens'
+import { normalizeWindowsPath, restoreQueuedContent, distinguishCollidingImages } from '../utils/fileTokens'
 import { quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
+import { knowledgePrefixOf } from '../chat-core/composer/outgoingTurn'
 import type { ChatMessage } from '../types'
 
 /** Pre-serialization composer state of a send the server QUEUED, written by the
@@ -27,6 +28,18 @@ export interface QueuedSendRecord {
    *  so a cancel puts it back as a staged card rather than leaving its `>` block
    *  in the restored text -- or, without a stash hit, losing it (fork GPT review). */
   quote?: MessageQuote
+  /** The identity of each stashed picture, keyed by its path, as the composer
+   *  held them at send time. A redacted path names no file, so a cancel that
+   *  hits the stash must hand these back or the resend goes out text-only. */
+  imageIds?: Record<string, string>
+}
+
+/** The identities to stash with *files*: the composer's map narrowed to the
+ *  pictures this send carried, or `undefined` when none of them has one. */
+export function stashedImageIds(imageIds: Record<string, string>, files: string[]): Record<string, string> | undefined {
+  const picked: Record<string, string> = {}
+  for (const file of files) { if (imageIds[file]) picked[file] = imageIds[file] }
+  return Object.keys(picked).length ? picked : undefined
 }
 
 /** Queued-send stash, keyed by the `queue_id` the send receipt returns (the
@@ -79,8 +92,15 @@ export interface QueuedMessageActionsOptions {
    *  or the recovered text refers to attachments the re-send will not carry.
    *  Omitted, the recovered state is dropped, which is what cancelling in a
    *  split pane did before #5891 and what no host should do.
+   *  `imageIds` maps a restored picture path to the identity the gateway
+   *  recorded for it (`meta.image_ids`); a host keeps it beside the chip so
+   *  the resend carries it as `meta.image_ids`, which is how a redacted path
+   *  (one that names no file) is recovered. Absent when no picture has one.
    */
-  restoreDraft?: (text: string, files: string[], aliases?: Record<string, string[]>, quote?: MessageQuote) => void
+  restoreDraft?: (
+    text: string, files: string[], aliases?: Record<string, string[]>, quote?: MessageQuote,
+    imageIds?: Record<string, string>,
+  ) => void
   /** The paths the host composer has staged right now. A cancelled card's
    *  restore MERGES into that composer, so a mention the parser writes back
    *  must not use a suffix one of those files also has: two cards naming
@@ -97,6 +117,22 @@ export interface QueuedMessageActionsOptions {
 }
 
 const queueIdOf = (m: ChatMessage): string | undefined => m.meta?.queueId as string | undefined
+
+/** The identity of each restored picture, keyed by its restored path: the
+ *  entry's `imageIds` is aligned with its `images`, and the parser restores a
+ *  listed picture under the normalized spelling of that same entry. Blank
+ *  identities are left out; `undefined` when none remains. */
+function restoredImageIds(
+  attachments: ReturnType<typeof queueEntryAttachments>, restored: readonly string[],
+): Record<string, string> | undefined {
+  const { images, imageIds } = attachments
+  if (!images || !imageIds) return undefined
+  const byPath = new Map<string, string>()
+  images.forEach((image, i) => { if (imageIds[i]) byPath.set(normalizeWindowsPath(image), imageIds[i]) })
+  const out: Record<string, string> = {}
+  for (const path of restored) { const id = byPath.get(path); if (id) out[path] = id }
+  return Object.keys(out).length ? out : undefined
+}
 
 /**
  * The queue-card action recipe, owned once and consumed by every host that draws
@@ -244,13 +280,23 @@ export function useQueuedMessageActions({
       // The block comes off BEFORE the parse: the parser's producer-block
       // patterns are anchored at offset 0, so a quote on the head would hide
       // an image block behind it and the file would restore as literal text.
+      const attachments = queueEntryAttachments(msg.meta)
+      // The knowledge block the send wrote ahead of the pictures is identified
+      // by its owner and stays verbatim; the parser claims the pictures behind it.
+      const unquoted = rowQuote ? stripQuoteBlock(msg.content, rowQuote) : msg.content
+      // Two pictures stored under one redacted spelling are told apart by their
+      // recorded identities before the parse, so both come back as chips.
+      const told = distinguishCollidingImages(unquoted, attachments.images, attachments.imageIds)
+      const listed = { ...attachments, images: told.images }
       const parsed = hit
         ? { text: stashed.raw, files: stashed.files, aliases: stashed.aliases }
         : restoreQueuedContent(
-          rowQuote ? stripQuoteBlock(msg.content, rowQuote) : msg.content,
-          queueEntryAttachments(msg.meta).files,
+          told.content,
+          attachments.files,
           stagedFilesRef.current?.(),
           projectRef.current?.(),
+          told.images,
+          knowledgePrefixOf(told.content),
         )
       const { files, text, aliases } = parsed
       // The stash carries the alias map the send-clear dropped. The parser
@@ -259,7 +305,11 @@ export function useQueuedMessageActions({
       // reconciled too; any other parser restore has none, which falls into
       // the documented reload-limitation class rather than corrupting.
       const quote = hit ? stashed.quote : rowQuote
-      if (quote) restoreDraftRef.current?.(text, files, aliases, quote)
+      // A stash hit hands back the identities the send stashed beside its
+      // files; the parser path reads them off the entry's own list.
+      const imageIds = hit ? stashed.imageIds : restoredImageIds(listed, files)
+      if (imageIds) restoreDraftRef.current?.(text, files, aliases, quote, imageIds)
+      else if (quote) restoreDraftRef.current?.(text, files, aliases, quote)
       else restoreDraftRef.current?.(text, files, aliases)
     }
     // Optimistically remove the card; the WS echo is a no-op if already gone.

@@ -27,6 +27,7 @@ const critiqueSendWire: SendWire = (payload, signal) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       message: payload.message, slot: payload.slot, agent: AGENT, memory_mode: 'temporary', mode: 'design-critique',
+      ...(payload.meta ? { meta: payload.meta } : {}),
     }),
     signal,
   }).catch(() => { throw indeterminate() })
@@ -115,8 +116,16 @@ export const designCritiqueApi = {
   // here: `critiqueSendWire` converts every rejection to `indeterminate()`. The old send read the SSE
   // stream the bare endpoint answers with and swallowed its parse error as
   // success, so a `{ok:false}` refusal inside a 200 never surfaced at all.
-  send: async (slotKey: string, message: string): Promise<void> => {
-    const receipt = await sendTurn({ message, slot: slotKey, wire: critiqueSendWire })
+  // `images` is the structured list the gateway builds the turn's image blocks
+  // from; the `![screen](...)` lines in the prompt are the transcript's
+  // rendering only, never scanned for pictures.
+  send: async (slotKey: string, message: string, images?: string[]): Promise<void> => {
+    const receipt = await sendTurn({
+      message,
+      slot: slotKey,
+      wire: critiqueSendWire,
+      ...(images && images.length ? { meta: { images } } : {}),
+    })
     if (receipt.status === 'refused') {
       throw new Error(receipt.reason || (i18nT('pages.chatPage.send_failed') as string))
     }

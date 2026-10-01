@@ -1702,6 +1702,57 @@ class TestRewindSlot:
         # to prevent slot enumeration; SEL still records the true reason.
         assert resp.status == 404
 
+    @pytest.mark.asyncio
+    async def test_rewind_rejects_an_ambiguous_picture_removal(self, tmp_path, _mock_run_chat):
+        """The transcript editor's lines for two same-named pictures are identical;
+        deleting one cannot say which picture went. The route refuses on its copy:
+        the live window, the queue and the native conversation are untouched, and
+        the client's rollback restores the edit. The unchanged text still rewinds."""
+        from kiro_crew.dashboard.slot_queue_repository import (
+            AMBIGUOUS_IMAGE_REMOVAL_TEXT,
+            IMAGE_IDENTITY_META_KEY,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        shown = "shot.png"
+        row_text = f"![image]({shown})\n![image]({shown})\n\nlook"
+        slot.append(
+            "user",
+            row_text,
+            "msg msg-u",
+            ts="2026-05-21T16:00:00Z",
+            meta={"images": [shown, shown], IMAGE_IDENTITY_META_KEY: ["1:1:a", "2:2:b"]},
+        )
+        slot.append("assistant", "first answer", "msg msg-a", ts="2026-05-21T16:00:01Z")
+        slot.drain()
+        before = [dict(m) for m in slot.messages]
+        state.sessions._session_map.get = MagicMock(return_value="")
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/src/rewind",
+                json={"at_message_index": 0, "content": f"![image]({shown})\n\nlook"},
+            )
+            assert resp.status == 400
+            body = await resp.json()
+            assert body["code"] == "rewind_images_ambiguous"
+            assert body["error"] == AMBIGUOUS_IMAGE_REMOVAL_TEXT
+            assert slot.messages == before
+            assert slot.task is None
+            _mock_run_chat.assert_not_awaited()
+            state.sessions.discard_conversation.assert_not_awaited()
+            resp = await client.post(
+                "/api/chat/slots/src/rewind",
+                json={"at_message_index": 0, "content": row_text + " again"},
+            )
+            assert resp.status == 200
+        assert [m["role"] for m in slot.messages] == ["user"]
+        assert slot.messages[0]["meta"]["images"] == [shown, shown]
+        assert slot.messages[0]["meta"][IMAGE_IDENTITY_META_KEY] == ["1:1:a", "2:2:b"]
+        if slot.task:
+            slot.task.cancel()
+
 
 class TestRewindCommitBoundaryIdentity:
     """POST /api/chat/slots/{slot}/rewind — what decides the truncating commit.

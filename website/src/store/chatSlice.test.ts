@@ -401,6 +401,20 @@ describe('queue entries carry their attachment lists onto the queued row', () =>
     expect(queueEntryAttachments({ files: [spaced, ''] })).toEqual({})
     expect(queueEntryAttachments({ files: [spaced], dirs: ['/a'] })).toEqual({ files: [spaced], dirs: ['/a'] })
   })
+
+  it('queueEntryAttachments keeps the picture identities only when they line up with the pictures', () => {
+    // The gateway records one identity per picture beside the list; a cancel
+    // and resend of a redacted path recovers the file through it, so the
+    // list rides hydration aligned, and a list of the wrong shape is dropped
+    // rather than trusted position by position.
+    const images = ['/tmp/uploads/[REDACTED: credential].png', '/tmp/shots/b.png']
+    const image_ids = ['1234:567:89abcdef01234567', '']
+    expect(queueEntryAttachments({ images, image_ids })).toEqual({ images, imageIds: image_ids })
+    expect(queueEntryAttachments({ images, image_ids: ['only-one'] })).toEqual({ images })
+    expect(queueEntryAttachments({ images, image_ids: ['x', 42] })).toEqual({ images })
+    expect(queueEntryAttachments({ images, image_ids: ['', ''] })).toEqual({ images })
+    expect(queueEntryAttachments({ image_ids })).toEqual({})
+  })
 })
 
 describe('chat frame append is idempotent per server row id (issue #1704)', () => {

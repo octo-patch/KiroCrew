@@ -41,7 +41,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import { rehypeSanitize, rehypeStableRootKeys, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
 import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../../../../utils/markdownDepthBound'
-import { mdImageDestToPath, normalizeWindowsPath } from '../../../../utils/fileTokens'
+import { mdImageDestToPath, normalizeWindowsPath, parseImageLines } from '../../../../utils/fileTokens'
 import { copyToClipboard } from '../../../../utils/clipboard'
 import { classifyPlatform } from '../../../../hooks/useGatewayPlatform'
 import { useImeGuard } from '../../../../hooks/useImeGuard'
@@ -413,6 +413,55 @@ interface SlotFrame {
   running?: boolean
 }
 
+const PARAGRAPH_BREAK = '\n\n'
+
+/** The composer text after a refused send: a draft typed meanwhile keeps its
+ *  place and the refused text follows it, so the text and the pictures restored
+ *  beside it come back together; an identical draft is kept once. */
+function mergeRefusedDraft(current: string, refused: string): string {
+  if (!current.trim()) return refused
+  if (!refused.trim() || current.trim() === refused.trim()) return current
+  return current + PARAGRAPH_BREAK + refused
+}
+
+/** What an edit-resend attempt did to the transcript. */
+export type EditResendOutcome = 'accepted' | 'fallback_send' | 'refused_untouched'
+
+/** A refused edit of a message with pictures sends nothing and keeps the panel whole;
+ *  a refused text-only edit falls back to a plain send. */
+export function editResendOutcome(ok: boolean, hasPictures: boolean): EditResendOutcome {
+  if (ok) return 'accepted'
+  return hasPictures ? 'refused_untouched' : 'fallback_send'
+}
+
+/** The ids of the rows an edit replaces: the edited row and every row after it,
+ *  read BEFORE the edit route is awaited, so a reply that lands meanwhile is not
+ *  among them. */
+export function editSuffixIds<T extends { id: string; role: string; timestamp: number }>(
+  rows: readonly T[], editTs: number,
+): ReadonlySet<string> {
+  const idx = rows.findIndex(m => m.role === 'user' && m.timestamp === editTs)
+  return new Set(idx >= 0 ? rows.slice(idx).map(m => m.id) : [])
+}
+
+/** The rows kept after an edit-resend attempt: the captured suffix goes unless
+ *  the attempt sent nothing; a row that arrived during the request stays. */
+export function transcriptAfterEditResend<T extends { id: string }>(
+  prev: T[], suffix: ReadonlySet<string>, outcome: EditResendOutcome,
+): T[] {
+  if (outcome === 'refused_untouched' || suffix.size === 0) return prev
+  const kept = prev.filter(m => !suffix.has(m.id))
+  return kept.length === prev.length ? prev : kept
+}
+
+/** The validated picture list a row's `meta.images` carries, or undefined. */
+function imagesFromMeta(meta: unknown): string[] | undefined {
+  const images = meta && typeof meta === 'object' && 'images' in meta
+    ? (meta as { images?: unknown }).images : undefined
+  return Array.isArray(images) && images.every((path) => typeof path === 'string')
+    ? (images as string[]) : undefined
+}
+
 export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelVisible, onTogglePinned, pinnedPanelVisible, pinnedFileCount }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [allHistory, setAllHistory] = useState<ChatMessage[]>([])
@@ -421,7 +470,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
   const MAX_LOADED = 200 // safety cap — prevents DOM from growing unbounded
   const [input, setInput] = useState('')
   const [cmdIdx, setCmdIdx] = useState(0) // highlighted command in autocomplete
-  const [editingTs, setEditingTs] = useState<string | null>(null)
+  const [editing, setEditing] = useState<{
+    ts: string
+    hasPictures: boolean
+  } | null>(null)
+  const editingTs = editing?.ts ?? null
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [screenshot, setScreenshot] = useState<string | null>(null)
   const [ssDisplay, setSsDisplay] = useState<string | null>(null)
@@ -726,6 +779,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
           .map((m, i): ChatMessage => ({
             id: `hist-${i}`, role: m.role as ChatMessage['role'], content: m.content as string,
             timestamp: (m.timestamp as number) || 0,
+            images: imagesFromMeta(m.meta),
           }))
         setAllHistory(mapped)
         setMessages(mapped.slice(-INITIAL_HISTORY))
@@ -801,7 +855,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
       if (msg.role) {
         // The frame IS a chat message; the bridge types it as an untyped record, so
         // the shape is claimed once here instead of at each read below.
-        const withTs = { ...msg, timestamp: msg.timestamp || Date.now() } as ChatMessage
+        // A live row's pictures ride its `meta.images` like a history row's; a
+        // linked-channel picture names only a bare path in the text.
+        const liveImages = imagesFromMeta((msg as { meta?: unknown }).meta)
+        const withTs = {
+          ...msg,
+          timestamp: msg.timestamp || Date.now(),
+          ...(liveImages ? { images: liveImages } : {}),
+        } as ChatMessage
         // Cancel any pending streaming RAF and clear buffer to prevent stale chunks
         if (streamRaf) { cancelAnimationFrame(streamRaf); streamRaf = null }
         streamBuffer = ''
@@ -970,22 +1031,46 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
   const screenshotRef = useRef(screenshot)
   screenshotRef.current = screenshot
 
-  const sendText = useCallback(async (text: string) => {
+  const sendText = useCallback(async (
+    text: string,
+    images: readonly string[] = [],
+    staged: readonly PendingAttachment[] = [],
+    typed?: string,
+  ) => {
     if (!text && !screenshotRef.current) return
     setIsWaiting(true)
     setTurnActive(true)
     setSendError('')
     try {
-      await api?.sendMessage?.(text, screenshotRef.current || undefined)
+      // The dropped pictures ride as a third argument only when there are
+      // some, so a text-only send keeps the two-argument shape every caller
+      // and stand-in of `sendMessage` already has.
+      if (images.length) await api?.sendMessage?.(text, screenshotRef.current || undefined, images)
+      else await api?.sendMessage?.(text, screenshotRef.current || undefined)
       setScreenshot(null)
     } catch (err) {
       // The send did not go through. handleSend already cleared the composer
       // before awaiting, so without this the typed text is lost, no error shows,
-      // and the spinner sticks forever. Restore the text (composer is empty on
-      // this path), clear the stuck waiting state, and surface the failure.
+      // and the spinner sticks forever. Restore the TYPED text and the attachment
+      // strip, not the composed wire text: `composeMessage` re-adds the reference
+      // lines on the next send, so restoring the composed form beside the chips
+      // would send each picture twice, and restoring the text alone would send
+      // the `![image](dest)` line with no picture behind it (the gateway builds
+      // image blocks from the structured list only). Clear the stuck waiting
+      // state and surface the failure.
       setIsWaiting(false)
       setTurnActive(false)
-      setInput((prev) => (prev ? prev : text))
+      setInput((prev) => mergeRefusedDraft(prev, typed ?? text))
+      if (staged.length) {
+        setAttachments((prev) => {
+          const have = new Set(prev.map((a) => a.path))
+          return [...staged.filter((a) => !have.has(a.path)), ...prev]
+        })
+      }
+      // The caret goes back into the restored draft: the Send click had moved
+      // focus to the button, and a caret is what tells the user's own text from
+      // the placeholder, so they retry instead of retyping.
+      inputRef.current?.focus()
       // A REFUSAL carries the gateway's own reason (a busy-slot or agent-mismatch
       // 409, or ensureSlot's binding refusal): show that reason the way the
       // dashboard does, so the user looks at the slot and not at their
@@ -1038,8 +1123,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     const result = await ingestFiles(files)
     if (result.images.length > 0 || result.files.length > 0) {
       // Referenced by PATH rather than stuffed into the single `screenshot` slot,
-      // which is what limited the fork to one image. Core's ACP client inlines
-      // every image path it finds, so the count is unbounded.
+      // which is what limited the fork to one image. The paths ride the send's
+      // `meta.images` list, one image block each, so the count is unbounded.
       setAttachments((prev) => [...prev, ...attachmentsFrom(result)])
       // The box grows when references are appended; keep the caret visible.
     }
@@ -1056,6 +1141,23 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     setSendError('')
     // Attachment references are appended HERE, not kept in the composer.
     const text = composeMessage(input, attachments)
+    // The dropped pictures as a STRUCTURED list: the gateway builds the turn's
+    // image blocks from this alone and never scans the text for image paths,
+    // so the `![image](dest)` lines in `text` are a rendering for the bubble.
+    const images = attachments.filter((a) => a.isImage).map((a) => a.path)
+    // Snapshot of the strip, handed to the failure path so a send that never
+    // reached the gateway can put the chips back beside the typed text.
+    const staged = attachments.slice()
+    const restoreDraft = () => {
+      setInput((prev) => mergeRefusedDraft(prev, typed ?? text))
+      if (staged.length) {
+        setAttachments((prev) => {
+          const have = new Set(prev.map((a) => a.path))
+          return [...staged.filter((a) => !have.has(a.path)), ...prev]
+        })
+      }
+      inputRef.current?.focus()
+    }
     setInput('')
     setAttachments([])
     // Re-measure rather than only clearing the inline height: an explicit height
@@ -1064,45 +1166,55 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     // Height is re-measured by the effect that watches `input`.
 
     // Edit-resend: if we have a pending edit timestamp, use the edit-resend API
-    if (editingTs && !text.startsWith('/')) {
-      const editTsStr = editingTs
-      setEditingTs(null)
+    if (editing && !text.startsWith('/')) {
+      const editTsStr = editing.ts
+      setEditing(null)
       setIsWaiting(true)
-      // Remove messages from the edited point onward in local state. This is
-      // display-only until the next mount re-reads the gateway, which rebuilds
-      // the authoritative transcript either way — so a refusal does NOT restore
-      // the slice: a fallback send that was actually delivered (an `unknown`
-      // transport outcome) must keep its post-send state, and re-adding the
-      // edited-from rows there would duplicate a turn the gateway already ran
-      // (GPT F3). The composer draft, which the gateway never saw on a definite
-      // refusal, is the only thing worth handing back.
+      // The cut from the edited row onward is display-only until the next mount
+      // re-reads the gateway. It is applied once the edit route has answered: an
+      // accepted edit and a text-only fallback send both cut (a delivered
+      // fallback must keep its post-send state, or the edited-from rows would
+      // duplicate a turn the gateway ran); a refused picture edit sent nothing
+      // and leaves the panel as it was.
       const editTsNum = parseInt(editTsStr)
-      setMessages(prev => {
-        const idx = prev.findIndex(m => m.role === 'user' && m.timestamp === editTsNum)
-        return idx >= 0 ? prev.slice(0, idx) : prev
-      })
-      setAllHistory(prev => {
-        const idx = prev.findIndex(m => m.role === 'user' && m.timestamp === editTsNum)
-        return idx >= 0 ? prev.slice(0, idx) : prev
-      })
-      setTimeout(() => {
-        scrollerRef.current?.scrollTo({ top: scrollerRef.current!.scrollHeight, behavior: 'smooth' })
-      }, 50)
-      wasNearBottomRef.current = true
-      const result = await api?.editResend?.(text, editTsStr)
+      // The rows this edit replaces, read now: a reply the socket appends while
+      // the edit route is in flight is not among them and stays on screen.
+      const suffix = editSuffixIds(allHistory, editTsNum)
+      const result = images.length
+        ? await api?.editResend?.(text, editTsStr, images)
+        : await api?.editResend?.(text, editTsStr)
+      // The cut waits for the outcome: a picture edit the gateway refused sent
+      // nothing, so the panel keeps the edited row and every turn after it.
+      const outcome = editResendOutcome(!!result?.ok, editing.hasPictures)
+      setMessages(prev => transcriptAfterEditResend(prev, suffix, outcome))
+      setAllHistory(prev => transcriptAfterEditResend(prev, suffix, outcome))
+      if (outcome !== 'refused_untouched') {
+        setTimeout(() => {
+          scrollerRef.current?.scrollTo({ top: scrollerRef.current!.scrollHeight, behavior: 'smooth' })
+        }, 50)
+        wasNearBottomRef.current = true
+      }
       if (!result?.ok) {
-        // Fallback: send as a normal message. `sendMessage` echoes the turn
-        // itself (and retracts that echo on a definite refusal), so nothing is
-        // added locally here. A definite refusal REJECTS this call (a
-        // rebound/busy slot, a 403); the composer was already cleared above, so
-        // without a catch the typed text is lost and the spinner sticks. Mirror
-        // `sendText`'s recovery: hand the draft back and show the gateway reason.
-        // A transport failure (fetch rejected) also lands here, but there the
-        // draft is deliberately NOT restored (see the catch) — the send may have
-        // run, and re-filling the composer would invite a double-executed turn.
+        // Picture edits need the edit route to reconcile removed image lines;
+        // a plain fallback could reattach deleted pictures or send only their text.
+        if (editing.hasPictures) {
+          setIsWaiting(false)
+          setTurnActive(false)
+          // The refused edit stays an edit: a retry of the restored draft must
+          // replace the same row, not send a new message without its pictures.
+          setEditing(editing)
+          restoreDraft()
+          setSendError(sendFailureMessage(
+            new SendRefusedError(0, i18nT('apps.mochi.chat.edit_pictures_unrecoverable')),
+          ))
+          return
+        }
         setIsWaiting(true)
         try {
-          await api?.sendMessage?.(text, screenshot || undefined)
+          // Only newly staged pictures belong on this text-only fallback; row
+          // pictures would bypass the edit route's reconciliation of deleted lines.
+          if (images.length) await api?.sendMessage?.(text, screenshot || undefined, images)
+          else await api?.sendMessage?.(text, screenshot || undefined)
         } catch (err) {
           setIsWaiting(false)
           setTurnActive(false)
@@ -1117,17 +1229,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
           // it keeps its optimistic echo (the text stays visible in the
           // transcript), so re-filling the composer would invite a re-send that
           // executes an already-run, side-effecting turn a SECOND time — leave
-          // it cleared there.
-          if (isDefiniteRefusal(err)) {
-            setInput((prev) => (prev ? prev : text))
-          }
+          // it cleared there. The typed text and the attachment strip come back
+          // together, for the same reason `sendText` restores both.
+          if (isDefiniteRefusal(err)) restoreDraft()
           setSendError(sendFailureMessage(err))
         }
       }
       return
     }
     // Clear edit mode for slash commands
-    setEditingTs(null)
+    setEditing(null)
 
     // /new — start a fresh session
     if (text === '/new') {
@@ -1157,7 +1268,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
       return
     }
 
-    sendText(text || i18nT('apps.mochi.chat.what_is_this'))
+    sendText(text || i18nT('apps.mochi.chat.what_is_this'), images, staged, typed)
   }
 
   // Float the capsule/pill a fixed gap above the measured bottom stack; the
@@ -1423,7 +1534,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
                 setTurnActive(false)
                 setStreaming('')
                 setInput(content)
-                setEditingTs(msg.timestamp ? String(msg.timestamp) : null)
+                const imageLines = parseImageLines(content)
+                setEditing(msg.timestamp
+                  ? {
+                    ts: String(msg.timestamp),
+                    hasPictures: (msg.images?.length ?? 0) > 0
+                      || imageLines.paths.length > 0 || imageLines.unreadable > 0,
+                  }
+                  : null)
                 setTimeout(() => {
                   if (inputRef.current) {
                     inputRef.current.focus()
@@ -1654,7 +1772,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
           <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 500, flex: 1 }}>
             {i18nT('apps.mochi.chat.edit_mode')}
           </span>
-          <button onClick={() => { setEditingTs(null); setInput('') }} style={{
+          <button onClick={() => { setEditing(null); setInput('') }} style={{
             background: 'none', border: 'none', color: 'var(--danger)',
             fontSize: 11, cursor: 'pointer', padding: '2px 6px', borderRadius: 4,
             fontWeight: 500, transition: 'opacity 0.15s',

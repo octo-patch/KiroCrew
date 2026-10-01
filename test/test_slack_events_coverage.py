@@ -3301,7 +3301,7 @@ class TestRouteMessageAttachments:
                     with patch(
                         "kiro_crew.slack.events.process_slack_files",
                         new_callable=AsyncMock,
-                        return_value=([], []),
+                        return_value=([], [], ()),
                     ):
                         with patch(
                             "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
@@ -3334,7 +3334,7 @@ class TestRouteMessageAttachments:
                     with patch(
                         "kiro_crew.slack.events.process_slack_files",
                         new_callable=AsyncMock,
-                        return_value=([], []),
+                        return_value=([], [], ()),
                     ):
                         with patch(
                             "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
@@ -3349,16 +3349,19 @@ class TestRouteMessageAttachments:
 
     @pytest.mark.asyncio
     async def test_image_and_text_blocks_are_appended(self, tmp_path):
+        from kiro_crew.prompt_attachments import image_attachments
+
         orch = _make_orch()
         img = tmp_path / "shot.png"
         img.write_bytes(b"\x89PNG")
         files = [{"mimetype": "image/png", "url_private": "https://x.invalid/a.png"}]
+        atts = image_attachments([str(img)])
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.stt_available", return_value=False):
                 with patch(
                     "kiro_crew.slack.events.process_slack_files",
                     new_callable=AsyncMock,
-                    return_value=([str(img)], ["file body"]),
+                    return_value=([str(img)], ["file body"], atts),
                 ):
                     with patch(
                         "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
@@ -3370,6 +3373,10 @@ class TestRouteMessageAttachments:
         body = hm.await_args[0][3]
         assert str(img) in body
         assert "file body" in body
+        # The image also rides as the STRUCTURED list the turn hands to the
+        # provider -- the only way it reaches the model; the path in the body
+        # is for agent tools.
+        assert hm.await_args.kwargs["attachments"] == atts
         # The temp image is unlinked by the done-callback once the turn finishes.
         assert not img.exists()
 
@@ -3384,7 +3391,7 @@ class TestRouteMessageAttachments:
                 with patch(
                     "kiro_crew.slack.events.process_slack_files",
                     new_callable=AsyncMock,
-                    return_value=([], []),
+                    return_value=([], [], ()),
                 ):
                     with patch(
                         "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
@@ -3567,7 +3574,7 @@ class TestRouteMessageTempCleanup:
                 with patch(
                     "kiro_crew.slack.events.process_slack_files",
                     new_callable=AsyncMock,
-                    return_value=([str(ghost)], []),
+                    return_value=([str(ghost)], [], ()),
                 ):
                     with patch(
                         "kiro_crew.slack.events.handle_message", new_callable=AsyncMock

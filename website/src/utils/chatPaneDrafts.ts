@@ -56,6 +56,10 @@ export interface PaneDraft {
   files: string[]
   /** Blocks behind the `[ Paste #N · M lines ]` tokens in `text`. */
   pastes: PasteBlock[]
+  /** The identity the gateway recorded for a staged picture, by its path: a
+   *  redacted path names no file, so the identity is what a resend recovers it
+   *  by. Parked and restored with the chips it belongs to. */
+  imageIds?: Record<string, string>
 }
 
 /** Corruption guard, emptiness predicate and defensive copier for one parked
@@ -70,7 +74,19 @@ function sanitizeDraft(v: unknown): PaneDraft | null {
   const files = Array.isArray(d.files) ? d.files.filter((x): x is string => typeof x === 'string') : []
   const pastes = sanitizePasteBlocks(d.pastes) ?? []
   if (!d.text && !files.length && !pastes.length) return null
-  return { text: d.text, files, pastes }
+  const imageIds = sanitizeImageIds(d.imageIds, files)
+  return imageIds ? { text: d.text, files, pastes, imageIds } : { text: d.text, files, pastes }
+}
+
+/** `path -> identity` for staged paths only, non-blank string identities;
+ *  `undefined` when nothing is left. */
+function sanitizeImageIds(v: unknown, files: readonly string[]): Record<string, string> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const out: Record<string, string> = {}
+  for (const [path, id] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof id === 'string' && id.trim() && id.length <= 64 && files.includes(path)) out[path] = id
+  }
+  return Object.keys(out).length ? out : undefined
 }
 
 const store = createSlotDraftStore<PaneDraft>({
@@ -174,7 +190,7 @@ function carryTabState(drafts: Record<string, PaneDraft>): void {
 }
 
 function copy(d: PaneDraft): PaneDraft {
-  return { text: d.text, files: d.files.slice(), pastes: d.pastes.slice() }
+  return { text: d.text, files: d.files.slice(), pastes: d.pastes.slice(), ...(d.imageIds ? { imageIds: { ...d.imageIds } } : {}) }
 }
 
 /** The parked composer for `slot`, or empty. The mirror first — it is
@@ -243,13 +259,15 @@ export function hasPaneListener(slot: string): boolean {
  *  carry over with their tokens re-numbered past the parked ones
  *  (`carryPastes`). Any pane showing the slot is notified so it can take the
  *  merge into its live composer. */
-export function mergePaneDraft(slot: string, text: string, files: string[], pastes: PasteBlock[] = []): void {
+export function mergePaneDraft(slot: string, text: string, files: string[], pastes: PasteBlock[] = [], imageIds?: Record<string, string>): void {
   const cur = readPaneDraft(slot)
   const carried = carryPastes(text, pastes, cur.pastes)
+  const ids = { ...(cur.imageIds ?? {}), ...(imageIds ?? {}) }
   writePaneDraft(slot, {
     text: text ? mergeCarriedDraft(cur.text, carried) : cur.text,
     files: [...cur.files, ...files.filter((f) => !cur.files.includes(f))],
     pastes: carried.pastes,
+    ...(Object.keys(ids).length ? { imageIds: ids } : {}),
   })
   const subs = listeners.get(slot)
   if (subs) for (const fn of Array.from(subs)) fn()

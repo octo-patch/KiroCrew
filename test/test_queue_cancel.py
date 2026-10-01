@@ -308,15 +308,16 @@ class TestQueueEntryAttachmentsAreEchoed:
             for kind, payload in (c.args for c in state.broadcast_ws.call_args_list)
             if kind == "queue_push"
         )
+        # The picture list rides every queue_push frame, empty included (review 5514250949).
         assert frame == {
             "slot": "chat-1",
             "content": _WIRE,
             "ts": frame["ts"],
             "queue_id": qid,
-            "meta": {"files": [_SPACED]},
+            "meta": {"files": [_SPACED], "images": []},
         }
 
-    def test_queue_for_next_turn_push_frame_without_lists_is_unchanged(self):
+    def test_queue_for_next_turn_push_frame_without_lists_carries_the_empty_picture_list(self):
         from kiro_crew.dashboard.chat_delivery import queue_for_next_turn
 
         state = _make_state()
@@ -332,5 +333,7 @@ class TestQueueEntryAttachmentsAreEchoed:
             for kind, payload in (c.args for c in state.broadcast_ws.call_args_list)
             if kind == "queue_push"
         )
-        assert set(frame) == {"slot", "content", "ts", "queue_id"}
+        # The picture list rides every queue_push frame, empty included (review 5514250949).
+        assert set(frame) == {"slot", "content", "ts", "queue_id", "meta"}
+        assert frame["meta"] == {"images": []}
         assert frame["queue_id"] == qid

@@ -6,6 +6,8 @@ import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDra
 import { registerMainComposer } from '../../../utils/composerRestore'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../../../utils/chatFileDrafts'
 import { loadFileTokenDrafts, saveFileTokenDrafts as persistFileTokenDrafts } from '../../../utils/chatFileTokenDrafts'
+import { loadImageIdDrafts, saveImageIdDrafts as persistImageIdDrafts, setImageIdDraft } from '../../../utils/chatImageIdDrafts'
+import { stashedImageIds } from '../../../hooks/useQueuedMessageActions'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../../../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../../../utils/chatSessionRefDrafts'
 import { PREFILL_STORAGE_KEY } from '../../../utils/navIntent'
@@ -40,6 +42,11 @@ export function useComposerDraftStores() {
   if (drafts.current === null) drafts.current = loadDrafts()
   const fileDrafts = useRef<Record<string, string[]>>(null!)
   if (fileDrafts.current === null) fileDrafts.current = loadFileDrafts()
+  // Per-slot picture identities (`meta.image_ids` by chip path), stored beside
+  // the file drafts so a restored redacted chip keeps the identity its resend
+  // needs across slot switches, and another slot's send cannot drop it.
+  const imageIdDrafts = useRef<Record<string, Record<string, string>>>(null!)
+  if (imageIdDrafts.current === null) imageIdDrafts.current = loadImageIdDrafts()
   // Per-slot collapsed-paste blocks backing the `[ Paste #N · M lines ]` tokens
   // in `input`. Persisted (localStorage, same TTL as text drafts) so the chip
   // survives slot switches / refresh instead of degrading to literal text.
@@ -52,7 +59,7 @@ export function useComposerDraftStores() {
   const sessionRefDrafts = useRef<Record<string, SessionRef[]>>(null!)
   if (sessionRefDrafts.current === null) sessionRefDrafts.current = loadSessionRefDrafts()
   const saveDraftsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const saveDrafts = useCallback(() => { persistDrafts(drafts.current); persistFileDrafts(fileDrafts.current); persistPasteDrafts(pasteDrafts.current); persistSessionRefDrafts(sessionRefDrafts.current); persistFileTokenDrafts(pickedFileTokens.current) }, [])
+  const saveDrafts = useCallback(() => { persistDrafts(drafts.current); persistFileDrafts(fileDrafts.current); persistImageIdDrafts(imageIdDrafts.current); persistPasteDrafts(pasteDrafts.current); persistSessionRefDrafts(sessionRefDrafts.current); persistFileTokenDrafts(pickedFileTokens.current) }, [])
   const saveDraftsDebounced = useCallback(() => {
     if (saveDraftsTimer.current) clearTimeout(saveDraftsTimer.current)
     saveDraftsTimer.current = setTimeout(() => { saveDraftsTimer.current = null; saveDrafts() }, DRAFT_SAVE_DEBOUNCE_MS)
@@ -101,7 +108,7 @@ export function useComposerDraftStores() {
   //             alias consumer -- see ChatPane's restoreDraft adapter)
   const pickedFileTokens = useRef<Record<string, Record<string, string[]>>>(null!)
   if (pickedFileTokens.current === null) pickedFileTokens.current = loadFileTokenDrafts()
-  return { drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDraftsTimer, saveDrafts, saveDraftsDebounced, flushDrafts }
+  return { drafts, fileDrafts, imageIdDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDraftsTimer, saveDrafts, saveDraftsDebounced, flushDrafts }
 }
 
 export type ComposerDraftStores = ReturnType<typeof useComposerDraftStores>
@@ -152,9 +159,9 @@ export function useComposerDraftLifecycle({
   setActionError,
   updateHistoryQuery,
 }: ComposerDraftLifecycleOptions) {
-  const { drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDraftsTimer, saveDraftsDebounced, flushDrafts } = stores
+  const { drafts, fileDrafts, imageIdDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDraftsTimer, saveDraftsDebounced, flushDrafts } = stores
   const {
-    stagedNowRef, pendingFilesRef, pasteBlocksRef, pendingSessionsRef,
+    stagedNowRef, pendingFilesRef, pendingImageIdsRef, pasteBlocksRef, pendingSessionsRef,
     setPendingFiles, setPasteBlocks, setPendingSessions, setUploadError, setUploadHint,
   } = staging
   // Persist the composer text against the slot it BELONGS to (composerSlotRef),
@@ -214,6 +221,8 @@ export function useComposerDraftLifecycle({
     for (const [k, v] of Object.entries(stored)) { if (!(k in drafts.current)) drafts.current[k] = v }
     const storedFiles = loadFileDrafts()
     for (const [k, v] of Object.entries(storedFiles)) { if (!(k in fileDrafts.current)) fileDrafts.current[k] = v }
+    const storedImageIds = loadImageIdDrafts()
+    for (const [k, v] of Object.entries(storedImageIds)) { if (!(k in imageIdDrafts.current)) imageIdDrafts.current[k] = v }
     const storedFileTokens = loadFileTokenDrafts()
     for (const [k, v] of Object.entries(storedFileTokens)) { if (!(k in pickedFileTokens.current)) pickedFileTokens.current[k] = v }
     const storedPastes = loadPasteDrafts()
@@ -223,6 +232,7 @@ export function useComposerDraftLifecycle({
     if (prevSlot.current) setDraft(drafts.current, prevSlot.current, inputRef.current)
     const stagedNow = stagedNowRef.current
     if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, stagedNow.files)
+    if (prevSlot.current) setImageIdDraft(imageIdDrafts.current, prevSlot.current, { ...pendingImageIdsRef.current })
     if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, stagedNow.pastes)
     if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, stagedNow.sessions)
     const prevSlotVal = prevSlot.current
@@ -318,6 +328,9 @@ export function useComposerDraftLifecycle({
     // Restore the incoming slot's staged file attachments (copy so the
     // live state array and the stored draft don't share a reference).
     setPendingFiles(activeSlot ? (fileDrafts.current[activeSlot] ?? []).slice() : [])
+    // The identities come back with the chips they belong to (copy, so the live
+    // map and the stored draft never share a reference).
+    pendingImageIdsRef.current = activeSlot ? { ...(imageIdDrafts.current[activeSlot] ?? {}) } : {}
     // Staged folder references need no restore of their own: the chips derive
     // from `@rel/` tokens in the composer text, and the text draft restored
     // above is per-slot. A folder staged in slot A therefore reappears with
@@ -343,7 +356,7 @@ export function useComposerDraftLifecycle({
     flushDrafts()
   }, [activeSlot, flushDrafts, raisePrefillHint, setInput,
     // Refs and state setters: stable, so the effect still runs on a slot change only.
-    drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, prevSlot, stagedNowRef, lastCreatedActivationRef, inputRef,
+    drafts, fileDrafts, imageIdDrafts, pendingImageIdsRef, pasteDrafts, sessionRefDrafts, pickedFileTokens, prevSlot, stagedNowRef, lastCreatedActivationRef, inputRef,
     consumedPrefillRef, foregroundCreateIdRef, setPendingFiles, setPasteBlocks, setPendingSessions, knowledgeFetchRef,
     setUploadError, setUploadHint, setActionError, setPrefillHint])
   // Persist drafts on unmount (navigating away from chat page)
@@ -351,22 +364,24 @@ export function useComposerDraftLifecycle({
     if (saveDraftsTimer.current) { clearTimeout(saveDraftsTimer.current); saveDraftsTimer.current = null }
     if (prevSlot.current) setDraft(drafts.current, prevSlot.current, inputRef.current)
     if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
+    if (prevSlot.current) setImageIdDraft(imageIdDrafts.current, prevSlot.current, { ...pendingImageIdsRef.current })
     if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
     if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
     flushDrafts()
-  }, [flushDrafts, saveDraftsTimer, prevSlot, drafts, inputRef, fileDrafts, pendingFilesRef, pasteDrafts, pasteBlocksRef, sessionRefDrafts, pendingSessionsRef])
+  }, [flushDrafts, saveDraftsTimer, prevSlot, drafts, inputRef, fileDrafts, imageIdDrafts, pendingFilesRef, pendingImageIdsRef, pasteDrafts, pasteBlocksRef, sessionRefDrafts, pendingSessionsRef])
   // Flush pending draft save on tab close / refresh (debounce may not fire)
   useEffect(() => {
     const h = () => {
       if (prevSlot.current) setDraft(drafts.current, prevSlot.current, inputRef.current)
       if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
+      if (prevSlot.current) setImageIdDraft(imageIdDrafts.current, prevSlot.current, { ...pendingImageIdsRef.current })
       if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
       if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
       flushDrafts()
     }
     window.addEventListener('beforeunload', h)
     return () => window.removeEventListener('beforeunload', h)
-  }, [flushDrafts, prevSlot, drafts, inputRef, fileDrafts, pendingFilesRef, pasteDrafts, pasteBlocksRef, sessionRefDrafts, pendingSessionsRef])
+  }, [flushDrafts, prevSlot, drafts, inputRef, fileDrafts, imageIdDrafts, pendingFilesRef, pendingImageIdsRef, pasteDrafts, pasteBlocksRef, sessionRefDrafts, pendingSessionsRef])
   // Answers a retired question card hands back land in this composer or in that slot's stored draft.
   useEffect(() => registerMainComposer((slot, text, showingOnly) => {
     if (slot === composerSlotRef.current) { setInput(prev => mergeIntoDraft(prev, text)); return true }
@@ -392,19 +407,21 @@ interface StagedDraftPersistenceOptions {
  * batched with a switch is written against the OUTGOING slot first.
  */
 export function useStagedDraftPersistence({ activeSlot, composerSlotRef, stores, staging }: StagedDraftPersistenceOptions) {
-  const { fileDrafts, pasteDrafts, sessionRefDrafts, saveDraftsDebounced } = stores
-  const { pendingFiles, pendingFilesRef, pasteBlocks, pasteBlocksRef, pendingSessions, pendingSessionsRef } = staging
+  const { fileDrafts, imageIdDrafts, pasteDrafts, sessionRefDrafts, saveDraftsDebounced } = stores
+  const { pendingFiles, pendingFilesRef, pendingImageIdsRef, pasteBlocks, pasteBlocksRef, pendingSessions, pendingSessionsRef } = staging
   useEffect(() => {
     pendingFilesRef.current = pendingFiles
     // Key off composerSlotRef, not activeSlot (see the composerSlotRef note).
     const s = composerSlotRef.current
     if (s) {
       setFileDraft(fileDrafts.current, s, pendingFiles)
+      // The chips' identities are written with the chips they belong to.
+      setImageIdDraft(imageIdDrafts.current, s, stashedImageIds(pendingImageIdsRef.current, pendingFiles) ?? {})
       saveDraftsDebounced()
     }
     // Draft key is composerSlotRef; the slot-change effect handles that
     // transition.
-  }, [pendingFiles, saveDraftsDebounced, pendingFilesRef, composerSlotRef, fileDrafts])
+  }, [pendingFiles, saveDraftsDebounced, pendingFilesRef, pendingImageIdsRef, composerSlotRef, fileDrafts, imageIdDrafts])
   useEffect(() => {
     pasteBlocksRef.current = pasteBlocks
     // Live-persist the composer's blocks so a slot switch / refresh restores

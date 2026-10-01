@@ -513,6 +513,9 @@ class WhatsAppDispatcher:
                 inbound_route=inbound_route,
                 agent=agent,
                 user_text=user_text,
+                # The photo the transport ingested, as the structured list that
+                # alone puts it in front of the model.
+                attachments=tuple(getattr(inbound, "prompt_attachments", ()) or ()),
                 renderer=renderer,
                 approval_mode=approval_mode,
                 decider=decider,
