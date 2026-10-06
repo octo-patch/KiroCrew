@@ -97,6 +97,9 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         # SEL audit log `recent`, not a transcript.
         ("kiro_crew/dashboard/handlers/core.py", "recent"),
         ("kiro_crew/dashboard/handlers/cron.py", "read_messages"),
+        # The export/fork owner gate for a ``cron:`` transcript: it reads the
+        # same rows the copy would, only to allow or refuse it; no row leaves.
+        ("kiro_crew/dashboard/handlers/cron.py", "read_messages_chained_full"),
         ("kiro_crew/dashboard/handlers/session_control.py", "read_messages"),
         # The History browser showing the user their own transcript. Its
         # list_sessions(summarize=true) leg goes through the seam (derive_recent).

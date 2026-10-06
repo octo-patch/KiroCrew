@@ -206,7 +206,11 @@ class TestApiCronToChat:
     async def test_deleted_job_with_history_restores_its_turn_limit(self):
         # The tab's own turn time limit is slot-owned metadata on the same line:
         # the reopen restores it, or the next full save erases it.
-        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+        state = _make_state(
+            history_messages=[
+                {"role": "assistant", "content": "world", "ts": "2026-01-01T00:00:05+00:00"}
+            ]
+        )
         state.conversation_log.get_metadata_status.return_value = (
             {"_type": "metadata", "turn_timeout_secs": 28800},
             True,
@@ -222,7 +226,11 @@ class TestApiCronToChat:
     async def test_deleted_job_keeps_a_turn_limit_set_during_the_metadata_read(self):
         # A user's change that commits while the off-loop read runs is newer than
         # the line the read returns, so the restore leaves it in place.
-        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+        state = _make_state(
+            history_messages=[
+                {"role": "assistant", "content": "world", "ts": "2026-01-01T00:00:06+00:00"}
+            ]
+        )
 
         def _read_while_user_sets(_key):
             slot = state.get_or_create_slot("cron-deleted123")
@@ -242,7 +250,11 @@ class TestApiCronToChat:
     async def test_deleted_job_rebound_during_the_metadata_read_takes_no_turn_limit(self):
         # A tab bound to another transcript while the read runs keeps its limit
         # unread rather than taking this transcript's.
-        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+        state = _make_state(
+            history_messages=[
+                {"role": "assistant", "content": "world", "ts": "2026-01-01T00:00:07+00:00"}
+            ]
+        )
 
         def _read_while_rebound(_key):
             state.get_or_create_slot("cron-deleted123").linked_session_key = "cron:other"
@@ -260,7 +272,11 @@ class TestApiCronToChat:
     async def test_deleted_job_defers_its_turn_limit_when_metadata_unreadable(self):
         # Unread, the slot holds no limit of its own and is marked unhydrated, so
         # its saves carry the on-disk limit forward instead of erasing it.
-        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+        state = _make_state(
+            history_messages=[
+                {"role": "assistant", "content": "world", "ts": "2026-01-01T00:00:08+00:00"}
+            ]
+        )
         state.conversation_log.get_metadata_status.return_value = ({}, False)
         stale = state.get_or_create_slot("cron-deleted123")
         stale.turn_timeout_secs = 600  # a prior binding's limit on a reused slot

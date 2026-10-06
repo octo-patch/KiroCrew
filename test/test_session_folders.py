@@ -37,6 +37,7 @@ from kiro_crew.dashboard.session_folders import (
     create_session_folder,
     validate_session_folder_root,
 )
+from kiro_crew.security import paths as security_paths
 
 _NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-[0-9a-f]{6}$")
 
@@ -157,6 +158,7 @@ def test_sensitive_root_is_refused_and_nothing_is_created(tmp_path, monkeypatch)
     root = tmp_path / "secrets"
     root.mkdir()
     monkeypatch.setattr(chat_folders, "is_sensitive_path", lambda p: p == _real(root))
+    monkeypatch.setattr(security_paths, "is_sensitive_path", lambda p, *_a, **_k: p == _real(root))
 
     resolved, err = validate_session_folder_root(str(root))
     assert resolved == ""
@@ -325,6 +327,9 @@ async def test_a_refused_root_falls_back_with_a_notice(
 ):
     owner_cfg.dashboard.session_folder_root = str(folder_root)
     monkeypatch.setattr(chat_folders, "is_sensitive_path", lambda p: p == _real(folder_root))
+    monkeypatch.setattr(
+        security_paths, "is_sensitive_path", lambda p, *_a, **_k: p == _real(folder_root)
+    )
     state = _make_state(tmp_path)
 
     status, data = await _create(state, {})
@@ -422,6 +427,9 @@ async def test_put_refuses_a_root_that_is_not_a_usable_project_dir(
     }[kind]
     if kind == "sensitive":
         monkeypatch.setattr(chat_folders, "is_sensitive_path", lambda p: p == _real(folder_root))
+        monkeypatch.setattr(
+            security_paths, "is_sensitive_path", lambda p, *_a, **_k: p == _real(folder_root)
+        )
     async with TestClient(TestServer(config_app)) as client:
         resp = await client.put("/api/dashboard/config", json={"session_folder_root": value})
         assert resp.status == 400

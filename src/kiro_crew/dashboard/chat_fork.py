@@ -278,6 +278,14 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     denied = deny_app_slot_access(request_app, slot, name, "chat.slot_fork")
     if denied is not None:
         return denied
+    # A fork copies the parent transcript into a new tab, so a non-owner forks a
+    # scheduled job's slot only when every row is provably from an unbound run --
+    # project-bound output is owner-only (the same proof slot detail filters by).
+    from kiro_crew.dashboard.handlers.cron import non_owner_cron_transcript_copy_refusal
+
+    refused = await non_owner_cron_transcript_copy_refusal(request, state, slot, "chat.slot_fork")
+    if refused is not None:
+        return refused
 
     source = await resolve_fork_source(slot, audit_caller=request_app or "dashboard")
     if isinstance(source, web.Response):

@@ -411,6 +411,73 @@ async def _non_owner_transcript_rows(
     return kept, bool(bound_windows)
 
 
+async def non_owner_cron_transcript_copy_refusal(
+    request: web.Request,
+    state: "DashboardState",
+    slot: Any,
+    operation: str,
+) -> web.Response | None:
+    """403 when a non-owner asks to COPY a cron slot's transcript it may not
+    read in full, else ``None``.
+
+    Export and fork carry the WHOLE ``cron:{id}`` transcript out of the slot,
+    while slot detail serves a non-owner only the rows
+    :func:`_non_owner_transcript_rows` can prove unbound. A copy is all or
+    nothing, so it is allowed only when that filter keeps every row: any row it
+    withholds (a bound run's output, slot chatter no run accounts for, a row a
+    pruned bound record once covered) refuses the copy. The rows checked are the
+    durable log plus the slot's unflushed tail -- the same corpus a copy reads --
+    and a log that cannot be read refuses rather than proves nothing.
+
+    Not a cron slot, or an owner request: no opinion.
+    """
+    from kiro_crew.dashboard.chat_handlers import (
+        _append_unflushed_tail,
+        _snapshot_slot_window,
+    )
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.state import cron_slot_job_id
+
+    history_key = slot_history_key(slot)
+    job_id = cron_slot_job_id(slot)
+    if not job_id or is_owner_dashboard_request(request):
+        return None
+
+    def _refuse(reason: str) -> web.Response:
+        _sel().log_api_access(
+            caller=str(request.get("user") or request.get("app") or "dashboard"),
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=f"job={job_id}",
+            error=reason,
+        )
+        return web.json_response(
+            {
+                "error": "only the dashboard owner can copy this scheduled job's transcript",
+                "code": "cron_transcript_owner_only",
+            },
+            status=403,
+        )
+
+    try:
+        rows = (
+            await asyncio.to_thread(state.conversation_log.read_messages_chained_full, history_key)
+            if state.conversation_log
+            else []
+        )
+        snapshot = _snapshot_slot_window(slot)
+        rows = await asyncio.to_thread(_append_unflushed_tail, slot, rows, snapshot=snapshot)
+    except Exception:
+        logger.warning("cron transcript read failed for %s", operation, exc_info=True)
+        return _refuse("transcript unreadable")
+    kept, _ = await _non_owner_transcript_rows(state, job_id, rows)
+    if len(kept) != len(rows):
+        return _refuse("transcript carries rows not provably unbound")
+    return None
+
+
 def _cron_unreadable_response(exc: CronStoreUnreadable) -> web.Response:
     """Translate a refused write into a structured, non-retryable 409."""
     return web.json_response(

@@ -243,6 +243,26 @@ def cron_job_id_from_session_key(session_key: object) -> str:
     return session_key.split(":")[1] if len(session_key.split(":")) > 1 else ""
 
 
+def cron_job_id_from_transcript_key(key: object) -> str:
+    """The job id whose ``cron:`` transcript *key* addresses, or ``""``.
+
+    A transcript is a file, so its identity is the filename stem the history
+    store derives (``_safe_key`` folds every ``:`` to ``_``), not the spelling a
+    caller happened to send: ``cron:<id>``, the History row's ``cron_<id>`` stem
+    and a per-run ``cron:<id>:<run>`` all name the job's transcript file. Only
+    a cron writes that namespace -- a dashboard slot's file is ``dashboard_*``
+    and a channel's carries its own prefix -- so a ``cron_`` stem is the cron's.
+    """
+    if not isinstance(key, str) or not key:
+        return ""
+    from kiro_crew.history import _safe_key
+
+    stem = _safe_key(key)
+    if not stem.startswith("cron_"):
+        return ""
+    return stem[len("cron_") :].split("_", 1)[0]
+
+
 def cron_owner_matches(job_owner: str, target: str) -> bool:
     """Whether ``job_owner`` names the same principal as ``target``.
 
@@ -5661,7 +5681,12 @@ class CronService:
             return
         if store_digest(raw) != self._last_digest:
             logger.info("Cron file changed externally, reloading")
+            before_ids = {job.id for job in self._jobs}
             self._load(_preread=raw)
+            # A failed load empties _jobs without proving any row was deleted, so
+            # only a load that resolved may report the ids missing from it.
+            if not self._load_failed:
+                self._publish_removed_job_ids(before_ids - {job.id for job in self._jobs})
 
     def _load(self, _preread: bytes | None = None) -> None:
         """Deserialize jobs from crons.json and record the fingerprint.
@@ -5908,15 +5933,27 @@ class CronService:
         # staged id can survive until a later transaction reloads the durable row,
         # and must not evict that row's live session or notify its observer then.
         committed_ids = {job.id for job in self._jobs}
-        removed_ids = pending_removals - committed_ids
-        if removed_ids:
-            with self._active_session_lock:
-                for job_id in removed_ids:
-                    self._active_session_keys.pop(job_id, None)
-            if self._on_jobs_removed is not None:
-                try:
-                    self._on_jobs_removed(set(removed_ids))
-                except Exception:
-                    # Persistence remains authoritative even when an observer fails.
-                    # Observer-owned stores must enforce their own independent cap.
-                    logger.exception("Cron job-removal observer failed")
+        self._publish_removed_job_ids(pending_removals - committed_ids)
+
+    def _publish_removed_job_ids(self, removed_ids: set[str]) -> None:
+        """Release per-job state for ids absent from the durable store.
+
+        Two writers can remove a job: this process (:meth:`_save`, which
+        publishes the ids it staged) and another process -- the CLI, MCP, an
+        app SDK -- whose write this process only observes as an external reload
+        in :meth:`_sync`. Both route here so an observer-owned map such as the
+        gateway's retained cron session bindings is bounded by the live job set
+        whichever writer did the delete.
+        """
+        if not removed_ids:
+            return
+        with self._active_session_lock:
+            for job_id in removed_ids:
+                self._active_session_keys.pop(job_id, None)
+        if self._on_jobs_removed is not None:
+            try:
+                self._on_jobs_removed(set(removed_ids))
+            except Exception:
+                # Persistence remains authoritative even when an observer fails.
+                # Observer-owned stores must enforce their own independent cap.
+                logger.exception("Cron job-removal observer failed")

@@ -333,6 +333,117 @@ MAX_LIVE_SLOTS = 500
 #: audience. Per-audience fields such as ``source_links`` require a full frame.
 _SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "muted", "title", "folder_id"})
 
+#: Slot-summary fields that quote a turn's text, with the value each takes when
+#: withheld. See :func:`_slot_output_owner_only`.
+_SLOT_OUTPUT_PREVIEW_FIELDS: dict[str, Any] = {
+    "last_message": "",
+    "prompt_preview": "",
+    "has_options": False,
+    "options_ts": "",
+    "options": [],
+}
+
+
+def cron_slot_job_id(slot: Any) -> str:
+    """The job id of the ``cron:`` transcript *slot* shows, or ``""``.
+
+    Judged on the slot's TRANSCRIPT identity, never on its display name alone.
+    A job's own tab is ``cron-<id>``, but History resumes a cron transcript
+    under whatever name the request carries (the History pane sends the row's
+    ``cron_<id>`` stem; any caller may send another), and the resumed slot keeps
+    the job's ``linked_session_key`` from the transcript's metadata. A guard
+    keyed on the ``cron-`` prefix would treat that slot as an ordinary chat and
+    project its owner-only rows to everyone.
+    """
+    from kiro_crew.cron import cron_job_id_from_session_key, cron_job_id_from_transcript_key
+
+    linked = cron_job_id_from_session_key(getattr(slot, "linked_session_key", "") or "")
+    if linked:
+        return linked
+    key = str(getattr(slot, "key", "") or "")
+    if key.startswith("cron-"):
+        return key[len("cron-") :]
+    return cron_job_id_from_transcript_key(key)
+
+
+def _slot_output_owner_only(slot: Any) -> bool:
+    """Whether this slot's text previews must stay inside the owner boundary.
+
+    A project-bound cron run's output is owner-only: the notification and chat
+    frames carrying it are withheld from non-owner sockets by
+    ``project_output_visible_to_non_owner``. The slot LIST is a separate channel
+    -- every row quotes its newest turn in ``last_message`` and, for an options
+    turn, ``prompt_preview`` -- so a visible project-bound job's sidebar row
+    carried the same output to every dashboard user. Judged per row, on the
+    message the previews actually quote (the newest non-notice user/assistant
+    row with text), and with the same unknown-is-withheld rule: inside a cron
+    transcript (:func:`cron_slot_job_id`) only an explicit ``project_bound:
+    False`` proves the text safe, so an unstamped row (a follow-up typed into
+    the slot, an older run) is withheld too. Non-cron slots are unaffected.
+    """
+    if not cron_slot_job_id(slot):
+        return False
+    for message in reversed(getattr(slot, "messages", None) or ()):
+        role = message.get("role")
+        meta = message.get("meta") or {}
+        if role not in ("user", "assistant") or is_system_notice(role, meta):
+            continue
+        if not message.get("content"):
+            continue
+        return not (isinstance(meta, dict) and meta.get("project_bound") is False)
+    return False
+
+
+def _non_owner_source_links(slot: Any, links: list[dict]) -> list[dict]:
+    """The subset of a slot's derived ``links`` a non-owner reader may see.
+
+    Source links are parsed out of the slot's rows, so a project-bound cron
+    run's reply that names a private issue or pull request surfaces it as a
+    chip even though :func:`_slot_output_owner_only` blanks the text that
+    named it. Same rule as that function, applied per link instead of per
+    preview: inside a cron transcript a link is shown only when some row
+    explicitly stamped ``project_bound: False`` mentions the same identity.
+    An unstamped row proves nothing, and a later unbound run does not vouch
+    for a link only an earlier bound row named. Non-cron slots are unaffected.
+    """
+    if not links or not cron_slot_job_id(slot):
+        return links
+    from kiro_crew.dashboard.handlers.source_providers import (
+        parse_source_url,
+        source_link_path_markers,
+    )
+    from kiro_crew.dashboard.slot_projection import summary_rows
+    from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
+    from kiro_crew.dashboard.source_providers.links import iter_source_url_candidates
+
+    wanted = {link.get("identity") for link in links}
+    path_markers = source_link_path_markers()
+    # The derivation's own per-slot ceiling, so this pass costs no more parse
+    # work than the scan that produced ``links``.
+    budget = _MAX_SOURCE_LINKS_PER_SLOT * 64
+    vouched: set[str] = set()
+    for msg in reversed(summary_rows(slot)):
+        if budget <= 0 or vouched >= wanted:
+            break
+        if not isinstance(msg, dict) or msg.get("role") in _NON_DURABLE_SOURCE_LINK_ROLES:
+            continue
+        meta = msg.get("meta")
+        if not (isinstance(meta, dict) and meta.get("project_bound") is False):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or "https://" not in content:
+            continue
+        for candidate in iter_source_url_candidates(content, path_markers):
+            if budget <= 0:
+                break
+            budget -= 1
+            try:
+                vouched.add(source_ref_identity_key(parse_source_url(candidate).identity))
+            except ValueError:
+                continue
+    return [link for link in links if link.get("identity") in vouched]
+
+
 #: The most live slots ONE creator may hold, as a sub-ceiling under
 #: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
 #: distribution, so a single automated creator working through a nudge loop can
@@ -5924,6 +6035,8 @@ class _ChatSlot:
         append inside their own group instead of shuffling the row.
         """
         links = self._pr_source_links()
+        if not include_check_status:
+            links = _non_owner_source_links(self, links)
         changes, issues = _source_links_by_kind(links)
         return {
             "links": _project_source_links(
@@ -6067,14 +6180,22 @@ class _ChatSlot:
         loop. The source-link transcript scan itself is memoized per slot
         revision, so it was never the repeated cost.
         """
+        links = self._summary_source_links()
+        if not include_check_status:
+            links = _non_owner_source_links(self, links)
         return _project_source_links(
-            _budgeted_source_links(self._summary_source_links()),
+            _budgeted_source_links(links),
             include_check_status,
             dashboard_user=dashboard_user,
         )
 
     def to_dict(self, *, include_check_status: bool = False, dashboard_user: bool = False) -> dict:
         source_links = self._summary_source_links()
+        if not include_check_status:
+            # The owner boundary, as for the text previews; see
+            # _non_owner_source_links. Filtered before the projection so the
+            # ``source_links_total`` count is the reader's own, too.
+            source_links = _non_owner_source_links(self, source_links)
         coordinator_approvals = self._coordinator_approvals
         coordinator_pending: list[dict] = (
             coordinator_approvals(self.key) if coordinator_approvals is not None else []
@@ -9665,6 +9786,17 @@ class DashboardState:
         payload = slot.to_dict(
             include_check_status=include_check_status, dashboard_user=dashboard_user
         )
+        if not include_check_status and _slot_output_owner_only(slot):
+            # ``include_check_status`` is this projector's owner boundary (the
+            # owner WS frame, an owner GET, an owner connect). Everything else --
+            # the dashboard-user frame, SSE, app tokens -- gets the row without
+            # the quoted text. See _slot_output_owner_only.
+            payload.update(
+                {
+                    field: list(value) if isinstance(value, list) else value
+                    for field, value in _SLOT_OUTPUT_PREVIEW_FIELDS.items()
+                }
+            )
         links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
         payload.update(
             {
@@ -9781,6 +9913,17 @@ class DashboardState:
             view["source_links"] = slot.source_links_view(
                 include_check_status=include_check_status, dashboard_user=dashboard_user
             )
+            if include_check_status and "source_links_total" in payload:
+                # The bare payload counted only the links a non-owner may see.
+                view["source_links_total"] = len(slot._summary_source_links())
+            if include_check_status and _slot_output_owner_only(slot):
+                # The bare list withheld this row's quoted text; the owner view
+                # is the one audience entitled to it. Re-projected only for the
+                # rows that need it, so the single-pass saving still holds.
+                full = slot.to_dict(include_check_status=True)
+                for field in _SLOT_OUTPUT_PREVIEW_FIELDS:
+                    if field in full:
+                        view[field] = full[field]
             out.append(view)
         return out
 

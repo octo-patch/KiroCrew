@@ -71,6 +71,7 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
     _context_reading,
     _context_snapshot_fields,
     _context_snapshot_fields_inner,
+    _cron_slot_rows_for_caller,
     _durable_prefix_counter,
     _DurablePrefixMismatch,
     _finite_number,

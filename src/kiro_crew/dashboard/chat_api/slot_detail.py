@@ -782,6 +782,33 @@ def _note_owner_focus(request: web.Request, state: "DashboardState", key: str) -
         logger.debug("focus chip refresh failed for %s", key, exc_info=True)
 
 
+async def _cron_slot_rows_for_caller(
+    request: web.Request, state: "DashboardState", slot: "_ChatSlot", messages: list[dict]
+) -> list[dict]:
+    """The rows of *messages* this caller may read from *slot*'s transcript.
+
+    A cron slot can be addressed directly, bypassing ``/to-chat``, through every
+    route that serializes a slot's rows: slot detail and both resume branches.
+    So each of them asks here, and a non-owner keeps only the ``cron:{id}`` rows
+    the retained run-window proof shows came from an unbound run. A pruned bound
+    record cannot release an older surviving row because only positive coverage
+    by a retained unbound window is served. The owner, and any slot that is not
+    a cron transcript, get *messages* unchanged.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if is_owner_dashboard_request(request):
+        return messages
+    from kiro_crew.dashboard.handlers.cron import _non_owner_transcript_rows
+    from kiro_crew.dashboard.state import cron_slot_job_id
+
+    cron_job_id = cron_slot_job_id(slot)
+    if not cron_job_id:
+        return messages
+    kept, _ = await _non_owner_transcript_rows(state, cron_job_id, messages)
+    return kept
+
+
 async def api_chat_slot_detail(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot} — message history for a slot.
 
@@ -1214,19 +1241,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             has_more = start > 0
             next_before = start
 
-    # A cron slot can be addressed directly, bypassing ``/to-chat``. Its rows
-    # therefore take the same retained run-window proof before a non-owner sees
-    # them. A pruned bound record cannot release an older surviving row because
-    # only positive coverage by a retained unbound window is served.
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-
-    if not is_owner_dashboard_request(request):
-        from kiro_crew.cron import cron_job_id_from_session_key
-        from kiro_crew.dashboard.handlers.cron import _non_owner_transcript_rows
-
-        cron_job_id = cron_job_id_from_session_key(slot_history_key(slot))
-        if cron_job_id:
-            messages, _ = await _non_owner_transcript_rows(state, cron_job_id, messages)
+    messages = await _cron_slot_rows_for_caller(request, state, slot, messages)
 
     # Snapshot every slot field the response needs BEFORE leaving the event
     # loop: the render below runs in a worker thread, and it must not read

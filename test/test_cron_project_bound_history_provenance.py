@@ -48,6 +48,17 @@ def _isolate_cron_store(_floor_monkeypatch, tmp_path):
     yield
 
 
+def _remove_keeping_history(crons, job_id):
+    """Delete the job the way that leaves its run history on disk.
+
+    A caller-requested removal deletes the job's history with it, so a deleted
+    job's history only survives the automated one-shot removal, whose run path
+    appends that run's record after the job is gone. That surviving file is the
+    one these tests read for the deleted-job branch.
+    """
+    crons.remove_job(job_id, actor="test", source="test", one_shot_path="cron_gateway")
+
+
 @pytest.fixture
 def crons(tmp_path):
     return CronService(base_dir=tmp_path)
@@ -285,7 +296,7 @@ class TestHistoryRoutesWithholdOnPersistedProvenance:
             project_bound=True,
         )
         await crons.get_history().append(record)
-        crons.remove_job(bound_job.id, actor="test", source="test")
+        _remove_keeping_history(crons, bound_job.id)
 
         resp = await _run_detail(crons, bound_job.id, record.run_id, owner=False)
         assert resp.status == 200
@@ -303,7 +314,7 @@ class TestHistoryRoutesWithholdOnPersistedProvenance:
             project_bound=True,
         )
         await crons.get_history().append(record)
-        crons.remove_job(bound_job.id, actor="test", source="test")
+        _remove_keeping_history(crons, bound_job.id)
 
         resp = await _run_detail(crons, bound_job.id, record.run_id, owner=True)
         body = await resp.json()
@@ -557,7 +568,7 @@ class TestToChatOwnerGateDeletedJob:
         await crons.get_history().append(
             CronRunRecord(job_id=job_id, status="success", summary="secret", project_bound=True)
         )
-        crons.remove_job(job_id, actor="test", source="test")
+        _remove_keeping_history(crons, job_id)
 
         history_messages = [
             {"role": "user", "content": "run it"},
@@ -581,7 +592,7 @@ class TestToChatOwnerGateDeletedJob:
         await crons.get_history().append(
             CronRunRecord(job_id=job_id, status="success", summary="secret", project_bound=True)
         )
-        crons.remove_job(job_id, actor="test", source="test")
+        _remove_keeping_history(crons, job_id)
 
         history_messages = [
             {"role": "user", "content": "run it"},
@@ -612,7 +623,7 @@ class TestToChatOwnerGateDeletedJob:
                 project_bound=False,
             )
         )
-        crons.remove_job(job_id, actor="test", source="test")
+        _remove_keeping_history(crons, job_id)
 
         history_messages = [
             {

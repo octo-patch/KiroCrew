@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         _attach_variants,
         _ChatSlot,
         _collapse_wire_rows,
+        _cron_slot_rows_for_caller,
         _has_validated_effort_marker,
         _history_key_for,
         _live_child_instance,
@@ -253,8 +254,13 @@ async def _live_slot_for_resume(
     return None
 
 
-async def _live_slot_resume_payload(state, existing) -> dict:
-    """The resume endpoint's dedup body: the already-open slot's live window."""
+async def _live_slot_resume_payload(state, existing, *, request) -> dict:
+    """The resume endpoint's dedup body: the already-open slot's live window.
+
+    *request* is the resuming caller; its rows go through the same cron-slot
+    owner filter slot detail applies. It is required so no caller can serialize
+    the window without that filter.
+    """
     # The live slot a resume resolves to can be a restored sidebar row, under a
     # name the per-slot route's own lookup did not match (``dashboard:<key>``):
     # its window loads here, with the read off the loop, before anything reads it.
@@ -263,8 +269,11 @@ async def _live_slot_resume_payload(state, existing) -> dict:
     window = _collapse_wire_rows(existing.messages)
     total = len(window)
     recent = window[-200:] if total > 200 else window
+    # Paging counts stay on the raw window, as slot detail's do: the filter
+    # only withholds rows from this page, it does not move the next page.
+    visible = await _cron_slot_rows_for_caller(request, state, existing, recent)
     prepared = _prepare_messages(
-        recent,
+        visible,
         existing.running,
         live_child=_live_child_instance(state, existing),
         workspace=existing.workspace,
@@ -721,9 +730,12 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         return _resume_refusal_response(outcome.refusal)
     assert outcome.slot is not None
     if outcome.already_live:
-        return web.json_response(await _live_slot_resume_payload(state, outcome.slot))
+        return web.json_response(
+            await _live_slot_resume_payload(state, outcome.slot, request=request)
+        )
     slot, total = outcome.slot, outcome.total
     recent = slot.messages[-200:] if len(slot.messages) > 200 else slot.messages
+    visible = await _cron_slot_rows_for_caller(request, state, slot, recent)
     return web.json_response(
         {
             "ok": True,
@@ -733,7 +745,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             # the raw index the next older page starts from.
             "next_before": total - len(recent),
             "messages": _prepare_messages(
-                recent,
+                visible,
                 slot.running,
                 live_child=_live_child_instance(state, slot),
                 workspace=slot.workspace,

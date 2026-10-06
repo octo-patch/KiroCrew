@@ -1176,15 +1176,18 @@ class TestCronBindingMetadataEviction:
         new_dir.mkdir()
 
         try:
+            # Same agent name, different folder: the retained-session agent guard
+            # (which defers on an agent mismatch) does not apply, so the binding
+            # check is all that stands between the import and the old runtime.
             old_provider, _, _ = await manager.get_or_create(
                 key,
-                agent="old-agent",
+                agent="new-agent",
                 cwd=str(old_dir),
             )
             manager.release(key)
             gateway._cron_bindings()[key] = (
                 str(old_dir),
-                "old-agent",
+                "new-agent",
                 None,
                 "project",
             )
@@ -2041,6 +2044,29 @@ class TestUnresolvedProjectAgentSkipsRun:
         _, kwargs = gw.sessions.get_or_create.call_args
         assert kwargs.get("model") == "job-pinned-model"
 
+    @pytest.mark.asyncio
+    async def test_an_unavailable_alias_model_is_named_in_the_downgrade_notice(self, tmp_path):
+        # With no job-level pin, the model that failed is the alias's own, so
+        # the notice must name it rather than the job's empty `model`.
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(project_path=str(tmp_path), agent_id="ea-dev", model="")
+        calls: list[dict] = []
+
+        async def _get_or_create(*_args, **kwargs):
+            calls.append(kwargs)
+            if kwargs.get("model"):
+                raise RuntimeError(f"model {kwargs['model']} is unavailable")
+            return MagicMock(), True, False
+
+        with _resolved_binding() as mock_resolve:
+            _set_alias_pinned_model_binding(mock_resolve)
+            result, _stream_mock = await _run_llm_callback(
+                gw, job, get_or_create_side_effect=_get_or_create
+            )
+
+        assert [c.get("model") for c in calls] == ["alias-pinned-model", None]
+        assert result.startswith("⚠️ Model 'alias-pinned-model' unavailable; ran with default.")
+
 
 class TestMemberShadowRefusalAudit:
     @staticmethod
@@ -2205,6 +2231,186 @@ class TestMemberBoundJobWithAnOperatingFolder:
             await _run_llm_callback(gw, job)
 
         assert gw._cron_session_binding[f"cron:{job.id}"][2] == "Development Member"
+
+
+class TestAProjectTemplateCarriesNoCrew:
+    """A project-bound job whose name resolved to a project file or a materialized
+    template dispatches that template, not a crew member. ``resolved_alias`` is
+    then only the default alias the bindings fell back to, and passing it on as
+    ``crew_agent`` would run the default member's capability preparation in the
+    job's folder, which refuses with ``project_identity_changed`` whenever that
+    member is enrolled for another workspace -- on every fire, until auto-pause.
+    """
+
+    @staticmethod
+    def _bind(mock_resolve, source):
+        mock_resolve.return_value.requested_resolved = True
+        mock_resolve.return_value.kiro_agent = "repo-agent"
+        mock_resolve.return_value.model = ""
+        mock_resolve.return_value.resolved_alias = "default-member"
+        mock_resolve.return_value.resolved_source = source
+        mock_resolve.return_value.memory_store_name = ""
+        mock_resolve.return_value.execution_context = None
+
+    async def _fire(self, tmp_path, source, **job_kwargs):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(project_path=str(tmp_path), **job_kwargs)
+        with (
+            patch("kiro_crew.slack.gateway.resolve_agent_bindings") as mock_resolve,
+            patch("kiro_crew.slack.gateway.warm_project_agent_names", AsyncMock()),
+        ):
+            self._bind(mock_resolve, source)
+            await _run_llm_callback(gw, job)
+        return gw, job
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["materialized", "project"])
+    async def test_a_single_agent_fire_binds_no_crew(self, tmp_path, source):
+        gw, job = await self._fire(tmp_path, source, agent_id="repo-agent")
+
+        kwargs = gw.sessions.get_or_create.call_args_list[0].kwargs
+        # The explicit no-crew value: None would let resolve_crew_identity's
+        # namespace fallback pick a crew back up.
+        assert kwargs["crew_agent"] == ""
+        assert gw._cron_session_binding[f"cron:{job.id}"][2] == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["materialized", "project"])
+    async def test_a_sequence_step_binds_no_crew(self, tmp_path, source):
+        gw, _ = await self._fire(tmp_path, source, agent_id="", agent_sequence=["repo-agent"])
+
+        crews = [c.kwargs["crew_agent"] for c in gw.sessions.get_or_create.call_args_list]
+        assert crews and all(crew == "" for crew in crews)
+
+    @pytest.mark.asyncio
+    async def test_an_alias_hit_keeps_its_crew(self, tmp_path):
+        gw, _ = await self._fire(tmp_path, "alias", agent_id="default-member")
+
+        kwargs = gw.sessions.get_or_create.call_args_list[0].kwargs
+        assert kwargs["crew_agent"] == "default-member"
+
+
+class TestCronProjectCrewAlias:
+    """The crew rule itself, independent of a fire."""
+
+    def test_project_and_template_answers_carry_no_crew(self):
+        from kiro_crew.slack.gateway import _cron_project_crew_alias
+
+        cfg = MagicMock(agents={})
+        assert _cron_project_crew_alias(cfg, "", "default-member", "materialized") == ""
+        assert _cron_project_crew_alias(cfg, "", "default-member", "project") == ""
+
+    def test_an_alias_hit_and_a_nameless_default_keep_their_alias(self):
+        from kiro_crew.slack.gateway import _cron_project_crew_alias
+
+        cfg = MagicMock(agents={})
+        assert _cron_project_crew_alias(cfg, "", "captain", "alias") == "captain"
+        assert _cron_project_crew_alias(cfg, "", "default-member", "") == "default-member"
+
+    def test_a_member_bound_job_keeps_its_member_whatever_the_source(self):
+        from kiro_crew.slack.gateway import _cron_project_crew_alias
+
+        cfg = MagicMock(agents={"Development Member": MagicMock()})
+        assert (
+            _cron_project_crew_alias(cfg, "Development Member", "someone-else", "materialized")
+            == "Development Member"
+        )
+
+
+class TestCronProjectAliasTemplate:
+    """A project-bound alias hit dispatches the alias's provider template.
+
+    A template-kind carrier records the job's ``agent_id`` as ``template_id``, so
+    for an alias the resolver hands back the ALIAS name, which kiro-cli rejects as
+    an unavailable mode before the prompt runs. The unbound and sequence paths
+    already dispatch the alias's ``kiro_agent``.
+    """
+
+    @staticmethod
+    def _bindings(source="alias", kind="template", kiro_agent="in-3d", alias="in-3d"):
+        return MagicMock(
+            resolved_source=source,
+            resolved_alias=alias,
+            kiro_agent=kiro_agent,
+            execution_context=MagicMock(selection_kind=kind),
+        )
+
+    def test_an_alias_hit_on_a_template_carrier_dispatches_the_alias_template(self):
+        from kiro_crew.slack.gateway import _cron_project_alias_template
+
+        cfg = MagicMock(agents={"in-3d": MagicMock(kiro_agent="kiro-dev")})
+        with patch("kiro_crew.slack.gateway.dispatch_kiro_agent", side_effect=lambda n: n):
+            assert _cron_project_alias_template(cfg, self._bindings()) == "kiro-dev"
+
+    def test_the_template_goes_through_the_declared_name_mapping(self):
+        from kiro_crew.slack.gateway import _cron_project_alias_template
+
+        cfg = MagicMock(agents={"in-3d": MagicMock(kiro_agent="KiroPkg-captain")})
+        with patch(
+            "kiro_crew.slack.gateway.dispatch_kiro_agent",
+            side_effect=lambda n: "captain" if n == "KiroPkg-captain" else n,
+        ):
+            assert _cron_project_alias_template(cfg, self._bindings()) == "captain"
+
+    @pytest.mark.parametrize(
+        "bindings",
+        [
+            # A member carrier is already mapped by the resolver.
+            {"kind": "member", "kiro_agent": "kiro-dev"},
+            # A project file or materialized template is dispatched as resolved.
+            {"source": "project", "kiro_agent": "repo-agent", "alias": "default-member"},
+            {"source": "materialized", "kiro_agent": "app-agent", "alias": "default-member"},
+            # A carrier that already names a real template keeps it.
+            {"kiro_agent": "kirocrew-lite"},
+        ],
+    )
+    def test_every_other_answer_keeps_the_resolver_template(self, bindings):
+        from kiro_crew.slack.gateway import _cron_project_alias_template
+
+        cfg = MagicMock(agents={"in-3d": MagicMock(kiro_agent="kiro-dev")})
+        b = self._bindings(**bindings)
+        assert _cron_project_alias_template(cfg, b) == b.kiro_agent
+
+    def test_no_carrier_keeps_the_resolver_template(self):
+        from kiro_crew.slack.gateway import _cron_project_alias_template
+
+        cfg = MagicMock(agents={"in-3d": MagicMock(kiro_agent="kiro-dev")})
+        b = self._bindings(kiro_agent="kiro-dev")
+        b.execution_context = None
+        assert _cron_project_alias_template(cfg, b) == "kiro-dev"
+
+    @pytest.mark.asyncio
+    async def test_a_bound_fire_dispatches_the_template_and_keeps_the_alias_crew(self, tmp_path):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(project_path=str(tmp_path), agent_id="in-3d")
+        cfg = MagicMock(agents={"in-3d": MagicMock(kiro_agent="kiro-dev")})
+        with (
+            patch("kiro_crew.slack.gateway.resolve_agent_bindings") as mock_resolve,
+            patch("kiro_crew.slack.gateway.warm_project_agent_names", AsyncMock()),
+            patch("kiro_crew.slack.gateway.KiroCrewConfig.load", return_value=cfg),
+            patch("kiro_crew.slack.gateway.dispatch_kiro_agent", side_effect=lambda n: n),
+            patch(
+                "kiro_crew.slack.gateway._cron_crew_alias",
+                side_effect=lambda _c, _m, alias: alias,
+            ),
+        ):
+            r = mock_resolve.return_value
+            r.requested_resolved = True
+            r.kiro_agent = "in-3d"
+            r.model = ""
+            r.resolved_alias = "in-3d"
+            r.resolved_source = "alias"
+            r.memory_store_name = ""
+            r.execution_context = None
+            with patch(
+                "kiro_crew.slack.gateway._cron_project_alias_template",
+                wraps=lambda c, b: "kiro-dev",
+            ) as helper:
+                await _run_llm_callback(gw, job)
+        assert helper.called
+        kwargs = gw.sessions.get_or_create.call_args_list[0].kwargs
+        assert kwargs["agent"] == "kiro-dev"
+        assert kwargs["crew_agent"] == "in-3d"
 
 
 class TestAProjectFileNamedLikeTheDispatchedTemplate:

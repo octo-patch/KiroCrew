@@ -6671,6 +6671,63 @@ class TestAppAgentDispatch(unittest.TestCase):
             "be scoped to allow_project_override=False"
         )
 
+    def test_a_member_alias_bound_to_a_file_stem_is_refused_when_the_project_declares_its_dispatch_name(
+        self,
+    ):
+        # The alias records the FILE stem (``KiroPkg-captain``) of a file that
+        # declares ``captain``; dispatch hands kiro-cli ``captain``. A bound
+        # checkout declaring ``captain`` therefore answers the fire, so the member
+        # opt-out must compare the dispatched name, not the stem, or that project
+        # file runs under the member's private memory store.
+        import kiro_crew.config.loader as loader
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            agents = self._agents_dir(Path(td), {"KiroPkg-captain.json": {"name": "captain"}})
+            proj = self._project_dir(Path(td), {"captain.json": {"name": "captain"}})
+            cfg = self._config()
+            cfg.agents["crew-captain"] = KiroCrewAgentConfig(kiro_agent="KiroPkg-captain")
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
+                refused = loader.resolve_agent_bindings(
+                    cfg,
+                    agent_name="crew-captain",
+                    project_dir=str(proj),
+                    allow_project_override=False,
+                )
+
+        assert refused.requested_resolved is False, (
+            "a member alias whose template stem dispatches to a name the bound "
+            "project declares resolved anyway -- the project file would run under "
+            "the member's private memory store"
+        )
+        assert refused.resolved_source == loader.RESOLVED_SOURCE_MEMBER_SHADOWED
+
+    def test_an_alias_bound_to_a_file_stem_loses_to_the_project_file_it_dispatches_as(
+        self,
+    ):
+        # The ordinary-alias counterpart of the member refusal above. The alias
+        # records the stem ``KiroPkg-captain``, its file declares ``captain``, and
+        # the bound project declares ``captain`` too, so the project file wins.
+        # The winner must then resolve under the name it answers to: looking the
+        # stem up in the project finds nothing and leaves the job unresolved.
+        import kiro_crew.config.loader as loader
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            agents = self._agents_dir(Path(td), {"KiroPkg-captain.json": {"name": "captain"}})
+            proj = self._project_dir(Path(td), {"captain.json": {"name": "captain"}})
+            cfg = self._config()
+            cfg.agents["crew-captain"] = KiroCrewAgentConfig(kiro_agent="KiroPkg-captain")
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
+                loader.refresh_materialized_agents(heal_default=False)
+                won = loader.resolve_agent_bindings(
+                    cfg, agent_name="crew-captain", project_dir=str(proj)
+                )
+
+        assert won.requested_resolved is True
+        assert won.resolved_source == loader.RESOLVED_SOURCE_PROJECT
+        assert won.kiro_agent == "captain"
+
     def test_a_shadow_refusal_is_not_logged_as_an_empty_roster(self):
         # The refusal returns no config record by design, so it lands in the same
         # `agent_cfg is None` branch an EMPTY config.agents does -- and this
@@ -6836,12 +6893,11 @@ class TestAppAgentDispatch(unittest.TestCase):
                 )
         assert picked.resolved_source == "materialized"
         assert bare.resolved_source == "project"
-        # Why the tag exists rather than inferring provenance from kiro_agent and
-        # resolved_alias: a crew whose template is spelled like the crew itself, on a
-        # host whose default_agent IS that crew, yields an identical pair either way.
-        # A consumer asking "did the answering definition change?" from those two
-        # fields alone is blind exactly where a project file appears beside a
-        # same-named alias.
+        # Why consumers read the tag rather than inferring provenance from kiro_agent:
+        # a crew whose template is spelled like the crew itself yields the same
+        # kiro_agent whether the alias or a same-named project file answers, so a
+        # consumer asking "did the answering definition change?" must not judge it
+        # from the template name alone.
         import kiro_crew.config.loader as loader
         from kiro_crew.config.loader import (
             KiroCrewAgentConfig,
@@ -6868,10 +6924,12 @@ class TestAppAgentDispatch(unittest.TestCase):
                 plain = loader.resolve_agent_bindings(
                     cfg, agent_name="dev", validate_memory_files=False
                 )
-        # Indistinguishable on every pre-existing field...
+        # The same template name reaches kiro-cli either way...
         assert overridden.kiro_agent == plain.kiro_agent == "dev"
-        assert overridden.resolved_alias == plain.resolved_alias == "dev"
-        # ...and separated only by the tag.
+        # ...but the override is a template session, which carries no crewmate.
+        assert overridden.resolved_alias == ""
+        assert plain.resolved_alias == "dev"
+        assert overridden.selection_kind == "template"
         assert overridden.resolved_source == "project"
         assert plain.resolved_source == "alias"
 

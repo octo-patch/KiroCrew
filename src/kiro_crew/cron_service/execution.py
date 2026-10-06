@@ -288,17 +288,18 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     # Propagate the fired/parked disable for at-jobs — including a
     # fire-time-DENIED one (parked disabled instead of deleted so
     # it cannot refire every tick yet stays re-enableable), and one
-    # the gateway's named skip parked the same way (`not run.enabled`:
-    # the scan only picks up an enabled job, so an in-memory False at
-    # merge time means THIS run parked it -- `_mark_fire_skipped` for a
-    # vanished folder or an unresolvable agent; a manual run of an
+    # the gateway's named skip parked the same way: a run that never
+    # started yet left the job disabled is `_mark_fire_skipped` for a
+    # vanished folder or an unresolvable agent (a manual run of an
     # already-paused one-shot merely re-states the pause the disk copy
     # already holds). Without this copy the park is in-memory only:
     # `enabled` is re-derived from `user_paused` on reload, so the disk
     # copy would come back live and due again on every tick. A STARVED
     # one-shot (`run_never_started` with `enabled` still True) does not
-    # match: starvation self-heals and that job must stay enabled and retry.
-    if run_parks_one_shot(run) or (run.schedule.kind == "at" and not run.enabled):
+    # match: starvation self-heals and that job must stay enabled and
+    # retry. A FAILED run did start, so its auto-pause park stays below.
+    named_skip_park = run.schedule.kind == "at" and run.run_never_started and not run.enabled
+    if run_parks_one_shot(run) or named_skip_park:
         target.enabled = run.enabled
         target.user_paused = not run.enabled
     # auto_paused is execution-owned (repeated-failure auto-pause and

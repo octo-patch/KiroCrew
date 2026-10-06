@@ -844,8 +844,14 @@ async def test_a_resume_of_a_live_pending_row_loads_it_off_the_loop(seeded, capl
     key = _pending_key(state)
     slot = state._slots[key]
 
-    with caplog.at_level(logging.WARNING):
-        payload = await chat_handlers._live_slot_resume_payload(state, slot)
+    with (
+        caplog.at_level(logging.WARNING),
+        patch(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        ),
+    ):
+        payload = await chat_handlers._live_slot_resume_payload(state, slot, request=MagicMock())
 
     assert payload["key"] == key and payload["messages"]
     assert not slot.window_pending

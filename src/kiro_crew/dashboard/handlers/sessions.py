@@ -50,7 +50,12 @@ from kiro_crew.agent_spec_format import (
 from kiro_crew.channel_transcript_migration import _orphan_target_stem
 from kiro_crew.cloud.login_target import parse_whoami_output
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, cron_owner_matches
+from kiro_crew.cron import (
+    CronStoreBusy,
+    CronStoreUnreadable,
+    cron_job_id_from_transcript_key,
+    cron_owner_matches,
+)
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
@@ -1859,6 +1864,11 @@ async def api_sessions(request: web.Request) -> web.Response:
         await asyncio.get_running_loop().run_in_executor(None, _attach_previews, page)
         if request_app:
             total -= page_size - len(page)
+        if not _history_owner_view(request):
+            # A preview quotes the newest row, which a bound run may have written.
+            for row in page:
+                if cron_job_id_from_transcript_key(row.get("key", "")):
+                    row.pop("preview", None)
     return web.json_response(
         {
             "sessions": page,
@@ -2109,8 +2119,13 @@ async def api_sessions_summarize(request: web.Request) -> web.Response:
 
     log = state.conversation_log
     request_app = str(request.get("app") or "")
+    owner_view = _history_owner_view(request)
     summaries: dict[str, str] = {}
     for key in ordered:
+        if not owner_view and cron_job_id_from_transcript_key(key):
+            # A summary is the transcript's content restated; skipped like a
+            # missing key for a non-owner (see _history_owner_view).
+            continue
         if request_app:
             # Skipped like a missing key, so the reply cannot tell the two apart.
             if not await asyncio.to_thread(_app_owns_transcript, log, request_app, key):
@@ -2142,9 +2157,62 @@ class _AppOwnedKeys:
         return isinstance(key, str) and _app_owns_transcript(self._log, self._request_app, key)
 
 
+class _NonCronKeys:
+    """Every transcript key except a ``cron:`` job's, optionally inside *inner*.
+
+    The search scope a non-owner gets (see :func:`_history_owner_view`).
+    """
+
+    def __init__(self, inner: Any = None) -> None:
+        self._inner = inner
+
+    def __contains__(self, key: object) -> bool:
+        if not isinstance(key, str) or cron_job_id_from_transcript_key(key):
+            return False
+        return self._inner is None or key in self._inner
+
+
+def _history_owner_view(request: web.Request) -> bool:
+    """Whether *request* may read a ``cron:`` transcript through History unfiltered.
+
+    A project-bound job's output is owner-only (``learn-cron-dashboard.md``,
+    the non-owner disclosure table). The chat-slot routes filter it per row,
+    but History reads the same transcript FILE by key, so every History read
+    applies the same boundary: detail filters rows, and the list preview,
+    content search and summaries -- which cannot be filtered per row without
+    re-deriving each transcript's provenance -- skip cron transcripts for a
+    non-owner instead.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    return is_owner_dashboard_request(request)
+
+
+async def _history_rows_for_caller(
+    request: web.Request, state: DashboardState, key: str, messages: list
+) -> list:
+    """The rows of transcript *key* this caller may read through History.
+
+    A non-owner reading a ``cron:`` transcript keeps only the rows the
+    run-window provenance proves came from an unbound run (the same filter as
+    slot detail and ``to-chat``); everyone else gets *messages* unchanged.
+    """
+    job_id = cron_job_id_from_transcript_key(key)
+    if not job_id or _history_owner_view(request):
+        return messages
+    from kiro_crew.dashboard.handlers.cron import _non_owner_transcript_rows
+
+    kept, _ = await _non_owner_transcript_rows(state, job_id, messages)
+    return kept
+
+
 def _app_search(log: ConversationLog, request_app: str, q: str, limit: int) -> list[dict]:
-    """*q* ranked over only the transcripts *request_app* owns. Blocking; off the loop."""
-    return log.search_sessions(q, limit, keys=_AppOwnedKeys(log, request_app))
+    """*q* ranked over only the transcripts *request_app* owns. Blocking; off the loop.
+
+    An app is never the dashboard owner, so cron transcripts stay out of its
+    scope too (:func:`_history_owner_view`).
+    """
+    return log.search_sessions(q, limit, keys=_NonCronKeys(_AppOwnedKeys(log, request_app)))
 
 
 async def api_sessions_search(request: web.Request) -> web.Response:
@@ -2174,6 +2242,12 @@ async def api_sessions_search(request: web.Request) -> web.Response:
         log = state.conversation_log
         sessions = await asyncio.to_thread(_app_search, log, request_app, q, limit)
         _audit_app_allow(request_app, "session_search", f"sessions={len(sessions)}")
+    elif not _history_owner_view(request):
+        # Before the limit, like the app filter, so withheld matches cannot
+        # shorten the page; a hit alone would say what a bound run's output says.
+        sessions = await asyncio.to_thread(
+            state.conversation_log.search_sessions, q, limit, keys=_NonCronKeys()
+        )
     else:
         sessions = await asyncio.get_running_loop().run_in_executor(
             None, state.conversation_log.search_sessions, q, limit
@@ -2209,14 +2283,14 @@ async def api_session_detail(request: web.Request) -> web.Response:
                 request_app, "session_detail", f"session={key}", _NOT_TRANSCRIPT_OWNER
             )
         _audit_app_allow(request_app, "session_detail", f"session={key}")
-        return web.json_response(messages)
+        return web.json_response(await _history_rows_for_caller(request, state, key, messages))
     # read_messages() opens and parses the transcript on a cache miss, which for
     # the multi-MB sessions a long-lived store accumulates is 100-300 ms of
     # blocking file IO — on the event loop, stalling every other request. Off the
     # loop, like every other conversation_log read in this module (list_sessions,
     # get_metadata, session_mtime, search_sessions, delete_session).
     messages = await asyncio.to_thread(state.conversation_log.read_messages, key)
-    return web.json_response(messages)
+    return web.json_response(await _history_rows_for_caller(request, state, key, messages))
 
 
 def _session_meta_row(log: ConversationLog, request_app: str, key: str) -> dict | None:

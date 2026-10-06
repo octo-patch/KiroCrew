@@ -445,6 +445,15 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
     if slot.memory_mode != "persistent":
         return _refuse_restricted(f"memory_mode={slot.memory_mode}")
 
+    # A project-bound scheduled job's output is owner-only, and a file leaves the
+    # dashboard whole: a non-owner exports a cron transcript only when every row
+    # is provably from an unbound run (the same proof slot detail filters by).
+    from kiro_crew.dashboard.handlers.cron import non_owner_cron_transcript_copy_refusal
+
+    refused = await non_owner_cron_transcript_copy_refusal(request, state, slot, "chat.slot_export")
+    if refused is not None:
+        return refused
+
     try:
         bundle = await build_transfer_bundle_async(
             state,
