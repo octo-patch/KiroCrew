@@ -879,6 +879,22 @@ its DM thread, and may bind a different template than `agent.default_agent`.
 The top-level `default_agent` alias names the roster's default crewmate and is
 not consulted for a session that picked nobody; an agent-less slot create and an
 empty `/agent` switch stamp the default template in the `template` namespace.
+
+**Inside a bound project directory that order inverts for step 1.** A project
+agent of the same name as a crew WINS there: a project's agents join the crew as
+subject-matter experts for that project, so the project definition supplies
+steering, skills and identity while the resolved name still supplies the
+infrastructure — for a bare project agent that is a template session on the
+default folder and memory store, per step 2. The inversion is scoped to the
+folder, so outside it the crew alias is untouched and a chat session opened in the folder resolves
+the name the same way a cron bound to it does. It does NOT apply to a
+member-bound job: re-basing a member onto a same-named project template would
+change its parent descriptor's `scope` and trip `parent_identity_changed`, so a
+member keeps its own lineage and the folder supplies only its cwd. An explicitly
+bound folder outranks the resolved crew's configured `workspace`. See
+[learn-cron-dashboard](learn-cron-dashboard.md) → "Project directory
+(`project_path`) and the project-bound job owner gate".
+
 An unresolvable workspace falls back to `default_workspace`. Memory identity
 resolves exactly: the reserved `default` assistant uses Global Memory V1;
 existing V1 members keep their declared V1 binding.
