@@ -4,14 +4,11 @@ import AgentSelector from '../components/AgentSelector'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 
 /**
- * A shadowed collision row explains the override on its detail line. That line
- * used to open with `{{name}}` — but the row title directly above already
- * shows the name, so repeating it pushed the actual meaning ("…instead of your
- * global agent") past the line's own `truncate` and rendered "…of this n…" on
- * the 400px popover (UX Review span=7ddb24260c79). The detail now leads with
- * the meaning and the name lives in the title alone.
+ * A shadowed collision row explains the override on its detail line: which
+ * same-named definition runs and where it lives. The name sits mid-sentence
+ * rather than leading it, because the row title directly above already shows it.
  */
-describe('AgentSelector override-detail line does not repeat the agent name', () => {
+describe('AgentSelector override-detail line names the definition that runs', () => {
   const collision: KiroCrewAgent[] = [
     {
       name: 'reviewer', kiro_agent: '', workspace: 'default', memory_store: 'default',
@@ -19,7 +16,7 @@ describe('AgentSelector override-detail line does not repeat the agent name', ()
     },
   ]
 
-  it('states the override starting from the meaning, not the name', () => {
+  it("names this project's definition as the one that runs", () => {
     render(
       <AgentSelector
         agents={collision}
@@ -37,12 +34,9 @@ describe('AgentSelector override-detail line does not repeat the agent name', ()
     // configured agent is not the one running. It is also the string every
     // catalog already translates, so non-English users get the same reassurance.
     expect(row).toHaveTextContent(
-      "This job's project directory defines its own agent with this name, so it runs "
-      + 'instead of your global one. Your global agent is unchanged elsewhere.',
+      "This job runs the reviewer from this project's .kiro/agents/, not your global one.",
     )
-    // The detail does not begin with the agent name (which would read as
-    // "reviewer runs instead of …"): the leading name is redundant with the
-    // row title directly above it.
-    expect(row).not.toHaveTextContent('reviewer runs instead of')
+    // The chip is warn-toned so it does not read as one more source label.
+    expect(screen.getByText('replaces global')).toHaveClass('text-warn')
   })
 })

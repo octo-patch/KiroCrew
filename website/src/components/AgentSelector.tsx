@@ -326,8 +326,12 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
                 {i18nT('components.agentSelector.project_agent')}
               </span>
             )}
+            {/* Warn-toned, not the neutral source-pill look: in that style a
+                blind reader took it for one more origin label like `kirocrew`
+                and never learned that a same-named global agent is being
+                replaced on this row (UX Review). */}
             {shadowedGlobals?.has(a.name) && (
-              <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-bg-elevated text-muted border border-border shrink-0">
+              <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-warn-subtle text-warn border border-warn shrink-0">
                 {i18nT('components.agentSelector.overrides_global')}
               </span>
             )}
@@ -342,14 +346,13 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
               row has no description of its own and would otherwise
               repeat the template name the row already resolves to.
 
-              It does NOT lead with the agent name (UX Review
-              span=7ddb24260c79): the row title directly above already
-              shows it, so repeating it here only pushed the meaning
-              ("…instead of your global agent") past this line's own
-              `truncate`, leaving "…of this n…" on a narrow popover. The
-              name lives in the title — which, since the redundant
-              project chip is now suppressed on a shadowed row, has the
-              width to show it. */}
+              It names the winner and where it is defined -- this
+              project's `.kiro/agents/`, not the global agent -- because a
+              line that only said a project agent "runs instead" left a
+              blind reader unsure which same-named definition the job
+              would get (UX Review). The name sits mid-sentence rather
+              than leading it: the row title directly above already shows
+              it, and this line wraps rather than truncating. */}
           {/* A shadowed row renders the FULL hint as body text and is
               allowed to wrap, where every other row truncates. Two
               reasons it earns the extra line: the explanation is the
@@ -366,7 +369,7 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
             }
           >
             {shadowedGlobals?.has(a.name)
-              ? i18nT('components.agentSelector.overrides_global_hint')
+              ? i18nT('components.agentSelector.overrides_global_hint', { name: a.name })
               : a.description || provider.resolveAgentTemplate(a)}
           </span>
         </div>

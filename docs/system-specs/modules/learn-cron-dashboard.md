@@ -931,48 +931,31 @@ join rows 1–2b's provenance gate.
 `from this folder` marker off that field — NOT off `source`, which reads
 `kirocrew` on a project row exactly as it does on a configured one, so without
 this a folder-supplied agent was visually identical to a global one and nobody
-could anticipate which picks vanish when the directory is cleared. The
-`overrides global` chip covers only COLLIDING rows, a strict subset.
+could tell which picks depend on the directory. The warn-toned `replaces global`
+chip covers only COLLIDING rows, a strict subset, and its detail line names the
+definition that runs: the agent from this project's `.kiro/agents/`, not the
+global one.
 
-**A reset selection is announced, not just performed.** When a directory change
-clears an agent the new folder cannot resolve, the form names the cleared agent
-beside the Agent field. The reset itself is correct — saving a name the folder
-cannot resolve would fire the default agent silently — but doing it without
-acknowledgment meant a deliberate pick disappeared between a keystroke and
-Save. **The announcement has to OUTLIVE the roster settling, which is a
-constraint on the effect rather than on the copy.** Emptying the field runs the
-clear-on-unbind branch twice — once when `projectPath` empties, then again when
-the 250ms-debounced mirror settles and `enabled: !!debouncedProjectPath` turns
-the roster query off, moving `projectAgentsData` to `undefined` and so changing a
-dependency. The second run sees the agent the first already cleared, computes
-"nothing was cleared", and would write the reset name back to `''` — erasing its
-own notice after ~250ms. The branch is therefore guarded to act on the TRANSITION
-into the empty state (`unbindHandledRef`), re-armed by any bound path so a later
-clear still announces itself. A test that reads the notice synchronously cannot
-see this: it passes against the erasing version, which is why the regressions in
-`website/src/test/JobForm.projectAgentReset.test.tsx` read it AFTER the
-debounce.
+**A directory change never rewrites the agent pick; Save decides.** Whether a
+name resolves under a folder is answered by the resolver dispatch uses, and the
+picker catalogs cannot stand in for it: the project roster endpoint omits
+installed templates, and the global catalog omits runtime-owned templates the
+backend still runs, so absence from either proves nothing. The form therefore
+keeps the selected name across a directory switch, an emptied field and any
+roster loading or failure gap, and sends it on Save. The save-time half of the
+twice-checked rule (`_agent_unresolvable_response`) refuses a name the bound
+folder cannot resolve with a 400 (`code: "unknown_agent"`) naming the agent and
+folder, which the form shows; every fire re-checks it. A form-side guess that
+cleared picks on catalog absence discarded valid bindings and then saved the
+default agent in their place, which is the silent substitution this feature
+exists to prevent.
 
-**A reset a path EDIT caused is undone when the finished path defines the name
-again.** The debounce above only protects a path typed faster than 250ms;
-hand-editing a bound job's directory pauses longer, so an intermediate path
-becomes a roster identity of its own — and `GET /api/agents?project_path=`
-answers an unusable path with HTTP 200 and the configured agents alone, so that
-roster legitimately lacks the pick and the reconcile clears it. Clearing on what
-is known is right; leaving it cleared once the FINISHED path loads a roster that
-DOES define the name is not, and made every path edit on a bound job force a
-re-pick. The reconcile therefore remembers the name it took away
-(`editClearedAgentRef`) and restores it when a later settled roster resolves it
-and the user has not chosen since — restoring needs no judgement about whether a
-path was "half typed", a question the endpoint cannot answer anyway since an
-unusable path and a usable one with no agents are the same 200. Two bounds keep
-this from overriding an operator: a deliberate pick drops the remembered name
-(`pickAgent`), and so does emptying the field, whose own clear is an ended
-gesture with no later roster to land against and stands announced. While a
-restore is pending the notice is WITHHELD from the `''` write rather than erased
-— the reset it describes is still in force, and a further intermediate settle
-erasing it is the same defect as the double-run above, leaving an operator whose
-finished path never does define the name with no acknowledgment at all.
+**The directory picker joins the schedule dialog's modal layer.** In this form
+it uses a modal Radix Popover, with a viewport-positioned portal outside the
+translated dialog content. Pointer input, focus and dismissal belong to the
+picker while it is open: a directory icon or row can be selected even where it
+extends beyond the dialog, without closing the dialog or discarding its draft.
+Standalone and non-Radix-modal ProjectPicker callers retain their own layer.
 
 **Session reuse tracks which definition won.** A persistent job reuses its
 session, so `_cron_session_binding` records the resolved identity — the folder,

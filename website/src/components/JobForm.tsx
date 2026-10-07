@@ -379,15 +379,6 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // JobForm's roster work even for the common case of no project_path set.
   // This only does anything once a path is actually present.
   const [projectAgents, setProjectAgents] = useState<KiroCrewAgent[]>([])
-  // Mirror of `projectAgents` for the clear-on-unbind effect below. That effect
-  // must know which names the FOLDER contributed, but it cannot depend on the
-  // state: its `!projectPath` branch calls `setProjectAgents([])` with a fresh
-  // array every run, so listing `projectAgents` as a dependency would re-fire
-  // it forever. A ref is never stale and needs no dependency entry.
-  const projectAgentsRef = useRef<KiroCrewAgent[]>([])
-  useEffect(() => {
-    projectAgentsRef.current = projectAgents
-  }, [projectAgents])
   // Separate from the form-wide `error` (validation failures on Save): a
   // background roster fetch failing must not borrow that channel, which
   // (1) auto-scrolls the page to the bottom-of-form notice on every set,
@@ -398,50 +389,13 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // or a validation error can be silently clobbered by a late-resolving
   // roster retry. Rendered beside the working-directory field itself instead.
   const [projectRosterError, setProjectRosterError] = useState('')
-  // The agent name a project-directory change cleared, or '' when nothing was
-  // cleared. Its own state rather than a flag on the roster error: a reset is not
-  // a failure, and folding the two would make one clear the other. The reason
-  // selects clear-specific wording while keeping one notice mechanism.
-  const [agentResetFrom, setAgentResetFrom] = useState('')
-  const [agentResetReason, setAgentResetReason] = useState<'project-cleared' | 'not-in-project'>('not-in-project')
-  // Whether the clear-on-unbind branch has already run for the CURRENT empty
-  // field. It must act on the TRANSITION into the empty state, not on every
-  // re-run: clearing the field fires the effect twice -- once when
-  // `projectPath` empties, then again when `debouncedProjectPath` settles and
-  // `enabled: !!debouncedProjectPath` turns the roster query off, which moves
-  // `projectAgentsData` to `undefined` and so changes a dependency. The second
-  // run sees the agent the first one just cleared, computes `cleared === false`
-  // and writes `setAgentResetFrom('')`, wiping the notice the first run set --
-  // it rendered for ~200ms and then vanished, so the acknowledgment UX Review
-  // asked for was unreadable in practice while every test asserting it
-  // synchronously still passed.
-  const unbindHandledRef = useRef(false)
-  // The project agent a directory EDIT reconciled away, held until either the
-  // user picks something themselves or a settled roster defines that name again.
-  //
-  // The debounce above only protects a path typed faster than 250ms. Hand-editing
-  // a bound job's directory pauses longer than that, so an intermediate path
-  // becomes a roster identity of its own -- and `/api/agents?project_path=`
-  // answers an unusable path with HTTP 200 and the configured agents alone, so
-  // that roster legitimately lacks the pick and the reconcile below clears it.
-  // Clearing on what is known is right; leaving it cleared once the FINISHED path
-  // loads a roster that DOES define the name is not, and makes every path edit on
-  // a bound job force a re-pick (UX Review). Restoring needs no knowledge of
-  // whether a path was "half typed" -- a question the endpoint cannot answer
-  // anyway, since an unusable path and a usable one with no agents are the same
-  // 200 -- only that the name is resolvable again and the user has not chosen
-  // since. A ref rather than state: the effect that writes it must not re-run on
-  // it, exactly as `projectAgentsRef` above.
-  const editClearedAgentRef = useRef('')
-  // A deliberate pick supersedes the reset bookkeeping above: the notice now
-  // describes nothing the user can still act on, and the remembered name is no
-  // longer theirs to restore -- a later settled roster defining it must not
-  // override the choice they just made.
-  const pickAgent = (name: string) => {
-    editClearedAgentRef.current = ''
-    setAgent(name)
-    setAgentResetFrom('')
-  }
+  // A directory change never rewrites the agent pick. Whether a name resolves
+  // under a folder is the backend's call, made by the same resolver dispatch
+  // uses: Save refuses an unresolvable agent with a 400 (`unknown_agent`) that
+  // names the agent and folder, and every fire re-checks it. The pickers'
+  // catalogs cannot answer that question -- neither lists every template the
+  // resolver accepts -- so clearing a pick on what they omit discarded valid
+  // bindings, and Save then stored the default agent in their place.
   // The fetch itself lives in useQuery (per-frontend convention: server state
   // goes through React Query, not manual useState+useEffect+fetch) — keyed on
   // the DEBOUNCED mirror so a half-typed path never becomes a roster identity.
@@ -475,50 +429,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     if (!projectPath) {
       setProjectAgents([])
       setProjectRosterError('')
-      // An emptied field ends the edit, so there is no later roster for a
-      // path-edit restore to land against: the clear below is its own
-      // announcement and stands. Written on every re-run for this empty field,
-      // which is safe -- unlike the reset below, writing '' twice is idempotent.
-      editClearedAgentRef.current = ''
-      // Idempotent past the first run for this empty field -- see
-      // `unbindHandledRef`. The two statements above are safe to repeat; the
-      // reset below is not, because it would clear its own notice.
-      if (unbindHandledRef.current) return
-      unbindHandledRef.current = true
-      // The selected agent may have been a project-scoped one that only
-      // existed because THIS folder was open (effectiveAgents merged it in
-      // from projectAgents, now cleared above). Left alone, that name is
-      // still sent on save (`agent: locked ?? agent`) with an empty
-      // project_path -- a project agent EXISTS only inside its folder, so
-      // without the folder the name resolves to nothing and the run would
-      // silently take the default agent's prompt, tools, and permissions.
-      //
-      // Decide on POSITIVE knowledge, not absence: clear the name when
-      // `projectAgents` -- the folder's own roster, still holding its
-      // pre-clear value on this render because React state updates are not
-      // synchronous -- is what contributed it. Testing "not in the global
-      // roster" instead was wrong twice over: an empty global roster is
-      // legitimate (a project-only install, and `CrewWakeSection` passes
-      // `agents={[]}` deliberately), and app agents under `~/.kiro/agents/`
-      // are dispatchable without ever appearing in it, so absence proves
-      // nothing. A project agent that shares a global agent's name is left
-      // alone -- the global one survives the folder being cleared, matching
-      // effectiveAgents' own dedup-by-name rule.
-      setAgent(a => {
-        const cleared = !!(
-          a
-          && projectAgentsRef.current.some(p => p.scope === 'project' && p.name === a)
-          && !agents.some(g => g.name === a)
-        )
-        setAgentResetReason('project-cleared')
-        setAgentResetFrom(cleared ? a : '')
-        return cleared ? '' : a
-      })
       return
     }
-    // A bound path re-arms the guard, so a LATER clear announces its reset
-    // again rather than staying silent after the first one.
-    unbindHandledRef.current = false
     if (projectAgentsQueryError) {
       // A roster-fetch failure must be VISIBLE, not a silent empty list: the
       // user picked this folder specifically to see its agents, and an empty
@@ -577,60 +489,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     const newProjectAgents: KiroCrewAgent[] = projectAgentsData.agents || []
     setProjectAgents(newProjectAgents)
     setProjectRosterError('')
-    // Switching from folder A to folder B: the agent selected under A may
-    // not exist under B at all. Reconcile against the union of the NEW
-    // project roster and the global roster (mirrors the `!projectPath`
-    // branch's own rule above) -- a name recognized by either is left
-    // alone, everything else is cleared back to default. Without this,
-    // save persists an agent name B's project cannot resolve, and the
-    // scheduled fire silently falls back to the default agent's prompt,
-    // tools, and permissions with no error surfaced anywhere.
-    setAgent(a => {
-      // A name either roster recognizes is resolvable under this project --
-      // `newProjectAgents` is the successfully loaded WHOLE roster for it,
-      // including global rows, so this also preserves a valid global pick when
-      // the separate global-catalog request failed and the `agents` prop is
-      // empty. The old `agents.length > 0` guard tried to protect that transient
-      // failure, but also retained a project-A-only pick after project B had
-      // authoritatively loaded without it.
-      const known = (n: string) =>
-        agents.some(g => g.name === n) || newProjectAgents.some(g => g.name === n)
-      const restorable = editClearedAgentRef.current
-      // Restore BEFORE considering a clear, so the two can never both fire on
-      // one run: an earlier, unfinished path took this name away, this roster
-      // settled with it defined again, and `!a` says the user has not chosen
-      // anything since -- so the pick is still theirs to have back. The ref is
-      // deliberately not cleared here: it holds the same name that is now
-      // selected, so a further edit re-reaches this branch with nothing stale,
-      // and leaving it untouched keeps this updater idempotent if React invokes
-      // it twice.
-      if (!a && restorable && known(restorable)) {
-        // Nothing was lost after all, so the acknowledgment must not linger.
-        setAgentResetFrom('')
-        return restorable
-      }
-      const cleared = !!(a && !known(a))
-      if (cleared) editClearedAgentRef.current = a
-      setAgentResetReason('not-in-project')
-      // Announced, not just performed (UX Review): the reset is correct, but
-      // doing it silently meant the job saved under "default" with no
-      // acknowledgment anywhere -- the user's deliberate pick vanished between
-      // one keystroke in the directory field and pressing Save. Recording the
-      // NAME rather than a boolean so the notice can say which pick went.
-      if (cleared) {
-        setAgentResetFrom(a)
-      } else if (!(a === '' && restorable)) {
-        // Withheld while a restore is pending: the reset that notice describes is
-        // still in force, and a FURTHER unfinished path settling must not erase
-        // its acknowledgment -- erasing it is the same defect as the double-run
-        // the `unbindHandledRef` guard above covers, and if the operator's
-        // finished path never does define the name they are left with the silent
-        // reset the notice exists against.
-        setAgentResetFrom('')
-      }
-      return cleared ? '' : a
-    })
-  }, [projectPath, agents, projectAgentsData, projectAgentsQueryError])
+  }, [projectPath, projectAgentsData, projectAgentsQueryError])
   // Global roster (the `agents` prop) plus this job's own project-scoped
   // agents, deduped by name. Project rows arrive tagged `source: 'project'`
   // by the server, and are shown as such without a per-folder relabel: this
@@ -970,7 +829,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
-            : <AgentSelector agents={effectiveAgents} defaultAgent={defaultAgent} value={agent} onChange={pickAgent} rosterFailure={rosterFailure} shadowedGlobals={shadowedGlobals} groupByKind modal />}
+            : <AgentSelector agents={effectiveAgents} defaultAgent={defaultAgent} value={agent} onChange={setAgent} rosterFailure={rosterFailure} shadowedGlobals={shadowedGlobals} groupByKind modal />}
           <SimpleSelect
             options={modelOptions.values}
             optionLabels={modelOptions.labels}
@@ -1133,30 +992,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
             : (<>
               <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.which_agent_handles_this_job_leave_default_for_t')}</span>
-              <AgentSelector agents={effectiveAgents} defaultAgent={defaultAgent} value={agent} onChange={pickAgent} rosterFailure={rosterFailure} shadowedGlobals={shadowedGlobals} groupByKind modal />
-              {/* Beside the Agent field rather than in the form-wide notice: the
-                  reset happened to THIS control, and it is information, not an
-                  error -- the directory change was legitimate and so was the
-                  reset. Cleared as soon as the user picks an agent again, since
-                  by then the sentence describes nothing they can still act on.
-
-                  role="status" for the same reason the sibling
-                  `chat_folder_was_deleted` notice below carries it: the system
-                  discarded a choice the reader made deliberately, so a reader on
-                  assistive tech must hear that it happened rather than discover a
-                  silently different agent later. A status (polite) rather than an
-                  alert, because the reset itself was legitimate and there is
-                  nothing to interrupt for. */}
-              {agentResetFrom && (
-                <span role="status" className="text-[11px] text-warn" data-testid="jobform-agent-reset-note">
-                  {i18nT(
-                    agentResetReason === 'project-cleared'
-                      ? 'components.jobForm.agent_reset_project_cleared'
-                      : 'components.jobForm.agent_reset_not_in_folder',
-                    { name: agentResetFrom },
-                  )}
-                </span>
-              )}
+              <AgentSelector agents={effectiveAgents} defaultAgent={defaultAgent} value={agent} onChange={setAgent} rosterFailure={rosterFailure} shadowedGlobals={shadowedGlobals} groupByKind modal />
             </>)}
         </div>
         </>)}
@@ -1342,11 +1178,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       <div ref={errorRef}>
         <ErrorNotice message={error} />
       </div>
-      {/* Portals at z-[9999] via createPortal — reused rather than
-       *  reimplemented so this folder picker is IDENTICAL to every other
-       *  project-directory picker in the app (chat's own, FolderConfigModal's). */}
+      {/* Share the directory picker while joining the host dialog's layer stack. */}
       {pickerOpen && (
         <ProjectPicker
+          modal
           open={true}
           onOpenChange={o => { if (!o) setPickerOpen(false) }}
           anchorRef={browseRef}

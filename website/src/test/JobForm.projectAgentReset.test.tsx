@@ -6,6 +6,7 @@ import JobForm from '../components/JobForm'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import type { CronJob } from '../types'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -61,35 +62,35 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers() })
 
 /**
- * GPT 5.6 Review F2: switching the project directory from project A to
- * project B (WITHOUT ever clearing it in between) left the picker's `agent`
- * state untouched -- only the `!projectPath` early-return branch reconciled
- * a stale selection, so the A-project agent stayed selected after B's
- * roster loaded even though B's roster does not contain that name. Save
- * would then persist an agent name B's project cannot resolve, and the
- * scheduled fire silently falls back to the default agent's prompt, tools,
- * and permissions with no error surfaced anywhere. Fixed by reconciling the
- * selection against the union of the newly-fetched project roster and the
- * global roster inside the success branch of the folder-change effect
- * itself, not just the cleared-folder branch.
+ * A directory change never rewrites the agent pick. The form cannot tell from
+ * its catalogs whether a name resolves under a folder -- neither lists every
+ * template the resolver accepts -- so clearing on what they omit discarded
+ * valid bindings and Save stored the default agent in their place. The backend
+ * makes that call: Save refuses an unresolvable agent with a 400 naming the
+ * agent and folder, and the form shows that refusal.
  */
-describe('JobForm reconciles the agent picker when the project directory switches project', () => {
-  it('clears a project-A-only agent that does not exist under project B', async () => {
+describe('JobForm keeps the agent pick when the project directory switches project', () => {
+  it('keeps a project-A pick under project B, sends it on Save, and shows the refusal', async () => {
     vi.mocked(api.kirocrewAgents)
       .mockResolvedValueOnce({
         agents: [{
           name: 'repo-a-bot', kiro_agent: 'repo-a-bot', workspace: 'repo-a', memory_store: 'repo-a',
-          description: 'repo A agent', source: 'project',
+          description: 'repo A agent', source: 'project', scope: 'project',
         }],
         default_agent: '',
       })
       .mockResolvedValueOnce({
         agents: [{
           name: 'repo-b-bot', kiro_agent: 'repo-b-bot', workspace: 'repo-b', memory_store: 'repo-b',
-          description: 'repo B agent', source: 'project',
+          description: 'repo B agent', source: 'project', scope: 'project',
         }],
         default_agent: '',
       })
+    const refusal = "Agent 'repo-a-bot' not found in project directory '/Users/you/projects/repo-b'"
+    vi.mocked(api.updateCron).mockClear()
+    vi.mocked(api.updateCron).mockRejectedValueOnce(
+      new ApiError(400, refusal, JSON.stringify({ error: refusal, code: 'unknown_agent' })),
+    )
 
     renderJobForm(withDefaultAgent)
 
@@ -99,26 +100,24 @@ describe('JobForm reconciles the agent picker when the project directory switche
     await waitFor(() => expect(api.kirocrewAgents).toHaveBeenCalledTimes(1))
 
     fireEvent.click(screen.getByLabelText('Switch agent'))
-    // The resolved roster now propagates through useQuery (an extra render
-    // hop past the raw fetch call above), so wait for the option to actually
-    // be in the DOM before clicking it -- a bare `getByRole` can race that
-    // hop and see an empty listbox.
+    // The resolved roster propagates through useQuery (an extra render hop past
+    // the raw fetch call above), so wait for the option before clicking it.
     await waitFor(() => expect(screen.getByRole('option', { name: /repo-a-bot/ })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('option', { name: /repo-a-bot/ }))
     await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-a-bot'))
 
-    // Switch straight to project B, never clearing the field in between.
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/repo-b' },
     })
     await waitFor(() => expect(api.kirocrewAgents).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-a-bot'))
 
-    // repo-a-bot exists in neither B's project roster nor the global
-    // roster, so the selection must be cleared back to default.
-    await waitFor(() =>
-      expect(screen.getByLabelText('Switch agent')).toHaveTextContent('default'),
-    )
-    expect(screen.getByLabelText('Switch agent')).not.toHaveTextContent('repo-a-bot')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateCron).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.updateCron).mock.calls[0][1]).toMatchObject({
+      agent: 'repo-a-bot', project_path: '/Users/you/projects/repo-b',
+    })
+    expect(await screen.findByText(refusal)).toBeInTheDocument()
   })
 
   it('keeps a project-only agent selected when it also exists under the new project', async () => {
@@ -185,7 +184,7 @@ describe('JobForm reconciles the agent picker when the project directory switche
     expect(screen.getByLabelText('Switch agent')).toHaveTextContent('ea-dev')
   })
 
-  it('clears a project-A agent when the global catalog fails but project B loads', async () => {
+  it('keeps a project-A pick when the global catalog fails but project B loads', async () => {
     vi.mocked(api.kirocrewAgents)
       .mockResolvedValueOnce({
         agents: [{
@@ -216,10 +215,76 @@ describe('JobForm reconciles the agent picker when the project directory switche
     fireEvent.change(projectDirectory, { target: { value: '/Users/you/projects/repo-b' } })
     await waitFor(() => expect(api.kirocrewAgents).toHaveBeenCalledTimes(2))
 
-    await waitFor(() =>
-      expect(screen.getByLabelText('Switch agent')).not.toHaveTextContent('repo-a-bot'),
-    )
-    expect(screen.getByTestId('jobform-agent-reset-note')).toHaveTextContent('repo-a-bot')
+    await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-a-bot'))
+  })
+
+  /** The project roster for `/Users/you/projects/repo`: one folder agent, and no
+   *  installed shared template, which the project endpoint never lists. */
+  function mockRepoRoster() {
+    vi.mocked(api.kirocrewAgents).mockResolvedValue({
+      agents: [{
+        name: 'repo-bot', kiro_agent: 'repo-bot', workspace: 'repo', memory_store: 'repo',
+        description: 'repo agent', source: 'project', scope: 'project',
+      }],
+      default_agent: '',
+    })
+  }
+
+  /** Waits until the project roster has reached the picker, which happens in the
+   *  same effect run that reconciles the saved pick against it. */
+  async function waitForProjectRoster() {
+    fireEvent.click(screen.getByLabelText('Switch agent'))
+    await waitFor(() => expect(screen.getByRole('option', { name: /repo-bot/ })).toBeInTheDocument())
+    fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape' })
+  }
+
+  const sharedTemplate: KiroCrewAgent = {
+    name: 'shared-tpl', kiro_agent: 'shared-tpl', workspace: 'default', memory_store: 'default',
+    description: 'installed template', source: 'kirocrew',
+  }
+  const boundJob = () => messageJob({ agent: 'shared-tpl', project_path: '/Users/you/projects/repo' })
+  const formProps = (overrides: Partial<ComponentProps<typeof JobForm>>) => ({
+    job: boundJob(), defaultAgent: '', onSaved: () => {}, layout: 'vertical' as const, ...overrides,
+  })
+
+  it('keeps a saved template while the global catalog is pending, and after it then fails', async () => {
+    // GPT 6.1 Review: the project roster settled before the global catalog,
+    // omitted the template, and the pick was cleared; a later catalog failure
+    // left it cleared, so saving any unrelated edit stored the default agent.
+    mockRepoRoster()
+    const { rerender } = renderWithProviders(<JobForm {...formProps({ agents: [] })} />)
+    await waitForProjectRoster()
+
+    expect(screen.getByLabelText('Switch agent')).toHaveTextContent('shared-tpl')
+    expect(screen.queryByTestId('jobform-agent-reset-note')).not.toBeInTheDocument()
+
+    const failure = { reloading: false, onReload: () => {} }
+    rerender(<JobForm {...formProps({ agents: [], rosterFailure: failure })} />)
+    expect(screen.getByLabelText('Switch agent')).toHaveTextContent('shared-tpl')
+
+    rerender(<JobForm {...formProps({ agents: [sharedTemplate] })} />)
+    expect(screen.getByLabelText('Switch agent')).toHaveTextContent('shared-tpl')
+    expect(screen.queryByTestId('jobform-agent-reset-note')).not.toBeInTheDocument()
+  })
+
+  it('keeps and saves a runtime-owned template that no loaded catalog lists', async () => {
+    // GPT 6.1 Review: an installed runtime-owned template (`kirocrew-lite`) is
+    // accepted by the backend resolver but omitted by both pickers' catalogs,
+    // so catalog absence cleared it and an unrelated save stored `agent_id: ''`.
+    // Catalog absence is not a resolution failure; only a pick the previous
+    // folder defined is cleared.
+    mockRepoRoster()
+    vi.mocked(api.updateCron).mockResolvedValue({} as never)
+    const job = messageJob({ agent: 'kirocrew-lite', project_path: '/Users/you/projects/repo' })
+    renderWithProviders(<JobForm {...formProps({ job, agents: [builtInAgent] })} />)
+    await waitForProjectRoster()
+
+    expect(screen.getByLabelText('Switch agent')).toHaveTextContent('kirocrew-lite')
+    expect(screen.queryByTestId('jobform-agent-reset-note')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateCron).toHaveBeenCalled())
+    expect(api.updateCron).toHaveBeenCalledWith('j1', expect.objectContaining({ agent: 'kirocrew-lite' }))
   })
 
   it('keeps a globally valid pick when the global catalog fails but project B loads it', async () => {
@@ -296,76 +361,10 @@ describe('JobForm reconciles the agent picker when the project directory switche
     expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-a-bot')
   })
 
-  it('restores a pick an intermediate path cleared once the finished path defines it', async () => {
-    // UX Review: the debounce above only protects a path typed FASTER than
-    // 250ms. Hand-editing a bound job's directory pauses longer than that, so an
-    // intermediate path becomes a roster identity of its own -- and
-    // `GET /api/agents?project_path=` answers an unusable path with HTTP 200 and
-    // the globals alone, so that roster legitimately lacks the picked project
-    // agent and the reconcile clears it. Clearing on what it knows is right; the
-    // defect was that the pick never came BACK once the finished path loaded a
-    // roster that does define the name, so every path edit on a bound job forced
-    // a re-pick, and the acknowledgment for a reset still in force was erased by
-    // the next intermediate settle.
-    const projectAgent = {
-      name: 'repo-a-bot', kiro_agent: 'repo-a-bot', workspace: 'repo-a', memory_store: 'repo-a',
-      description: 'repo A agent', source: 'project', scope: 'project',
-    }
-    const initialPath = '/Users/you/projects/repo-a'
-    const halfTyped = `${initialPath}-v`
-    const finalPath = `${initialPath}-v2`
-    vi.mocked(api.kirocrewAgents).mockImplementation(async (_sessionKey, path) => ({
-      agents: path === initialPath || path === finalPath ? [projectAgent] : [],
-      default_agent: '',
-    }))
-
-    renderJobForm(withDefaultAgent)
-
-    const projectDirectory = screen.getByLabelText('Project directory')
-    fireEvent.change(projectDirectory, { target: { value: initialPath } })
-    await waitFor(() => expect(api.kirocrewAgents).toHaveBeenCalledTimes(1))
-
-    fireEvent.click(screen.getByLabelText('Switch agent'))
-    await waitFor(() => expect(screen.getByRole('option', { name: /repo-a-bot/ })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('option', { name: /repo-a-bot/ }))
-    await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-a-bot'))
-
-    // Pause on a half-typed path long enough for it to settle and be queried.
-    fireEvent.change(projectDirectory, { target: { value: halfTyped } })
-    await waitFor(() => expect(api.kirocrewAgents).toHaveBeenCalledTimes(2), { timeout: 2000 })
-    await waitFor(() =>
-      expect(screen.getByLabelText('Switch agent')).not.toHaveTextContent('repo-a-bot'),
-    )
-    // The reset IS announced, and stays announced while it is still in force.
-    expect(screen.getByTestId('jobform-agent-reset-note')).toHaveTextContent('repo-a-bot')
-
-    // Finish the path. Its roster defines the name again, so the operator's own
-    // pick comes back rather than leaving them to re-pick it.
-    fireEvent.change(projectDirectory, { target: { value: finalPath } })
-    await waitFor(() => expect(api.kirocrewAgents).toHaveBeenCalledTimes(3), { timeout: 2000 })
-
-    await waitFor(() =>
-      expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-a-bot'),
-    )
-    // Nothing was lost after all, so the acknowledgment must not linger.
-    expect(screen.queryByTestId('jobform-agent-reset-note')).not.toBeInTheDocument()
-  })
 })
 
-/**
- * Selecting a project-scoped agent (only offered because a working
- * directory was set), then clearing that project directory, previously left
- * the picker's `agent` state untouched: `effectiveAgents` correctly fell
- * back to the global roster once `projectAgents` cleared, but the SELECTED
- * name was never reset, so save sent that now-unresolvable name with an
- * empty `project_path`. Kiro cannot resolve a project agent without its
- * project scope and silently falls back to the default agent's prompt,
- * tools, and permissions -- with no error surfaced anywhere to say so.
- * Fixed by clearing the selection back to the global default whenever it is
- * not a name the global roster itself recognizes.
- */
-describe('JobForm clears a project-only agent selection when the project directory is cleared', () => {
-  it('resets the agent picker to the default once the project agent is no longer resolvable', async () => {
+describe('JobForm keeps the agent pick when the project directory is cleared', () => {
+  it('keeps a project-only pick, sends it on Save, and shows the refusal', async () => {
     vi.mocked(api.kirocrewAgents).mockResolvedValueOnce({
       agents: [{
         name: 'repo-bot', kiro_agent: 'repo-bot', workspace: 'repo', memory_store: 'repo',
@@ -373,34 +372,34 @@ describe('JobForm clears a project-only agent selection when the project directo
       }],
       default_agent: '',
     })
+    const refusal = "Agent 'repo-bot' is not a configured agent"
+    vi.mocked(api.updateCron).mockClear()
+    vi.mocked(api.updateCron).mockRejectedValueOnce(
+      new ApiError(400, refusal, JSON.stringify({ error: refusal, code: 'unknown_agent' })),
+    )
     renderJobForm(withDefaultAgent)
 
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/myrepo' },
     })
     await waitFor(() => expect(api.kirocrewAgents).toHaveBeenCalled())
-
-    // Select the project-only agent via the AgentSelector's listbox. Wait
-    // for the roster to have propagated through useQuery (an extra render
-    // hop past the raw fetch call above) before clicking the option -- a
-    // bare `getByRole` can race that hop and see an empty listbox.
     fireEvent.click(screen.getByLabelText('Switch agent'))
     await waitFor(() => expect(screen.getByRole('option', { name: /repo-bot/ })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('option', { name: /repo-bot/ }))
     await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-bot'))
 
-    // Now clear the project directory -- the project-only agent must no
-    // longer be shown as selected.
+    vi.useFakeTimers()
     fireEvent.change(screen.getByLabelText('Project directory'), { target: { value: '' } })
+    // Past the 250ms debounce, which turns the roster query off and re-runs the
+    // roster effect a second time.
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    vi.useRealTimers()
+    expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-bot')
 
-    await waitFor(() =>
-      expect(screen.getByLabelText('Switch agent')).toHaveTextContent('default'),
-    )
-    expect(screen.getByLabelText('Switch agent')).not.toHaveTextContent('repo-bot')
-    const note = screen.getByTestId('jobform-agent-reset-note')
-    expect(note).toHaveTextContent('repo-bot')
-    expect(note).toHaveTextContent('project directory was cleared')
-    expect(note).not.toHaveTextContent("isn't defined in this project")
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateCron).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.updateCron).mock.calls[0][1]).toMatchObject({ agent: 'repo-bot', project_path: '' })
+    expect(await screen.findByText(refusal)).toBeInTheDocument()
   })
 
   it('leaves a global agent selection untouched when the project directory clears', async () => {
@@ -462,165 +461,6 @@ describe('JobForm clears a project-only agent selection when the project directo
     expect(screen.getByLabelText('Switch agent')).toHaveTextContent('ea-dev')
   })
 
-  it('clears a project agent on a project-only install, where the global roster is legitimately empty', async () => {
-    // GPT 5.6 Review F2. The guard that fixed the test above tested the
-    // WRONG thing: it asked "is the global roster non-empty?" as a proxy for
-    // "has the roster loaded?". Those diverge on an install whose agents are
-    // all project-scoped -- the roster IS loaded and IS legitimately empty --
-    // so the clear was skipped, the unresolvable name was saved with an empty
-    // project_path, and every fire silently ran the default agent instead.
-    //
-    // The fix decides on positive knowledge: the name came from
-    // `projectAgents`, so we KNOW it was the folder's. That also cannot
-    // misfire on a crew-bound form (`CrewWakeSection` passes `agents={[]}`)
-    // or on an app agent under `~/.kiro/agents/`, neither of which is ever
-    // in the folder's roster.
-    vi.mocked(api.kirocrewAgents).mockResolvedValueOnce({
-      agents: [{
-        name: 'repo-bot', kiro_agent: 'repo-bot', workspace: 'repo', memory_store: 'repo',
-        description: 'repo agent', source: 'project', scope: 'project',
-      }],
-      default_agent: '',
-    })
-    renderJobForm()
-
-    fireEvent.change(screen.getByLabelText('Project directory'), {
-      target: { value: '/Users/you/projects/myrepo' },
-    })
-    await waitFor(() => expect(api.kirocrewAgents).toHaveBeenCalled())
-
-    fireEvent.click(screen.getByLabelText('Switch agent'))
-    await waitFor(() => expect(screen.getByRole('option', { name: /repo-bot/ })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('option', { name: /repo-bot/ }))
-    await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-bot'))
-
-    fireEvent.change(screen.getByLabelText('Project directory'), { target: { value: '' } })
-
-    // The project agent must be gone even though the global roster is empty.
-    await waitFor(() =>
-      expect(screen.getByLabelText('Switch agent')).not.toHaveTextContent('repo-bot'),
-    )
-  })
-
-  it('keeps the reset notice readable after the debounce settles, not just for 250ms', async () => {
-    // The notice appeared and then VANISHED. Clearing the field fires the
-    // effect TWICE: once when `projectPath` empties, then again when
-    // `debouncedProjectPath` (250ms) settles and `enabled: !!debouncedProjectPath`
-    // turns the roster query off, moving `projectAgentsData` to `undefined` --
-    // a dependency change. That second run saw the agent the first run had
-    // already cleared, so `cleared` computed false and it wrote
-    // `setAgentResetFrom('')`, erasing its own acknowledgment.
-    //
-    // Every assertion in this file still passed, because they all read the
-    // notice SYNCHRONOUSLY inside that window. A browser probe showed it
-    // present at 200ms and gone at 400ms, so the acknowledgment UX Review
-    // asked for was unreadable in practice. This test reads it after the
-    // debounce, which is when a human would.
-    vi.mocked(api.kirocrewAgents).mockResolvedValueOnce({
-      agents: [{
-        name: 'repo-bot', kiro_agent: 'repo-bot', workspace: 'repo', memory_store: 'repo',
-        description: 'repo agent', source: 'project', scope: 'project',
-      }],
-      default_agent: '',
-    })
-    renderJobForm(withDefaultAgent)
-
-    fireEvent.change(screen.getByLabelText('Project directory'), {
-      target: { value: '/Users/you/projects/myrepo' },
-    })
-    await waitFor(() => expect(api.kirocrewAgents).toHaveBeenCalled())
-    fireEvent.click(screen.getByLabelText('Switch agent'))
-    await waitFor(() => expect(screen.getByRole('option', { name: /repo-bot/ })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('option', { name: /repo-bot/ }))
-    await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-bot'))
-
-    vi.useFakeTimers()
-    fireEvent.change(screen.getByLabelText('Project directory'), { target: { value: '' } })
-    expect(screen.getByTestId('jobform-agent-reset-note')).toBeInTheDocument()
-
-    // Settle the 250ms debounce and flush the query-disabling re-render.
-    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
-
-    const note = screen.getByTestId('jobform-agent-reset-note')
-    expect(note).toHaveTextContent('repo-bot')
-    expect(note).toHaveTextContent('project directory was cleared')
-  })
-
-  it('announces a SECOND clear too, rather than staying silent after the first', async () => {
-    // The guard that fixed the test above is armed per empty field, so a bound
-    // path has to re-arm it. Without that, the effect would suppress every
-    // later reset for the lifetime of the form: the user binds another folder,
-    // picks another project agent, clears again -- and that pick would vanish
-    // with no acknowledgment at all, which is the exact silent-reset defect the
-    // notice exists to prevent.
-    vi.mocked(api.kirocrewAgents).mockResolvedValue({
-      agents: [{
-        name: 'repo-bot', kiro_agent: 'repo-bot', workspace: 'repo', memory_store: 'repo',
-        description: 'repo agent', source: 'project', scope: 'project',
-      }],
-      default_agent: '',
-    })
-    renderJobForm(withDefaultAgent)
-    const field = screen.getByLabelText('Project directory')
-
-    for (const round of [1, 2]) {
-      fireEvent.change(field, { target: { value: `/Users/you/projects/repo-${round}` } })
-      fireEvent.click(screen.getByLabelText('Switch agent'))
-      await waitFor(() => expect(screen.getByRole('option', { name: /repo-bot/ })).toBeInTheDocument())
-      fireEvent.click(screen.getByRole('option', { name: /repo-bot/ }))
-      await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-bot'))
-
-      vi.useFakeTimers()
-      fireEvent.change(field, { target: { value: '' } })
-      expect(screen.getByTestId('jobform-agent-reset-note')).toHaveTextContent('repo-bot')
-      await act(async () => { await vi.advanceTimersByTimeAsync(250) })
-      expect(screen.getByTestId('jobform-agent-reset-note')).toHaveTextContent(
-        'project directory was cleared',
-      )
-      vi.useRealTimers()
-    }
-  })
-
-  /**
-   * The notice reports that the system discarded an agent the reader chose
-   * deliberately. Rendered as a bare styled <span> it is invisible to
-   * assistive tech, so a screen-reader user clears the directory, hears
-   * nothing, and only discovers the substitution when a different agent
-   * runs -- the exact silent substitution this notice exists against. Its
-   * sibling `chat_folder_was_deleted` notice in the same file already
-   * carries `role="status"` with a comment requiring it be "announced as a
-   * status", so this asserts the parity rather than the attribute: the note
-   * must be reachable BY ROLE, which is what an AT user actually depends on.
-   */
-  it('announces the reset to assistive tech, not only to sighted readers', async () => {
-    vi.mocked(api.kirocrewAgents).mockResolvedValueOnce({
-      agents: [{
-        name: 'repo-bot', kiro_agent: 'repo-bot', workspace: 'repo', memory_store: 'repo',
-        description: 'repo agent', source: 'project', scope: 'project',
-      }],
-      default_agent: '',
-    })
-    renderJobForm(withDefaultAgent)
-    const field = screen.getByLabelText('Project directory')
-    fireEvent.change(field, { target: { value: '/Users/you/projects/repo' } })
-    fireEvent.click(screen.getByLabelText('Switch agent'))
-    await waitFor(() => expect(screen.getByRole('option', { name: /repo-bot/ })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('option', { name: /repo-bot/ }))
-    await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-bot'))
-
-    fireEvent.change(field, { target: { value: '' } })
-    const note = await waitFor(
-      () => {
-        const found = screen.getByTestId('jobform-agent-reset-note')
-        expect(found).toHaveTextContent('repo-bot')
-        return found
-      },
-      { timeout: 2000 },
-    )
-    // Reachable by role is the assertion that matters -- a reader on
-    // assistive tech finds it this way or not at all.
-    expect(note).toBe(screen.getByRole('status', { name: '' }))
-  })
 })
 
 /**
@@ -850,7 +690,7 @@ describe('JobForm agent picker on a project/global name collision', () => {
     // description of its own, so there is no positive text to match on -- which
     // is exactly why the marker has to exist.
     const row = within(listbox).getByRole('option', { name: /reviewer/ })
-    expect(row).toHaveTextContent('overrides global')
+    expect(row).toHaveTextContent('replaces global')
     expect(row).not.toHaveTextContent('the configured reviewer')
 
     // Non-colliding rows from both sides survive untouched.
@@ -865,36 +705,34 @@ describe('JobForm agent picker on a project/global name collision', () => {
     // declared by the folder, so it must stay unmarked.
     const listbox = await openWithCollisionFolder()
     const untouched = within(listbox).getByRole('option', { name: /default/ })
-    expect(untouched).not.toHaveTextContent('overrides global')
+    expect(untouched).not.toHaveTextContent('replaces global')
   })
 
   it('marks the surviving row as overriding the configured agent', async () => {
     const listbox = await openWithCollisionFolder()
     const row = within(listbox).getByRole('option', { name: /reviewer/ })
-    expect(row).toHaveTextContent('overrides global')
+    expect(row).toHaveTextContent('replaces global')
 
     // The explanation is VISIBLE, not hover-only. The badge's `title` needs a
     // mouse resting on a 10px chip and does not exist on touch at all, and this
     // marker is the only signal in the feature that tells a user why their
-    // configured agent vanished from the list. It no longer REPEATS the agent
-    // name — the row title directly above already shows it, and repeating it
-    // pushed the meaning past this line's own truncation on a narrow popover
-    // (UX Review span=7ddb24260c79).
+    // configured agent vanished from the list. It names the definition that
+    // runs and where it lives, so a reader knows which same-named agent the job
+    // gets.
     expect(row).toHaveTextContent(
-      "This job's project directory defines its own agent with this name, so it runs "
-      + 'instead of your global one. Your global agent is unchanged elsewhere.',
+      "This job runs the reviewer from this project's .kiro/agents/, not your global one.",
     )
 
     // The marker is specific to the collision, not to being a project agent:
     // a project-only row has nothing to override and must not claim otherwise.
     const projectOnly = within(listbox).getByRole('option', { name: /repo-bot/ })
-    expect(projectOnly).not.toHaveTextContent('overrides global')
-    expect(projectOnly).not.toHaveTextContent('Runs instead of')
+    expect(projectOnly).not.toHaveTextContent('replaces global')
+    expect(projectOnly).not.toHaveTextContent('not your global one')
   })
 
   it('drops the marker when the project directory is cleared', async () => {
     const listbox = await openWithCollisionFolder()
-    expect(within(listbox).getByRole('option', { name: /reviewer/ })).toHaveTextContent('overrides global')
+    expect(within(listbox).getByRole('option', { name: /reviewer/ })).toHaveTextContent('replaces global')
 
     fireEvent.keyDown(listbox, { key: 'Escape' })
     fireEvent.change(screen.getByLabelText('Project directory'), { target: { value: '' } })
@@ -902,7 +740,7 @@ describe('JobForm agent picker on a project/global name collision', () => {
     fireEvent.click(screen.getByLabelText('Switch agent'))
     await waitFor(() => {
       const reopened = screen.getByRole('listbox')
-      expect(within(reopened).queryByText('overrides global')).not.toBeInTheDocument()
+      expect(within(reopened).queryByText('replaces global')).not.toBeInTheDocument()
     })
     // With no folder there is no project scope, so the configured agent is the
     // one offered again.
