@@ -271,5 +271,7 @@
   "commandCenter.crewMain.subagent",
   "commandCenter.crewMain.subagent_tiny",
   "commandCenter.crewMain.tokens",
-  "commandCenter.crewMain.approvals_open"
+  "commandCenter.crewMain.approvals_open",
+  "components.branchSwitcher.ahead_count",
+  "components.branchSwitcher.behind_count"
 ]

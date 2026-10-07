@@ -6,7 +6,7 @@ import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, Folder
 import SketchDialog from './SketchDialog'
 import QuoteCard from '../pages/chat/QuoteCard'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
-import BranchSwitcher from './BranchSwitcher'
+import BranchSwitcher from './LazyBranchSwitcher'
 import RejectDropdown from './RejectDropdown'
 import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -1611,16 +1611,18 @@ function ChatInput({
           {!shelfCompact && !!projectBranch && (
             <>
               <span className="opacity-40 shrink-0" aria-hidden="true">·</span>
-              {/* Opens the branch picker (switch / track / create), which keeps
-                  click-to-copy in its footer. Disabled while a response runs,
-                  like the folder segment: a checkout would change files under
-                  the turn. A git ref IS code, so the trigger sets `font-mono`
-                  itself (the pill container does not supply it). */}
+              {/* Opens the branch picker (switch / track / create). While a
+                  response runs, switching is blocked like the folder segment,
+                  since a checkout would change files under the turn, but reading
+                  the branch name is harmless: the segment stays enabled and a
+                  click copies the name. A git ref IS code, so the trigger sets
+                  `font-mono` itself (the pill container does not supply it). */}
               <BranchSwitcher
                 variant="chip"
                 projectDir={project ?? ''}
                 branch={projectBranch}
-                disabledReason={isRunning ? i18nT('components.branchSwitcher.stop_response_to_switch') : undefined}
+                detached={!!projectDetached}
+                switchBlocked={isRunning}
               />
             </>
           )}

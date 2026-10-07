@@ -127,7 +127,7 @@ from kiro_crew.context_blocks import (
 )
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
-from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import directive_queue, repo_checkout_guard
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     COMMANDS_OFF_META_KEY,
     STEER_STATE_CONSUMED,
@@ -8998,6 +8998,18 @@ async def _run_chat(
         return _directive_channel_origin or getattr(slot, "_turn_channel_narrowed", False) is True
 
     _session_stop_gen_at_entry = _session_stop_generation()
+
+    # Chokepoint for the branch switch's ordering: a turn must not read project
+    # files on one branch and write them back on another. This is the first
+    # await of the body, before any prompt expansion reads a file, and the slot
+    # already publishes this turn, so a switch either refuses on seeing it or
+    # holds a reservation this waits out (see repo_checkout_guard). It sits
+    # after both Stop-generation snapshots and the replay-row freeze: a Stop
+    # pressed during the wait must still read as pressed at dispatch, and a
+    # row appended during it must not become this turn's trigger.
+    await repo_checkout_guard.wait_for_checkout(
+        getattr(slot, "project", None), waiter=f"session {slot.key}"
+    )
 
     def _stop_pressed() -> bool:
         """The user's Stop signal for this turn, read LIVE at the call site.
