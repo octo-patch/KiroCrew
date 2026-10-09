@@ -3402,6 +3402,8 @@
       "suggestion_triage_tickets": "Triage my on-call tickets",
       "suggestion_write_design_doc": "Help me write a design doc",
       "choose_memory_mode": "Choose memory mode",
+      "memory_switch_timed_out": "Switching memory mode is taking too long. Both chats were kept; try again.",
+      "switching_memory_mode": "Switching memory mode…",
       "incognito_active_switch_to_persistent": "Incognito — switch to persistent mode",
       "temporary": "Temporary",
       "temporary_active_switch_to_persistent": "Temporary — switch to persistent mode",

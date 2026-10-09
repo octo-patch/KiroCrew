@@ -8985,6 +8985,8 @@
       "suggestion_triage_tickets": "Meine Bereitschafts-Tickets triagieren",
       "suggestion_write_design_doc": "Mir beim Schreiben eines Design-Dokuments helfen",
       "choose_memory_mode": "Speichermodus wählen",
+      "memory_switch_timed_out": "Der Wechsel des Speichermodus dauert zu lange. Beide Chats wurden behalten; versuche es erneut.",
+      "switching_memory_mode": "Speichermodus wird gewechselt…",
       "incognito_active_switch_to_persistent": "Inkognito — zum dauerhaften Modus wechseln",
       "temporary": "Temporär",
       "temporary_active_switch_to_persistent": "Temporär — zum dauerhaften Modus wechseln",

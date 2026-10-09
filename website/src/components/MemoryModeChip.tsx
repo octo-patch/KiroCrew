@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { EyeOff, Ghost, Undo2, VenetianMask } from 'lucide-react'
+import { EyeOff, Ghost, Loader2, Undo2, VenetianMask } from 'lucide-react'
 import { Glass } from './Glass'
 
 import { i18nT } from '../i18n/t'
@@ -11,13 +11,15 @@ export type MemoryMode = 'persistent' | 'incognito' | 'temporary'
 interface MemoryModeChipProps {
   memoryMode?: string
   onSwitchMode: (mode: MemoryMode) => void
+  /** A switch is in flight: the chip is disabled and says so. */
+  switching?: boolean
 }
 
 const GAP = 6
 const EDGE = 8
 
 /** Memory-mode chooser chip: opens an incognito/temporary popover, or offers the way back when one is active. */
-export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps) {
+export function MemoryModeChip({ memoryMode, onSwitchMode, switching = false }: MemoryModeChipProps) {
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ bottom: number; left: number } | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
@@ -61,7 +63,9 @@ export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps
   // A non-persistent memory mode is the ephemeral state; the trigger
   // then offers the way back instead of the chooser.
   const ephemeralActive = currentMode !== 'persistent'
-  const label = !ephemeralActive
+  const label = switching
+    ? i18nT('components.welcomeView.switching_memory_mode')
+    : !ephemeralActive
     ? i18nT('components.welcomeView.choose_memory_mode')
     : currentMode === 'incognito'
       ? i18nT('components.welcomeView.incognito_active_switch_to_persistent')
@@ -78,8 +82,10 @@ export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps
         radius={8}
         type="button"
         data-testid="memory-mode-chip"
+        disabled={switching}
+        aria-busy={switching}
         {...uiLocation('chat.memory-mode', btnRef)}
-        className={`inline-flex items-center gap-1.5 rounded-lg border border-transparent px-3 py-1 text-[12px] transition-colors cursor-pointer ${
+        className={`inline-flex items-center gap-1.5 rounded-lg border border-transparent px-3 py-1 text-[12px] transition-colors cursor-pointer disabled:cursor-wait ${
           ephemeralActive
             ? 'glass-warn text-warn'
             : 'glass-hover text-muted hover:text-text'
@@ -89,10 +95,10 @@ export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps
           else onSwitchMode('persistent')
         }}
       >
-        {!ephemeralActive ? <Ghost size={13} /> : <Undo2 size={13} />}
+        {switching ? <Loader2 size={13} className="animate-spin" /> : !ephemeralActive ? <Ghost size={13} /> : <Undo2 size={13} />}
         <span>{label}</span>
       </Glass>
-      {open && createPortal(
+      {open && !switching && createPortal(
         <div
           ref={popRef}
           data-testid="memory-mode-popover"

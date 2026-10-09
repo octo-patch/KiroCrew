@@ -9112,6 +9112,8 @@
       "suggestion_triage_tickets": "Smista i miei ticket di reperibilità",
       "suggestion_write_design_doc": "Aiutami a scrivere un documento di progettazione",
       "choose_memory_mode": "Scegli la modalità memoria",
+      "memory_switch_timed_out": "Il cambio della modalità memoria sta richiedendo troppo tempo. Entrambe le chat sono state mantenute; riprova.",
+      "switching_memory_mode": "Cambio della modalità memoria…",
       "incognito_active_switch_to_persistent": "Incognito — passa alla modalità persistente",
       "temporary": "Temporaneo",
       "temporary_active_switch_to_persistent": "Temporaneo — passa alla modalità persistente",

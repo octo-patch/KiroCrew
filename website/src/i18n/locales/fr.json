@@ -9112,6 +9112,8 @@
       "suggestion_triage_tickets": "Trier mes tickets d'astreinte",
       "suggestion_write_design_doc": "M'aider à rédiger un document de conception",
       "choose_memory_mode": "Choisir le mode mémoire",
+      "memory_switch_timed_out": "Le changement de mode mémoire prend trop de temps. Les deux discussions ont été conservées ; réessaie.",
+      "switching_memory_mode": "Changement du mode mémoire…",
       "incognito_active_switch_to_persistent": "Incognito — passer au mode persistant",
       "temporary": "Temporaire",
       "temporary_active_switch_to_persistent": "Temporaire — passer au mode persistant",

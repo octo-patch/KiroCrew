@@ -65,6 +65,14 @@ describe('ChatInput', () => {
       expect(screen.getByPlaceholderText('Stopping…')).toBeInTheDocument()
     })
 
+    it('keeps Stopping over a caller placeholder, and shows lockedPlaceholder instead when given', () => {
+      const { unmount } = renderWithProviders(<ChatInput {...defaultProps} disabled placeholder="Type here…" />)
+      expect(screen.getByPlaceholderText('Stopping…')).toBeInTheDocument()
+      unmount()
+      renderWithProviders(<ChatInput {...defaultProps} disabled placeholder="Type here…" lockedPlaceholder="Locked for now" />)
+      expect(screen.getByPlaceholderText('Locked for now')).toBeInTheDocument()
+    })
+
     it('shows offline placeholder when connected=false', () => {
       renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
       expect(screen.getByPlaceholderText(/Gateway offline/)).toBeInTheDocument()

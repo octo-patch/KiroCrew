@@ -238,7 +238,7 @@ import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
 import { countCompletedTurns } from '../lib/completedTurns'
 import { pinIsWithheld } from '../lib/model'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
-import { isComposerSendHeld, takeComposerArrivals, useComposerArrivals, useComposerSendHeld } from '../utils/composerSendHolds'
+import { isComposerSendHeld, useComposerArrivals, useComposerSendHeld } from '../utils/composerSendHolds'
 import FollowUpCard from '../components/FollowUpCard'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import PendingQuestionCard from '../components/PendingQuestionCard'
@@ -280,7 +280,6 @@ import ChatSidebar from './ChatSidebar'
 import { SIDEBAR_MAX, clampSidebarWidth, parseStoredSidebarWidth } from './chat/sidebarWidth'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft, chatPageShouldConsumeHandoff } from '../utils/chatDrafts'
 import { setFileDraft } from '../utils/chatFileDrafts'
-import { forgetSlotSuccession, recordSlotSuccession } from '../utils/slotSuccession'
 import { setPasteDraft } from '../utils/chatPasteDrafts'
 import { setSessionRefDraft } from '../utils/chatSessionRefDrafts'
 import { mergeSessionRefs } from '../utils/sessionRefs'
@@ -320,6 +319,7 @@ import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { sessionTitleRoster } from '../utils/sessionRoster'
+import { memorySwitchTimeoutMs } from '../utils/memorySwitchTimeout'
 import { errMessage } from '../utils/thunkError'
 import { closeCrewWindow, crewWindowShown, useCrewWindow } from './chat/crew-window/crewWindowStore'
 // Only a crew session mounts the window, so its code loads on first open.
@@ -866,6 +866,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // the parked draft's text instead. `composerSlotRef` alone cannot tell: it
   // still names the slot after unmount.
   const composerMountedRef = useRef(true)
+  // A memory-mode switch in flight. The composer is disabled meanwhile so the
+  // draft and uploads it carries cannot change under it; the ref is the
+  // synchronous read for upload paths and a second click on the chip.
+  const [memorySwitching, setMemorySwitching] = useState(false)
+  const memorySwitchingRef = useRef(false)
   useEffect(() => {
     composerMountedRef.current = true
     return () => { composerMountedRef.current = false }
@@ -1625,6 +1630,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       voiceCaretRef,
       voicePendingCaretRef,
       saveDrafts,
+      composerLockedRef: memorySwitchingRef,
     },
     capture: {
       setUploading,
@@ -1665,7 +1671,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     handleCapture,
     handleSnipComplete,
     handleSnipCancel,
-    uploadFiles,
+    composerUploadFiles,
     cancelUpload,
     uploadCancellable,
     handleOptimizeResult,
@@ -5404,134 +5410,49 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   // Unchanged from the inline WelcomeView handler; shared with the composer memory chip.
   const switchMemoryMode = async (newMode: MemoryMode) => {
-    if (!activeSlot) return
-    // Create-first-then-delete: deleting the active slot first
-    // would make deleteSlot jump focus to a sibling. Creating and
-    // switching first makes the new slot active, so the delete skips the
-    // sibling navigation. Carry agent/project/folder/color so
-    // the recreated slot keeps its identity and placement.
-    const old = currentSlot
-    const opts = {
-      agent: old?.agent || undefined,
-      agent_kind: old?.agent ? old?.agent_kind || undefined : undefined,
-      model: old?.model || undefined,
-      mode,
-      memory_mode: newMode,
-      folder_id: old?.folder_id ?? null,
-      color_index: old?.color_index ?? null,
-      color_hex: old?.color_hex ?? null,
-      project: old?.project ?? null,
+    if (!activeSlot || memorySwitchingRef.current) return
+    // The composer is locked for the whole switch (see `memorySwitching`):
+    // nothing can be typed, pasted or attached in either session until it
+    // settles, so the draft and uploads are moved exactly once below.
+    memorySwitchingRef.current = true
+    setMemorySwitching(true)
+    const unlock = () => {
+      memorySwitchingRef.current = false
+      if (composerMountedRef.current) setMemorySwitching(false)
     }
-    // Created in the background so the unsent draft can move to the new slot
-    // BEFORE it activates: the slot-change effect restores the incoming slot's
-    // draft, which for a fresh slot is empty, and the old slot (where the
-    // draft lives) is deleted below.
-    let created: { key?: string } | undefined
-    try { created = await dispatch(createSlot({ ...opts, activate: false })).unwrap() } catch (error) {
-      showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
-      return
-    }
-    const next = created?.key
-    if (!next) return
-    // The user moved to another session while the create was in flight: the
-    // switch is abandoned. Switching to `next` would pull them out of where
-    // they went, and deleting `activeSlot` would destroy the draft it still
-    // holds. Drop the unused replacement instead (it is not active, so its
-    // delete navigates nowhere).
-    if (boundStore.getState().chat.activeSlot !== activeSlot || composerSlotRef.current !== activeSlot) {
-      void dispatch(deleteSlot(next)).unwrap().catch(error => {
-        showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
-      })
-      return
-    }
-    // Read the live composer, not the stored draft: the debounced draft save
-    // may not have caught the last keystrokes yet.
-    if (inputRef.current) drafts.current[next] = inputRef.current
-    const carriedFiles = pendingFilesRef.current.slice()
-    if (carriedFiles.length) fileDrafts.current[next] = carriedFiles.slice()
-    if (pasteBlocksRef.current.length) pasteDrafts.current[next] = pasteBlocksRef.current.map(b => ({ ...b }))
-    if (pendingSessionsRef.current.length) sessionRefDrafts.current[next] = pendingSessionsRef.current.map(r => ({ ...r }))
-    const tokens = pickedFileTokens.current[activeSlot]
-    if (tokens) pickedFileTokens.current[next] = { ...tokens }
-    saveDrafts()
-    // The replacement's draft as it stands: live composer while it is on
-    // screen, stored draft otherwise. Its signature at carry time is what an
-    // untouched replacement still holds.
-    const draftSignature = (slot: string) => {
-      const onScreen = composerSlotRef.current === slot
-      return JSON.stringify([
-        onScreen ? inputRef.current : (drafts.current[slot] ?? ''),
-        onScreen ? pendingFilesRef.current : (fileDrafts.current[slot] ?? []),
-        onScreen ? pasteBlocksRef.current : (pasteDrafts.current[slot] ?? []),
-        onScreen ? pendingSessionsRef.current : (sessionRefDrafts.current[slot] ?? []),
-      ])
-    }
-    const carriedSignature = JSON.stringify([
-      drafts.current[next] ?? '',
-      fileDrafts.current[next] ?? [],
-      pasteDrafts.current[next] ?? [],
-      sessionRefDrafts.current[next] ?? [],
-    ])
-    // Watch for the user going back to the old session while the switch loads:
-    // once they have used it again it is no longer ours to delete, even if they
-    // moved on again before the switch resolved.
-    let left = false
-    let revisited = false
-    const unsubscribe = boundStore.subscribe(() => {
-      const now = boundStore.getState().chat.activeSlot
-      if (now !== activeSlot) left = true
-      else if (left) revisited = true
-    })
-    // An aborted switch keeps the old session, so the replacement would be a
-    // stray empty one. Drop it -- unless the user is now looking at it, where
-    // deleting it would yank them to a sibling, or they typed or attached
-    // something in it while the switch loaded: that draft exists nowhere else,
-    // and a stray session is cheaper than losing it.
-    const dropReplacement = (report: boolean) => {
-      if (boundStore.getState().chat.activeSlot === next) return
-      if (draftSignature(next) !== carriedSignature) return
-      void dispatch(deleteSlot(next)).unwrap().catch(error => {
-        if (report) showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
-      })
-    }
+    // Bounded: a create or switch that never settles must not leave every
+    // composer locked. On timeout the lock lifts and the switch, whenever it
+    // settles, keeps both sessions and carries nothing.
+    const attempt = { timedOut: false }
+    const timer = setTimeout(() => {
+      attempt.timedOut = true
+      unlock()
+      showActionError(i18nT('components.welcomeView.memory_switch_timed_out'))
+    }, memorySwitchTimeoutMs())
+    let handedOver = false
     try {
-      await dispatch(switchSlot(next)).unwrap()
+      const { runMemorySwitch } = await import('./chat/memoryModeSwitch')
+      handedOver = await runMemorySwitch({
+        dispatch, store: boundStore, slot: currentSlot, mode,
+        composerMountedRef, composerSlotRef, inputRef, pendingFilesRef, pasteBlocksRef, pendingSessionsRef,
+        drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDrafts,
+        showActionError: message => showActionError(message), setActionError,
+      }, activeSlot, newMode, attempt)
     } catch (error) {
-      // The rejected switch moves the view back to the old slot, and the
-      // slot-change effect clears any error not marked to survive a switch --
-      // which would erase the only report that the switch failed.
-      setActionError({ message: errMessage(error) || i18nT('pages.chatPage.unknown_error'), preserveOnSwitch: true })
-      // Silent: a cleanup failure must not replace the switch failure, and a
-      // replacement that 404ed has nothing left to delete.
-      dropReplacement(false)
-      return
+      // The module failed to load (an offline reload of a stale tab).
+      if (!attempt.timedOut) showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
     } finally {
-      unsubscribe()
+      clearTimeout(timer)
+      // A timed-out attempt already unlocked; a newer switch may hold the lock now.
+      if (!attempt.timedOut) unlock()
     }
-    if (revisited || boundStore.getState().chat.activeSlot === activeSlot) {
-      dropReplacement(true)
-      return
-    }
-    // From here on an upload still running from the old slot resolves to the
-    // replacement (see uploadFiles). One that already finished while the switch
-    // loaded landed in the old slot's draft after the carry above -- or waits
-    // undrained in its arrivals once the old slot left the screen -- so move it
-    // across too, otherwise it is deleted with the old slot.
-    recordSlotSuccession(activeSlot, next)
-    const late = [...(fileDrafts.current[activeSlot] ?? []), ...takeComposerArrivals(activeSlot)]
-      .filter((p, i, all) => !carriedFiles.includes(p) && all.indexOf(p) === i)
-    if (late.length) {
-      if (boundStore.getState().chat.activeSlot === next) {
-        setPendingFiles(prev => [...prev, ...late.filter(p => !prev.includes(p))])
-      } else {
-        const cur = fileDrafts.current[next] ?? []
-        setFileDraft(fileDrafts.current, next, [...cur, ...late.filter(p => !cur.includes(p))])
-        saveDrafts()
+    // Deleted after the unlock: the user is already in the replacement.
+    if (handedOver) {
+      try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch (error) {
+        // A rejected delete leaves the moved uploads with the replacement,
+        // where the user is, and the old slot keeps its own later work.
+        showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
       }
-    }
-    try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch (error) {
-      forgetSlotSuccession(activeSlot)
-      showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
     }
   }
   // The welcome screen puts its memory chip directly above the composer.
@@ -6569,9 +6490,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 // `w-fit`, not a full-width flex row: the box is a `dock-inert` child, so
                 // it catches input, and it should be no wider than the chip it holds.
                 <div className="relative z-10 mx-auto w-fit px-4 pt-2 pb-2" data-testid="composer-memory-chip">
-                  <MemoryModeChip memoryMode={currentSlot?.memory_mode ?? 'persistent'} onSwitchMode={switchMemoryMode} />
+                  <MemoryModeChip memoryMode={currentSlot?.memory_mode ?? 'persistent'} onSwitchMode={switchMemoryMode} switching={memorySwitching} />
                 </div>
               )}
+              {/* Announces why the composer below is locked; rendered in every
+                  session because the user may move on while the switch runs. */}
+              <span role="status" className="sr-only" data-testid="memory-switch-status">
+                {memorySwitching ? i18nT('components.welcomeView.switching_memory_mode') : ''}
+              </span>
               <Composer
                 ref={composerRef}
                 slotKey={activeSlot}
@@ -6602,14 +6528,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 /* Streaming, compaction, and stopping all
                    keep the input interactive: api_chat queues on slot.running and
                    stop preserves the queue, so typing + Enter queues a
-                   follow-up during the stop window instead of being silently blocked. */
-                false
+                   follow-up during the stop window instead of being silently blocked.
+                   Only a memory-mode switch locks it, with the reason as the
+                   placeholder. */
+                memorySwitching
               }
+              lockedPlaceholder={memorySwitching ? i18nT('components.welcomeView.switching_memory_mode') : undefined}
               autoFocusKey={activeSlot}
               prefillHint={prefillHint}
               onDismissHint={() => setPrefillHint(false)}
               onScreenshot={handleCapture}
-              onUploadFiles={uploadFiles}
+              onUploadFiles={composerUploadFiles}
               /* Only while the active slot has a live upload request, whichever
                  host started it. `uploading` is shared with the screenshot
                  path, which has no request to cancel. */

@@ -80,6 +80,9 @@ export interface ChatInputProps {
   busyMode?: ComposerBusyMode
   disabled?: boolean
   placeholder?: string
+  /** Shown instead of the default "Stopping…" while `disabled` is set, naming
+   *  why the composer is locked. */
+  lockedPlaceholder?: string
   prefillHint?: boolean
   onDismissHint?: () => void
   /** macOS-only screenshot */

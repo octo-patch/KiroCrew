@@ -4,13 +4,13 @@
  * mocked to nothing here, so any chip found comes from ChatPage's own slot.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, act, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
-import { configureStore } from '@reduxjs/toolkit'
+import { configureStore, type Middleware } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import chatReducer, { switchSlot } from '../store/chatSlice'
+import chatReducer, { createSlot, switchSlot } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { ThemeProvider } from '../hooks/useTheme'
@@ -51,6 +51,12 @@ vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DetailPanel', () => ({ default: () => null }))
+const switchTimeout = vi.hoisted(() => vi.fn(() => 15_000))
+vi.mock('../utils/memorySwitchTimeout', () => ({ memorySwitchTimeoutMs: switchTimeout }))
+// Every wait after a memory-mode pick crosses the lazy boundary
+// `import('./chat/memoryModeSwitch')` in ChatPage, then the create and the
+// switch, so it gets more than the 1000ms default.
+const SWITCH_CHAIN_WAIT = { timeout: 5000 }
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
 
 Object.defineProperty(window, 'matchMedia', {
@@ -60,7 +66,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
-import { clearSlotSuccession } from '../utils/slotSuccession'
+import { __resetComposerSendHoldsForTests, isComposerSendHeld, takeComposerArrivals } from '../utils/composerSendHolds'
 // The surface registry is populated by module side effect, and only `App.tsx`
 // imports it in production -- so a harness that mounts ChatPage directly starts
 // with an EMPTY registry and every surface lookup misses. Import it here for the
@@ -79,9 +85,23 @@ const pasteImage = (input: HTMLElement, file: File) =>
     },
   })
 
+/** Slots whose `switchSlot` has settled (fulfilled or rejected), so a test can
+ *  wait for the memory-mode switch to finish before asserting what it left alone. */
+const settledSwitches: string[] = []
+/** Replacement slots whose `createSlot` has fulfilled. */
+const createdSlots: string[] = []
+const recordSettledSwitch: Middleware = () => next => action => {
+  if (switchSlot.fulfilled.match(action) || switchSlot.rejected.match(action)) settledSwitches.push(action.meta.arg)
+  if (createSlot.fulfilled.match(action) && action.payload?.key) createdSlots.push(action.payload.key)
+  return next(action)
+}
+
 function makeStore({ messages, mode = '', slotKeys = ['slot-a'] }: Slot) {
+  settledSwitches.length = 0
+  createdSlots.length = 0
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
+    middleware: getDefault => getDefault().concat(recordSettledSwitch),
     preloadedState: {
       dashboard: {
         status: null,
@@ -140,7 +160,7 @@ describe('memory chip above the composer', () => {
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
 
-    await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('Memory mode switch failed'))
+    await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('Memory mode switch failed'), SWITCH_CHAIN_WAIT)
     expect(deleteChatSlot).not.toHaveBeenCalled()
   })
 
@@ -152,9 +172,9 @@ describe('memory chip above the composer', () => {
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
 
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'))
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
     // deleteSlot rethrows its own 'save failed' in place of the API error.
-    await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('save failed'))
+    await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('save failed'), SWITCH_CHAIN_WAIT)
   })
 
   it('keeps the unsent draft when switching memory mode, both directions', async () => {
@@ -169,15 +189,15 @@ describe('memory chip above the composer', () => {
 
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'))
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'))
-    await waitFor(() => expect(composer().value).toBe('half-written prompt'))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(composer().value).toBe('half-written prompt'), SWITCH_CHAIN_WAIT)
 
     // And back: the "switch to persistent" chip recreates the slot again.
     fireEvent.change(composer(), { target: { value: 'half-written prompt, more' } })
     fireEvent.click(screen.getByTestId('memory-mode-chip'))
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-c'))
-    await waitFor(() => expect(composer().value).toBe('half-written prompt, more'))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-c'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(composer().value).toBe('half-written prompt, more'), SWITCH_CHAIN_WAIT)
   })
 
   it('abandons the switch, keeping the old session, when the user navigates away mid-create', async () => {
@@ -190,7 +210,7 @@ describe('memory chip above the composer', () => {
     fireEvent.change(composer(), { target: { value: 'draft in A' } })
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
-    await waitFor(() => expect(createChatSlot).toHaveBeenCalled())
+    await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
 
     // The user opens another session while the create is still pending.
     await act(async () => { await store.dispatch(switchSlot('slot-x')) })
@@ -200,7 +220,7 @@ describe('memory chip above the composer', () => {
 
     // The unused replacement is dropped; slot A (and its draft) survives and
     // the view stays where the user put it.
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b'))
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b'), SWITCH_CHAIN_WAIT)
     expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
     expect(store.getState().chat.activeSlot).toBe('slot-x')
   })
@@ -213,11 +233,112 @@ describe('memory chip above the composer', () => {
 
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
-    await waitFor(() => expect(createChatSlot).toHaveBeenCalled())
+    await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
     await act(async () => { await store.dispatch(switchSlot('slot-x')) })
     await act(async () => { resolveCreate({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' }) })
 
-    await waitFor(() => expect(screen.getByTestId('action-error')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('action-error')).toBeInTheDocument(), SWITCH_CHAIN_WAIT)
+  })
+
+  it('keeps the replacement when the user opens it while the create is pending', async () => {
+    let resolveCreate: (v: unknown) => void = () => {}
+    createChatSlot.mockImplementationOnce(() => new Promise(r => { resolveCreate = r }))
+    deleteChatSlot.mockClear()
+    const store = await renderWith({ messages: [], slotKeys: ['slot-a', 'slot-x', 'slot-b'] })
+
+    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Incognito').closest('button')!)
+    await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
+    // The user leaves, then opens the replacement as soon as the slots
+    // broadcast lists it (seeded above as slot-b), before the create returns.
+    await act(async () => { await store.dispatch(switchSlot('slot-x')) })
+    await act(async () => { await store.dispatch(switchSlot('slot-b')) })
+    await act(async () => { resolveCreate({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' }) })
+
+    expect(store.getState().chat.activeSlot).toBe('slot-b')
+    expect(deleteChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('locks the composer in every session while the create runs, so nothing can be typed or pasted', async () => {
+    let resolveCreate: (v: unknown) => void = () => {}
+    createChatSlot.mockImplementationOnce(() => new Promise(r => { resolveCreate = r }))
+    deleteChatSlot.mockClear()
+    vi.mocked(api.uploadFiles).mockClear()
+    localStorage.clear()
+    const store = await renderWith({ messages: [], slotKeys: ['slot-a', 'slot-x', 'slot-b'] })
+    const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Incognito').closest('button')!)
+    await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
+    expect(screen.getByTestId('memory-switch-status')).toHaveTextContent('Switching memory mode')
+    expect(screen.getByTestId('memory-mode-chip')).toBeDisabled()
+    expect(screen.getByTestId('memory-mode-chip')).toHaveAttribute('aria-busy', 'true')
+
+    // The replacement shows up in the list before the create returns; the
+    // user opens it and tries to type and paste there.
+    await act(async () => { await store.dispatch(switchSlot('slot-x')) })
+    await act(async () => { await store.dispatch(switchSlot('slot-b')) })
+    expect(composer()).toHaveAttribute('aria-disabled', 'true')
+    expect(composer()).toHaveAttribute('readonly')
+    expect(composer()).toHaveAttribute('placeholder', 'Switching memory mode…')
+    await act(async () => { pasteImage(composer(), new File(['px'], 'mid-switch.png', { type: 'image/png' })) })
+    expect(api.uploadFiles).not.toHaveBeenCalled()
+
+    await act(async () => { resolveCreate({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' }) })
+    await waitFor(() => expect(composer()).not.toHaveAttribute('aria-disabled'), SWITCH_CHAIN_WAIT)
+    expect(screen.getByTestId('memory-switch-status')).toHaveTextContent('')
+    expect(deleteChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('unlocks, keeps both sessions and reports it when the create does not settle in time', async () => {
+    let resolveCreate: (v: unknown) => void = () => {}
+    createChatSlot.mockImplementationOnce(() => new Promise(r => { resolveCreate = r }))
+    deleteChatSlot.mockClear()
+    localStorage.clear()
+    // The create is held pending, so only the timeout can end the lock.
+    switchTimeout.mockReturnValueOnce(1)
+    const store = await renderWith({ messages: [] })
+    const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    fireEvent.change(composer(), { target: { value: 'draft in A' } })
+    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Incognito').closest('button')!)
+    await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
+
+    await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('taking too long'), SWITCH_CHAIN_WAIT)
+    expect(composer()).not.toHaveAttribute('aria-disabled')
+    expect(screen.getByTestId('memory-mode-chip')).not.toBeDisabled()
+    fireEvent.change(composer(), { target: { value: 'draft in A, typed after the timeout' } })
+
+    // The late create must not carry or delete anything.
+    await act(async () => { resolveCreate({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' }) })
+    await waitFor(() => expect(createdSlots).toContain('slot-b'), SWITCH_CHAIN_WAIT)
+    expect(deleteChatSlot).not.toHaveBeenCalled()
+    expect(store.getState().chat.activeSlot).toBe('slot-a')
+    expect(composer().value).toBe('draft in A, typed after the timeout')
+    expect(JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')['slot-b']).toBeUndefined()
+  })
+
+  it('keeps both sessions, carrying nothing, when the page unmounts while the create runs', async () => {
+    let resolveCreate: (v: unknown) => void = () => {}
+    createChatSlot.mockImplementationOnce(() => new Promise(r => { resolveCreate = r }))
+    deleteChatSlot.mockClear()
+    localStorage.clear()
+    const store = await renderWith({ messages: [] })
+
+    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'draft in A' } })
+    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Incognito').closest('button')!)
+    await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
+    // The user leaves the chat page; the detached page still holds A's refs.
+    cleanup()
+    await act(async () => { resolveCreate({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' }) })
+    await waitFor(() => expect(createdSlots).toContain('slot-b'), SWITCH_CHAIN_WAIT)
+
+    expect(deleteChatSlot).not.toHaveBeenCalled()
+    expect(store.getState().chat.activeSlot).toBe('slot-a')
+    expect(JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')['slot-b']).toBeUndefined()
   })
 
   it('keeps the old session when the user returns to it while the switch is loading', async () => {
@@ -232,7 +353,7 @@ describe('memory chip above the composer', () => {
 
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
 
     // While slot-b's transcript is still loading, the user goes back to slot-a
     // and then on to a third session before the switch resolves.
@@ -240,11 +361,10 @@ describe('memory chip above the composer', () => {
     await act(async () => { await store.dispatch(switchSlot('slot-x')) })
     await act(async () => { releaseDetail() })
 
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-x'))
-    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-x'), SWITCH_CHAIN_WAIT)
     // The switch was abandoned, so its replacement must not linger.
-    expect(deleteChatSlot).toHaveBeenCalledWith('slot-b')
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b'), SWITCH_CHAIN_WAIT)
+    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
   })
 
   it('keeps the failure notice when the switch to the replacement is rejected', async () => {
@@ -259,27 +379,27 @@ describe('memory chip above the composer', () => {
 
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     await act(async () => { failDetail() })
 
     // The rejected switch rolls the view back to slot-a; that slot change must
     // not wipe the only report that the switch failed.
-    await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('replacement unreachable'))
+    await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('replacement unreachable'), SWITCH_CHAIN_WAIT)
     expect(store.getState().chat.activeSlot).toBe('slot-a')
-    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
+    // The unused replacement is dropped rather than left as a stray empty session.
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b'), SWITCH_CHAIN_WAIT)
     expect(screen.getByTestId('action-error')).toBeInTheDocument()
     expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
-    // The unused replacement is dropped rather than left as a stray empty session.
-    expect(deleteChatSlot).toHaveBeenCalledWith('slot-b')
+    expect(screen.getByLabelText('Message input')).not.toHaveAttribute('aria-disabled')
   })
 
-  it('keeps the replacement and its draft when the user edits it, then goes back, while the switch loads', async () => {
-    clearSlotSuccession()
+  it('keeps the composer locked while the switch loads, then unlocks it in the replacement with the draft', async () => {
+    __resetComposerSendHoldsForTests()
     localStorage.clear()
     createChatSlot.mockResolvedValueOnce({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' })
     deleteChatSlot.mockClear()
     const store = await renderWith({ messages: [] })
-    const composer = () => screen.getAllByRole('textbox').at(-1)! as HTMLTextAreaElement
+    const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
     let releaseDetail: () => void = () => {}
     vi.mocked(api.chatSlotDetail).mockImplementationOnce(() => new Promise(r => {
       releaseDetail = () => r({ messages: [], running: false, has_more: false, total: 0 } as never)
@@ -288,52 +408,20 @@ describe('memory chip above the composer', () => {
     fireEvent.change(composer(), { target: { value: 'carried' } })
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'))
-    await waitFor(() => expect(composer().value).toBe('carried'))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(composer().value).toBe('carried'), SWITCH_CHAIN_WAIT)
+    // In the replacement while its transcript loads: still locked.
+    expect(composer()).toHaveAttribute('aria-disabled', 'true')
 
-    // Typed into the replacement while it loads, then back to slot-a.
-    fireEvent.change(composer(), { target: { value: 'carried, typed during load' } })
-    await act(async () => { await store.dispatch(switchSlot('slot-a')) })
     await act(async () => { releaseDetail() })
-    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
-
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-b')
-    // The edit is still in slot-b's draft when the user opens it again.
-    await act(async () => { await store.dispatch(switchSlot('slot-b')) })
-    await waitFor(() => expect(composer().value).toBe('carried, typed during load'))
-  })
-
-  it('keeps the replacement and its draft when the user edits it and the switch then 404s', async () => {
-    clearSlotSuccession()
-    localStorage.clear()
-    createChatSlot.mockResolvedValueOnce({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' })
-    deleteChatSlot.mockClear()
-    const store = await renderWith({ messages: [] })
-    const composer = () => screen.getAllByRole('textbox').at(-1)! as HTMLTextAreaElement
-    let failDetail: () => void = () => {}
-    vi.mocked(api.chatSlotDetail).mockImplementationOnce(() => new Promise((_, reject) => {
-      failDetail = () => reject(Object.assign(new Error('replacement unreachable'), { status: 404 }))
-    }))
-
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
-    fireEvent.click(screen.getByText('Incognito').closest('button')!)
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'))
-    fireEvent.change(composer(), { target: { value: 'typed during load' } })
-    await act(async () => { failDetail() })
-
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-a'))
-    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-b')
-    await act(async () => { await store.dispatch(switchSlot('slot-b')) })
-    await waitFor(() => expect(composer().value).toBe('typed during load'))
+    await waitFor(() => expect(settledSwitches).toContain('slot-b'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(composer()).not.toHaveAttribute('aria-disabled'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
+    expect(composer().value).toBe('carried')
   })
 
   it('moves an upload that finished while the switch loaded into the replacement', async () => {
-    // Earlier tests recorded slot-a -> slot-b -> slot-c in the module-level
-    // succession table; start from a clean one.
-    clearSlotSuccession()
+    __resetComposerSendHoldsForTests()
     localStorage.clear()
     deleteChatSlot.mockClear()
     createChatSlot.mockResolvedValueOnce({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' })
@@ -349,24 +437,145 @@ describe('memory chip above the composer', () => {
     }))
 
     await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'during-switch.png', { type: 'image/png' })) })
-    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled())
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
 
     // The upload settles while slot-b is still loading: it lands in slot-a's
     // draft, which the switch is about to delete.
     await act(async () => { finishUpload() })
     await act(async () => { releaseDetail() })
 
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'))
-    await waitFor(() => expect(screen.getByRole('group', { name: '/uploads/during-switch.png' })).toBeInTheDocument())
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(screen.getByRole('group', { name: '/uploads/during-switch.png' })).toBeInTheDocument(), SWITCH_CHAIN_WAIT)
+  })
+
+  it('keeps both sessions, and the upload in the old one, when the page unmounts while the switch loads', async () => {
+    localStorage.clear()
+    __resetComposerSendHoldsForTests()
+    deleteChatSlot.mockClear()
+    createChatSlot.mockResolvedValueOnce({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' })
+    let finishUpload: () => void = () => {}
+    vi.mocked(api.uploadFiles).mockImplementationOnce(() => new Promise(r => {
+      finishUpload = () => r({ paths: ['/uploads/after-unmount.png'] } as never)
+    }))
+    const store = await renderWith({ messages: [] })
+    let releaseDetail: () => void = () => {}
+    vi.mocked(api.chatSlotDetail).mockImplementationOnce(() => new Promise(r => {
+      releaseDetail = () => r({ messages: [], running: false, has_more: false, total: 0 } as never)
+    }))
+
+    await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'after-unmount.png', { type: 'image/png' })) })
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
+    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Incognito').closest('button')!)
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
+
+    // The user leaves the chat page while slot-b loads; the upload lands meanwhile.
+    cleanup()
+    await act(async () => { finishUpload() })
+    await act(async () => { releaseDetail() })
+    await waitFor(() => expect(settledSwitches).toContain('slot-b'), SWITCH_CHAIN_WAIT)
+
+    expect(deleteChatSlot).not.toHaveBeenCalled()
+    expect(takeComposerArrivals('slot-a')).toEqual(['/uploads/after-unmount.png'])
+    expect(takeComposerArrivals('slot-b')).toEqual([])
+  })
+
+  it('holds Send in the replacement while an upload from the old session is still running', async () => {
+    localStorage.clear()
+    __resetComposerSendHoldsForTests()
+    deleteChatSlot.mockClear()
+    createChatSlot.mockResolvedValueOnce({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' })
+    let finishUpload: () => void = () => {}
+    vi.mocked(api.uploadFiles).mockImplementationOnce(() => new Promise(r => {
+      finishUpload = () => r({ paths: ['/uploads/held.png'] } as never)
+    }))
+    const store = await renderWith({ messages: [] })
+
+    await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'held.png', { type: 'image/png' })) })
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
+    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Incognito').closest('button')!)
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
+
+    expect(isComposerSendHeld('slot-b')).toBe(true)
+    await act(async () => { finishUpload() })
+    await waitFor(() => expect(screen.getByRole('group', { name: '/uploads/held.png' })).toBeInTheDocument(), SWITCH_CHAIN_WAIT)
+    expect(isComposerSendHeld('slot-b')).toBe(false)
+    expect(isComposerSendHeld('slot-a')).toBe(false)
+  })
+
+  it('releases Send in the replacement when the old session delete fails mid-upload', async () => {
+    localStorage.clear()
+    __resetComposerSendHoldsForTests()
+    deleteChatSlot.mockClear()
+    createChatSlot.mockResolvedValueOnce({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' })
+    deleteChatSlot.mockRejectedValueOnce(new Error('Old session delete failed'))
+    let finishUpload: () => void = () => {}
+    vi.mocked(api.uploadFiles).mockImplementationOnce(() => new Promise(r => {
+      finishUpload = () => r({ paths: ['/uploads/delete-failed.png'] } as never)
+    }))
+    const store = await renderWith({ messages: [] })
+
+    await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'delete-failed.png', { type: 'image/png' })) })
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
+    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Incognito').closest('button')!)
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('save failed'), SWITCH_CHAIN_WAIT)
+
+    // The hold moved to the replacement with the switch; the upload must
+    // settle there too, or Send stays held in the session the user is in.
+    expect(isComposerSendHeld('slot-b')).toBe(true)
+    await act(async () => { finishUpload() })
+    await waitFor(() => expect(screen.getByRole('group', { name: '/uploads/delete-failed.png' })).toBeInTheDocument(), SWITCH_CHAIN_WAIT)
+    expect(isComposerSendHeld('slot-b')).toBe(false)
+    expect(isComposerSendHeld('slot-a')).toBe(false)
+  })
+
+  it('keeps a later upload in the old session when its delete fails', async () => {
+    localStorage.clear()
+    __resetComposerSendHoldsForTests()
+    deleteChatSlot.mockClear()
+    createChatSlot.mockResolvedValueOnce({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' })
+    deleteChatSlot.mockRejectedValueOnce(new Error('Old session delete failed'))
+    vi.mocked(api.uploadFiles).mockClear()
+    let finishFirst: () => void = () => {}
+    let finishLater: () => void = () => {}
+    vi.mocked(api.uploadFiles)
+      .mockImplementationOnce(() => new Promise(r => { finishFirst = () => r({ paths: ['/uploads/in-flight.png'] } as never) }))
+      .mockImplementationOnce(() => new Promise(r => { finishLater = () => r({ paths: ['/uploads/later.png'] } as never) }))
+    const store = await renderWith({ messages: [] })
+
+    await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'in-flight.png', { type: 'image/png' })) })
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(1), SWITCH_CHAIN_WAIT)
+    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Incognito').closest('button')!)
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('save failed'), SWITCH_CHAIN_WAIT)
+    await act(async () => { finishFirst() })
+    await waitFor(() => expect(screen.getByRole('group', { name: '/uploads/in-flight.png' })).toBeInTheDocument(), SWITCH_CHAIN_WAIT)
+
+    // The old session survived its failed delete. The user goes back to it
+    // and uploads there: that upload belongs to the old session, not the
+    // replacement.
+    await act(async () => { await store.dispatch(switchSlot('slot-a')) })
+    await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'later.png', { type: 'image/png' })) })
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(2), SWITCH_CHAIN_WAIT)
+    expect(isComposerSendHeld('slot-a')).toBe(true)
+    await act(async () => { finishLater() })
+
+    await waitFor(() => expect(screen.getByRole('group', { name: '/uploads/later.png' })).toBeInTheDocument(), SWITCH_CHAIN_WAIT)
+    expect(isComposerSendHeld('slot-a')).toBe(false)
+    expect(isComposerSendHeld('slot-b')).toBe(false)
+    expect(takeComposerArrivals('slot-b')).toEqual([])
   })
 
   it('lands an upload still running after the switch in the replacement', async () => {
-    // Earlier tests recorded slot-a -> slot-b -> slot-c in the module-level
-    // succession table; start from a clean one.
-    clearSlotSuccession()
+    __resetComposerSendHoldsForTests()
     localStorage.clear()
     deleteChatSlot.mockClear()
     createChatSlot.mockResolvedValueOnce({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' })
@@ -377,14 +586,14 @@ describe('memory chip above the composer', () => {
     const store = await renderWith({ messages: [] })
 
     await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'after-switch.png', { type: 'image/png' })) })
-    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled())
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'))
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
 
     await act(async () => { finishUpload() })
-    await waitFor(() => expect(screen.getByRole('group', { name: '/uploads/after-switch.png' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('group', { name: '/uploads/after-switch.png' })).toBeInTheDocument(), SWITCH_CHAIN_WAIT)
   })
 
   it('is absent once the session has messages', async () => {

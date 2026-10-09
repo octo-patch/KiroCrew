@@ -9239,6 +9239,8 @@
       "suggestion_triage_tickets": "Разобрать мои дежурные тикеты",
       "suggestion_write_design_doc": "Помочь мне написать проектный документ",
       "choose_memory_mode": "Выбрать режим памяти",
+      "memory_switch_timed_out": "Переключение режима памяти занимает слишком много времени. Оба чата сохранены; попробуй ещё раз.",
+      "switching_memory_mode": "Переключение режима памяти…",
       "incognito_active_switch_to_persistent": "Инкогнито — переключиться в постоянный режим",
       "temporary": "Временная",
       "temporary_active_switch_to_persistent": "Временный — переключиться в постоянный режим",

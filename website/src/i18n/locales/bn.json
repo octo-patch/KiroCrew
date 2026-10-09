@@ -8985,6 +8985,8 @@
       "suggestion_triage_tickets": "আমার অন-কল টিকিট ট্রায়াজ করুন",
       "suggestion_write_design_doc": "একটি ডিজাইন ডকুমেন্ট লিখতে আমাকে সাহায্য করুন",
       "choose_memory_mode": "মেমরি মোড বেছে নিন",
+      "memory_switch_timed_out": "মেমরি মোড বদলাতে অনেক সময় লাগছে। দুটি চ্যাটই রাখা হয়েছে; আবার চেষ্টা করো।",
+      "switching_memory_mode": "মেমরি মোড বদলানো হচ্ছে…",
       "incognito_active_switch_to_persistent": "ছদ্মবেশী — স্থায়ী মোডে বদলান",
       "temporary": "অস্থায়ী",
       "temporary_active_switch_to_persistent": "অস্থায়ী — স্থায়ী মোডে বদলান",

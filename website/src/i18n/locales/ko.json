@@ -8858,6 +8858,8 @@
       "suggestion_triage_tickets": "온콜 티켓 분류",
       "suggestion_write_design_doc": "설계 문서 작성 지원",
       "choose_memory_mode": "메모리 모드 선택",
+      "memory_switch_timed_out": "메모리 모드 전환이 너무 오래 걸립니다. 두 채팅 모두 유지되었습니다. 다시 시도하세요.",
+      "switching_memory_mode": "메모리 모드 전환 중…",
       "incognito_active_switch_to_persistent": "시크릿 — 영구 모드로 전환",
       "temporary": "임시",
       "temporary_active_switch_to_persistent": "임시 — 영구 모드로 전환",
