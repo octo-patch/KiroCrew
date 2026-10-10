@@ -8865,6 +8865,160 @@ class TestSandboxEscapeSshSelf:
     def test_other_hosts_and_mentions_stay_allowed(self, cmd):
         assert _denied_by(cmd) is None, cmd
 
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A remote command's own ``-R`` flag whose value is NOT a forward
+            # spec. ``gh ... -R owner/repo`` names a GitHub repo, not a
+            # ``[bind:]port`` -- OpenSSH rejects it as a port -- so it dials
+            # nothing from here and the connection to the REMOTE host stays
+            # allowed. The 1-2 field reverse-SOCKS branch fails closed only when
+            # the port field is port-shaped (a number or an /etc/services name).
+            "ssh far-host.example.com gh issue list -R owner/repo",
+            "ssh far-host.example.com gh issue list -R o/r",
+            "ssh far-host.example.com gh pr list -R o/r --limit 30",
+            "ssh 198.51.100.9 gh pr view -R kirodotdev/kirocrew",
+            "ssh -o batchmode=yes far-host.example.com gh pr view -R o/r",
+            "ssh far-host.example.com gh issue develop -R a/b/c",
+            "ssh far-host.example.com 'gh issue list -R o/r'",
+            "ssh user@far-host.example.com gh pr list -R o/r",
+            "scp -R o/r file far-host.example.com:/tmp/x",
+            # ``mksh`` is in the nested-shell set, so its ``-c`` payload is walked
+            # like ``bash``/``ksh``: a NON-self destination inside it stays allowed,
+            # exactly as the same payload under ``bash``/``ksh`` (and the direct
+            # command) does. The self case is refused below.
+            "mksh -c 'ssh far-host.example.com uptime'",
+            "bash -c 'ssh far-host.example.com uptime'",
+            "ksh -c 'ssh far-host.example.com uptime'",
+        ],
+    )
+    def test_remote_command_nonport_forward_value_is_allowed(self, cmd):
+        # A non-port ``-R`` value is not a self reverse-SOCKS, so it is allowed.
+        assert _denied_by(cmd) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Accepted residual (interim tier): a remote command's own
+            # ``-R``/``-J``/``-o`` whose value DOES name this host stays refused.
+            # ssh parses options only up to the destination, so semantically
+            # these belong to the remote command -- but a text-only floor cannot
+            # prove the far side won't re-enter this host, so it fails CLOSED.
+            # A port-shaped reverse-SOCKS port, a self ProxyJump, and a self
+            # Hostname override are each a self dial if read as an option; the
+            # OS network fence is the real close for these.
+            "ssh far-host.example.com gh x -R 2222:localhost:22",
+            "ssh far-host.example.com gh x -R localhost:2222",
+            "ssh far-host.example.com gh x -R 8080",
+            "ssh far-host.example.com gh x -J localhost",
+            "ssh far-host.example.com gh x -o proxyjump=localhost",
+            # A ``-R`` port field must fail CLOSED unless it provably cannot be a
+            # port: OpenSSH accepts remote port ``0`` (the server assigns it) and
+            # service names, and the shell expands ``{8080,}``, ``$P``, ``~`` or a
+            # glob to a port before ssh runs. None may be trusted as "not a port".
+            "ssh -R0 far-host.example.com",
+            "ssh -R localhost:0 far-host.example.com",
+            "ssh -o remoteforward=0 far-host.example.com",
+            "ssh -R 9pfs far-host.example.com",
+            # A 2-field -R value can be a LOCAL SOCKET path, a real reverse
+            # forward into this host, so a `/` in the last field never exempts it.
+            "ssh -R 2222:/var/run/docker.sock far-host.example.com",
+            "ssh -R /tmp/r.sock:/var/run/docker.sock far-host.example.com",
+            "ssh -o 'remoteforward=2222 /var/run/docker.sock' far-host.example.com",
+            # A `/` inside a shell parameter-expansion operator is not a literal
+            # path: bash rewrites `${p%/}` to a port before ssh runs.
+            "p=8080; ssh -R ${p%/} far-host.example.com",
+            'p=8080; ssh -R "${p#/}" far-host.example.com',
+            # An extended glob carries `/` but expands to a port: only a token
+            # drawn from literal path characters takes the exemption.
+            "bash -O extglob -c 'cd /proc/self/fd; ssh -R @(/|0) far-host.example.com'",
+            # A `-R` BEFORE the destination is a real ssh option, and OpenSSH reads
+            # a `/`-bearing value as a local SOCKET path (a reverse forward into
+            # this host): the path exemption is for a remote command's own flag
+            # AFTER the destination, never for a real `-R`/`-o RemoteForward` option.
+            "ssh -R o/r far-host.example.com",
+            "ssh -R tmp/s far-host.example.com",
+            "ssh -R /run/user/1000/bus far-host.example.com",
+            "ssh -o remoteforward=run/x far-host.example.com",
+            "scp -oRemoteForward=o/r file far-host.example.com:/t",
+            # ssh keeps reading its own options AFTER the host until the first
+            # remote-command word, so a `-R` that follows the destination with no
+            # command word before it is still a real option, not a remote flag.
+            "ssh far-host.example.com -R tmp/s",
+            "ssh -v far-host.example.com -R run/x",
+            "ssh far-host.example.com -R o/r",
+            # A word that can expand/glob to NOTHING between the host and `-R`
+            # does not begin the remote command (bash drops it), so `-R` stays a
+            # real option: these must fail closed, not take the path exemption.
+            "ssh far-host.example.com $NOPE -R tmp/s",
+            "ssh far-host.example.com {,} -R run/x",
+            "ssh far-host.example.com $(:) -R o/r",
+            'ssh far-host.example.com "$@" -R tmp/s',
+            # An empty-expanding word in the DESTINATION slot hands the "command
+            # has begun" role to the real host, so the exemption needs a literal
+            # destination too: these are real `-R` forwards and must fail closed.
+            "ssh $NOPE far-host.example.com -R tmp/s",
+            "ssh {,} far-host.example.com -R run/x",
+            "ssh $(:) far-host.example.com -R o/r",
+            'ssh "$@" far-host.example.com -R tmp/s',
+            # A LITERAL word inside an empty/approximated expansion does not begin
+            # the remote command: the normalizer may splice it in or drop it, so
+            # any expansion on the line disables the position-based exemption.
+            "ssh far-host.example.com $(: x ) -R tmp/s",
+            "ssh far-host.example.com $( true ) -R run/x",
+            "word=gh; ssh -N far-host.example.com ${word:2} -R tmp/s",
+            "ssh $(: x ) far-host.example.com -R tmp/s",
+            # A LAUNCHER that runs ssh as its argument rewrites argv before exec,
+            # so the walk's token positions are not ssh's real argv: ``xargs -I``
+            # substitutes its placeholder, turning a word the walk reads as the
+            # remote command into an ``-R`` option into THIS host. The path
+            # exemption is for an ssh at PROGRAM POSITION only, so a launcher-run
+            # ssh fails closed -- the same as ``main``, which refuses these.
+            "printf '%s' -N | xargs -I word ssh far-host.example.com word -R tmp/s",
+            "xargs -I word ssh far-host.example.com word -R o/r",
+            "printf far | xargs -I h ssh h gh -R run/x",
+            "env ssh far-host.example.com gh -R run/x",
+            "nice ssh far-host.example.com gh -R tmp/s",
+            # ``mksh`` is a nested shell, so a SELF destination hidden in its
+            # ``-c`` payload is caught, the same as ``bash``/``ksh`` -- this is why
+            # the nested-shell set must keep ``mksh``.
+            "mksh -c 'ssh localhost uptime'",
+            # A same-line shell ALIAS rewrites argv the walk cannot see: with
+            # ``alias gh=`` the word the walk reads as the remote command vanishes
+            # and ssh actually receives ``-R tmp/s`` as a real option into THIS
+            # host. An ``alias`` word (and the newline an alias needs to take
+            # effect) make token position untrustworthy, so the ``-R`` exemption
+            # fails closed -- the same as ``main``, which refuses it with no
+            # exemption at all.
+            "shopt -s expand_aliases\nalias gh=\nssh far-host.example.com gh -R tmp/s",
+            "alias gh=\nssh far-host.example.com gh -R o/r",
+            # GPT 6.1's inputs on head b7a3a8486c, where a raw-text ``\balias\b``
+            # match (and the newline check) was the only guard: a QUOTE-SPLICED
+            # ``alias`` (``a""lias``) and an ``eval``-wrapped payload slipped past
+            # it, re-opening the ``-R`` position bypass (allowed on b7a3a8486c,
+            # refused on main).  The exemption now fails CLOSED on ANY indirection
+            # machinery -- a quote/backslash splice, or an ``alias``/``eval``/
+            # ``source``/``.`` verb -- detected on the characters themselves, not
+            # by modelling each spelling, so these are refused like ``main``.
+            'shopt -s expand_aliases; a""lias ssh=\'ssh \'; a""lias gh=; '
+            "eval 'ssh gh far-host.example.com -R tmp/s'",
+            "eval 'ssh gh far-host.example.com -R tmp/s'",
+            "e\\val 'ssh gh far-host.example.com -R tmp/s'",
+            # A quote-spliced word in the remote-command position is non-literal,
+            # so the walk cannot trust that it begins the remote command: fail
+            # closed rather than grant the path exemption.
+            'ssh far-host.example.com a""lias -R tmp/s',
+            # ``source``/``.`` run a file that can define the aliasing above, so
+            # either as a leading command fails the exemption closed too.
+            "source /tmp/x; ssh far-host.example.com gh -R tmp/s",
+            ". /tmp/x; ssh far-host.example.com gh -R o/r",
+        ],
+    )
+    def test_portshaped_self_forward_in_remote_command_stays_refused(self, cmd):
+        # These are false denials on the fail-closed side -- a documented
+        # residual of the text tier that the OS network fence closes.
+        assert _denied_by(cmd) == self._RULE, cmd
+
     def test_floor_spawns_no_dns_resolver_thread(self):
         # With the own-host cache pinned by the autouse fixture, evaluating a
         # representative allow case through the floor must NOT spawn the real

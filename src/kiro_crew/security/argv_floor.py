@@ -95,6 +95,7 @@ from .inline_payload import (
 )
 from .shell_normalizer import (
     _AMBIGUOUS_EXPANSION_RE,
+    _LITERAL_PATH_RE,
     _PROCESS_SUBSTITUTION_OPENERS,
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
@@ -115,6 +116,7 @@ from .shell_normalizer import (
     _is_self_program,
     _iter_shell_chars,
     _matching_close_paren,
+    _might_be_forward_port,
     _nested_shell_payloads,
     _program_basename,
     _push_option_matches,
@@ -130,6 +132,7 @@ from .shell_normalizer import (
     _strip_redirect,
     _substitution_bodies,
     _substitution_depth_delta,
+    _text_defeats_argv_position,
     _xargs_here_string_rebuild,
 )
 from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_FILE_DELIVERY_VERBS, _SELF_NAME_RE
@@ -2714,23 +2717,22 @@ def _proxyjump_value_targets_self(value: str) -> bool:
     return any(_operand_targets_self(hop) for hop in value.split(","))
 
 
-def _remote_forward_value_targets_self(value: str) -> bool:
+def _remote_forward_value_targets_self(value: str, post_destination: bool = False) -> bool:
     """True if a remote-forward (``-R`` / RemoteForward) spec dials THIS host.
 
     ``-R`` is the one forward whose DESTINATION is dialed FROM HERE: the far
-    sshd listens, and each accepted connection is handed back for THIS client
-    to connect to ``host:hostport`` locally -- so ``-R 2222:localhost:22``
-    gives remote users the local unsandboxed sshd.  Branch table for
-    ``_SSH_FORWARD_OPT_LETTERS`` (the others stay exempt): ``-L``/``-D``
-    destinations are dialed from the FAR side (its loopback is the far
-    machine), ``-w`` names tun devices, ``-b`` a local source bind -- none
-    dials a destination from here.  Spec shapes, colon-split OUTSIDE
-    brackets: ``[bind:]port:host:hostport`` (3-4 fields) checks the host
-    field as a connection target (DNS-classified like any host value);
-    ``[bind:]port`` (1-2 fields) is reverse-SOCKS, where the REMOTE chooses
-    every local dial destination -- loopback included -- so it fails closed.
-    The config spelling ``RemoteForward listen dest`` is whitespace-joined
-    onto ``:`` first, which reduces it to the same shape.
+    sshd listens and hands each connection back for THIS client to dial locally,
+    so ``-R 2222:localhost:22`` gives remote users the local unsandboxed sshd.
+    (``-L``/``-D`` dial from the FAR side, ``-w``/``-b`` dial nothing from here --
+    they stay exempt.)  Spec shapes, colon-split OUTSIDE brackets:
+    ``[bind:]port:host:hostport`` (3-4 fields) checks the host field.  A SINGLE
+    field is exempt only when *post_destination* AND it provably cannot be a port
+    (a literal ``/``-bearing remote-command flag like ``gh -R o/r``); a ``-R``
+    before the remote command, or the ``-o RemoteForward`` config caller
+    (*post_destination* defaults False), is a real option whose ``/`` value is a
+    local SOCKET path, so it fails closed.  A TWO-field value always fails closed
+    (its last field can be a socket path, ``-R 2222:/run/docker.sock``).  The
+    config spelling is whitespace-joined onto ``:`` first, the same shape.
     """
     spec = ":".join(value.strip().strip("\"'").split())
     fields: list[str] = []
@@ -2745,7 +2747,14 @@ def _remote_forward_value_targets_self(value: str) -> bool:
             fields.append(spec[start:i])
             start = i + 1
     fields.append(spec[start:])
-    if len(fields) <= 2:
+    if len(fields) == 1:
+        # ``[bind:]port`` with no bind: self unless the one field cannot be a port
+        # AND it sits after the destination (a remote command's own flag).
+        return _might_be_forward_port(fields[0], post_destination)
+    if len(fields) == 2:
+        # ``bind:port`` OR ``[bind:]port:local_socket`` where the last field can be
+        # a LOCAL SOCKET path on this host (``-R 2222:/run/docker.sock``): a real
+        # reverse forward into this machine, so a 2-field spec always fails closed.
         return True
     dest = fields[-2].strip().strip("[]")
     return bool(dest) and _operand_targets_self(dest)
@@ -3006,6 +3015,10 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     the shell-builtin export spellings (``declare -x``/``typeset -x``), which
     are not leading-assignment syntax and so are not modeled by the walk.
     """
+    # The ``-R`` path exemption trusts token POSITION; the normalizations below
+    # can rewrite an expansion into a clean literal (or drop an empty word),
+    # shifting the real argv, so an expansion anywhere disables it (fail closed).
+    position_unsafe = _text_defeats_argv_position(text_lower)
     # Collapse empty expansions in the SOURCE so the gate and tokenization both
     # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
     text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
@@ -3200,6 +3213,18 @@ def _is_ssh_to_self(text_lower: str) -> bool:
             # A verb starts a fresh simple command, so the ``export`` adjacency
             # run ends here.
             prev_stripped_tok = None
+            # The ``-R`` path exemption trusts that the tokens the walk reads
+            # after the destination ARE the argv ssh is exec'd with.  That holds
+            # only for an ssh at PROGRAM POSITION of its own simple command: a
+            # launcher that runs ssh as its argument (``xargs -I word ssh …``,
+            # and wrappers generally) can rewrite that argv before exec -- here
+            # xargs substitutes its ``-I`` token, so a word the walk reads as the
+            # remote command becomes an ``-R`` option into THIS host.  ``cmd_start``
+            # is false whenever a program word already preceded this verb, so a
+            # non-program-position ssh disables the exemption (fail closed),
+            # without naming any launcher.  ``position_unsafe`` covers the other
+            # argv-rewrite: an expansion/glob the normalizer may splice or drop.
+            verb_at_program_position = cmd_start
             # ``echo ssh localhost`` prints two words; it connects to nothing.
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
@@ -3232,6 +3257,8 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                 if not rsync_rsh_pending and not rsync_rsh_exported and rsync_rsh_carried_self:
                     return True
             positional_pending = verb in ("ssh", "sftp")
+            remote_command_started = False  # a non-option word has followed the destination
+            destination_literal = False  # the destination slot was taken by a literal word
             option_shadow = False  # previous token was an option that may take a value
             value_shadow = False  # previous token was an option that CONSUMES a value
             value_shadow_ambiguous = False  # ...but its folded letter is case-ambiguous
@@ -3411,7 +3438,12 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     # spec is checked instead of exempted (round-27; the
                     # branch table lives on ``_remote_forward_value_targets_self``).
                     if forward_value_letter == "r" and _remote_forward_value_targets_self(
-                        _unmask_separators(stripped)
+                        _unmask_separators(stripped),
+                        post_destination=(
+                            remote_command_started
+                            and not position_unsafe
+                            and verb_at_program_position
+                        ),
                     ):
                         return True
                     forward_value_pending = False
@@ -3434,9 +3466,19 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     ):
                         return True
                     if not value_shadow:
-                        # round-18: same consumption rule as the redirect
-                        # branch above.
-                        positional_pending = False
+                        # round-18: a literal destination THEN a literal command
+                        # word begins the remote command (a later ``-R`` is then
+                        # its flag); ``user@`` is stripped from the destination.
+                        if positional_pending:
+                            positional_pending = False
+                            destination_literal = bool(
+                                _LITERAL_PATH_RE.match(stripped.rpartition("@")[2])
+                            )
+                        elif destination_literal and _LITERAL_PATH_RE.match(stripped):
+                            remote_command_started = True
+                    option_shadow = False
+                    value_shadow = False
+                    value_shadow_ambiguous = False
                     option_shadow = False
                     value_shadow = False
                     value_shadow_ambiguous = False

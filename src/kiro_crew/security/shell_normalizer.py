@@ -404,7 +404,71 @@ def _glob_to_regex(pattern: str, depth: int = 0, budget: "list[int] | None" = No
 
 # Programs whose ``-c`` argument is a shell script: its text is a COMMAND, so a
 # self-protection check has to look inside it rather than treat it as an operand.
-_NESTED_SHELL_PROGRAMS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash", "busybox"})
+_NESTED_SHELL_PROGRAMS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "busybox"})
+
+
+# The ssh ``-R`` remote-command path exemption trusts that a token's POSITION in
+# the normalized walk is the position ssh is exec'd with. INDIRECTION MACHINERY
+# defeats that, so this fails the exemption CLOSED on ANY DOUBT rather than
+# modelling each spelling (per-spelling modelling is what keeps leaking):
+#
+#  * EXPANSION the shell performs before exec -- substitution, variable, glob,
+#    brace, extglob, process-sub, tilde, redirect -- which can splice, drop or
+#    reorder a word (``[$`{}()*?[]~<>]``), and a NEWLINE (an alias takes effect
+#    on the line after it is defined).
+#  * QUOTE and ESCAPE characters (``"`` ``'`` ``\``): these splice a word the
+#    walk cannot see -- ``a""lias``, ``e\val``, ``'ev'al`` all normalize to a
+#    bare keyword at exec, and a quoted/backslashed word is a NON-LITERAL command
+#    word.  Flagging the characters themselves catches every spliced spelling
+#    without a per-spelling normalizer.
+#  * INDIRECTION VERBS that rewrite argv or defer evaluation: ``alias`` (expands
+#    a later word away -- ``ssh far gh -R tmp/s`` with ``alias gh=`` runs
+#    ``ssh far -R tmp/s``, a real reverse forward in), ``eval`` (re-parses its
+#    text), and ``source``/``.`` (runs a file that can define that alias).  The
+#    verb words are matched too, as defence in depth beside the splice-character
+#    flag.
+#
+# It only ever makes the ``-R`` exemption MORE closed; it never allows anything.
+_POSITION_UNSAFE_RE = re.compile(
+    r"""[$`{}()*?\[\]~<>\n"'\\]"""  # expansion / glob / subst / redirect / newline / quote / escape
+    r"|\b(?:alias|eval|source)\b"  # indirection verbs: argv rewrite or deferred evaluation
+    r"|(?:\A|[\n;&|(])[ \t]*\.(?=[ \t])"  # the ``.`` (dot) source builtin at command position
+)
+
+
+def _text_defeats_argv_position(text_lower: str) -> bool:
+    """True if expansion/quote-splice/indirection could shift argv so position is unsafe.
+
+    Fails the ssh ``-R`` path exemption CLOSED on any doubt: an expansion, glob,
+    brace, substitution, redirect or newline; a quote or backslash (which splices
+    a non-literal command word the walk cannot see); or an ``alias``/``eval``/
+    ``source``/``.`` indirection verb that rewrites argv or defers evaluation.
+    """
+    return bool(_POSITION_UNSAFE_RE.search(text_lower))
+
+
+# A LITERAL path/repo token: a ``/``-bearing word drawn ONLY from path characters
+# -- an ALLOWLIST, so no shell operator (extglob ``(`` / ``|`` / ``@``, ``$``,
+# brace, glob) can slip through. Used both for the ssh ``-R`` path value and to
+# recognise a literal ssh destination / remote-command word.
+_LITERAL_PATH_RE = re.compile(r"\A[a-z0-9][a-z0-9/._-]*\Z")
+
+
+def _might_be_forward_port(field: str, post_destination: bool) -> bool:
+    """True unless a single ``-R`` port field PROVABLY cannot be a port.
+
+    Fails closed: a number, ``0``, a service name, or any token the shell could
+    expand to a port (brace, glob, extglob, variable, tilde, command sub) counts
+    as a port. A ``/``-bearing token drawn solely from literal path characters is
+    exempt as a non-forward value ONLY when *post_destination* -- after the remote
+    command begins it is a command's own flag (``gh -R o/r``); before it a ``-R``
+    is a real option whose ``/`` value OpenSSH reads as a local SOCKET PATH (a
+    reverse forward in), so it fails closed.
+    """
+    tok = field.strip().strip("\"'[]")
+    if post_destination and "/" in tok and _LITERAL_PATH_RE.match(tok):
+        return False
+    return True
 
 
 _NESTED_SHELL_VERBS = frozenset({"eval", "source", "."})
