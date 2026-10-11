@@ -312,7 +312,25 @@ def _url_payload_command(n: int) -> str:
 #: ``launcher.terminate``. Ten lines, of which four are the comprehension and six the
 #: reason every entry in that list carries. No matching rule, no threshold and no pass
 #: moved -- a target was added to a list the gate already walks.
-_PACKAGE_LINE_BUDGET = 29_175
+#:
+#: Raised again, from 29,175, for the bare-kill window's runtime-synthesis search:
+#: a substitution body whose lookup target is assembled from a single-literal
+#: ``printf``/``echo`` substitution or a brace expansion is folded and matched for
+#: the name before the search. The constant-output fold reuses the existing
+#: ``_static_substitution_output`` resolver (guarded to a single plain literal, so
+#: no second printf model); the quote reading that keeps a quoted substitution,
+#: brace, comment or escape inert is taken from ``_iter_shell_chars`` -- the
+#: module's one quote/escape state machine -- not a second copy, so the fold and
+#: the brace mask read quoting through it and the shared paren-span reader
+#: (subshells, case patterns and ``$$`` open or close nothing); all of a body's
+#: expansion work shares one cumulative character budget (the connection-target
+#: check keeps its word cap alone), an assignment value's braces stay literal,
+#: and a same-line assignment chain is bounded by length before it is built.
+#: Neither an unresolvable operand nor a brace product past the fan-out cap is
+#: failed closed -- both are documented residuals; no pass widened, no threshold
+#: moved. The hosts-file path seam moves unchanged to ``hosts_file`` (one import
+#: line here) so ``argv_floor`` stays under the per-module cap.
+_PACKAGE_LINE_BUDGET = 29_638
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
