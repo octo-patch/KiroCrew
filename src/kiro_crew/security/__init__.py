@@ -3057,7 +3057,7 @@ _EXPORTS: dict[str, str] = {
     "_is_shell_variable_reference": "shell_normalizer",
     "_iter_shell_chars": "shell_normalizer",
     "_matching_close_paren": "shell_normalizer",
-    "_mint_verb_in_substitution": "shell_normalizer",
+    "_mint_verb_in_substitution": "_assign",
     "_nested_shell_payloads": "shell_normalizer",
     "_next_stop_indexes": "shell_normalizer",
     "_normalize_operand": "shell_normalizer",
@@ -3067,7 +3067,7 @@ _EXPORTS: dict[str, str] = {
     "_output_redirect_scan": "shell_normalizer",
     "_pipes_into_evaluator": "shell_normalizer",
     "_program_basename": "shell_normalizer",
-    "_protected_name_in_substitution": "shell_normalizer",
+    "_protected_name_in_substitution": "_assign",
     "_push_option_matches": "shell_normalizer",
     "_push_token_redirection": "shell_normalizer",
     "_push_token_shell_read": "shell_normalizer",
@@ -3075,7 +3075,6 @@ _EXPORTS: dict[str, str] = {
     "_redirect_consumes_next": "shell_normalizer",
     "_redirect_glue_point": "shell_normalizer",
     "_resolve_function_aliases": "shell_normalizer",
-    "_resolve_local_assignments": "shell_normalizer",
     "_resolve_param_defaults": "shell_normalizer",
     "_sed_exec_replacement": "shell_normalizer",
     "_self_tokens": "shell_normalizer",
@@ -3206,6 +3205,10 @@ __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.sta
 
 
 if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
+    from kiro_crew.security._assign import (  # noqa: F401
+        _mint_verb_in_substitution,
+        _protected_name_in_substitution,
+    )
     from kiro_crew.security.argv_floor import (  # noqa: F401
         _AMBIGUOUS_REFS,
         _AMBIGUOUS_REFSPEC_RE,
@@ -3648,7 +3651,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _is_shell_variable_reference,
         _iter_shell_chars,
         _matching_close_paren,
-        _mint_verb_in_substitution,
         _nested_shell_payloads,
         _next_stop_indexes,
         _normalize_operand,
@@ -3658,7 +3660,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _output_redirect_scan,
         _pipes_into_evaluator,
         _program_basename,
-        _protected_name_in_substitution,
         _push_option_matches,
         _push_token_redirection,
         _push_token_shell_read,
@@ -3666,7 +3667,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _redirect_consumes_next,
         _redirect_glue_point,
         _resolve_function_aliases,
-        _resolve_local_assignments,
         _resolve_param_defaults,
         _sed_exec_replacement,
         _self_tokens,

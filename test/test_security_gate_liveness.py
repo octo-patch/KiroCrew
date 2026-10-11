@@ -326,11 +326,90 @@ def _url_payload_command(n: int) -> str:
 #: expansion work shares one cumulative character budget (the connection-target
 #: check keeps its word cap alone), an assignment value's braces stay literal,
 #: and a same-line assignment chain is bounded by length before it is built.
-#: Neither an unresolvable operand nor a brace product past the fan-out cap is
-#: failed closed -- both are documented residuals; no pass widened, no threshold
-#: moved. The hosts-file path seam moves unchanged to ``hosts_file`` (one import
-#: line here) so ``argv_floor`` stays under the per-module cap.
-_PACKAGE_LINE_BUDGET = 29_638
+#: An unresolvable operand is not failed closed -- it stays a documented
+#: residual; the over-cap brace-product posture is the next entry's. No pass
+#: widened, no threshold moved. The hosts-file path seam moves unchanged to
+#: ``hosts_file`` (one import line here) so ``argv_floor`` stays under the
+#: per-module cap.
+#:
+#: Raised again, from 28,827, for the over-cap bare-kill hardening: an over-cap
+#: brace product now decides self-name reachability ACROSS the groups without
+#: building the product (so ``{k,x}{i,x}...`` cannot name the gateway to
+#: ``pidof`` past the fan-out cap), comma alternatives dedupe before the cap, and
+#: the chain sizing reads the dequoted operator-split stream the resolver
+#: consumes (so a wholly-quoted assignment word is bounded, not OOMed into an
+#: allow). The scan helpers live in ``shell_normalizer`` beside the brace tools
+#: they reuse, and a dead word-splitter the sizing stopped calling is dropped.
+#: No redaction pass moved; this is the kill-floor change on top of it.
+#:
+#: Raised again, from 29,421, for the review-driven hardening of that same
+#: kill-floor change: the over-cap reachability scan also reads the resolved
+#: word view (so an empty substitution or a parameter default between the
+#: letters cannot hide the name), its group enumerator checks a product's size
+#: before building it and honours a brace sequence's step, the quoted-brace mask
+#: keeps command position through a reserved word and across a separator run, and
+#: the shared close-paren walk begins at the opener it was handed instead of
+#: re-reading the prefix, which turned a 20 KB run of substitutions quadratic.
+#:
+#: Raised again, from 29,461, for the review-driven reshape of that same
+#: local-assignment resolver: a ``name=value`` word binds wherever it stands and a
+#: name keeps its assigned values as a SET, and the command resolves to one argv
+#: FRAME per combination of candidate values -- each value in its own use slot, so a
+#: decoy value sits in its own frame rather than beside the real program, and the
+#: floor denies if any frame is dangerous. Only names in the PROTECTED WINDOW (a
+#: program-position word, or an argument of a process-targeting or self program) are
+#: resolved and counted, so an ordinary name (``PATH`` before pytest, a counter) is
+#: ignored; a per-name value cap, a per-word variant cap, a shared character budget
+#: and a whole-command frame cap bound the window names' fan-out and fail closed. The
+#: pure resolver helpers live in a new ``_assign`` module so the reader stays under
+#: the per-file ceiling.
+#:
+#: Raised again, from 29,700, for the review-driven reshape of that same resolver so
+#: the frames are built per-slot, not as a cartesian product: a BASE argv (each use
+#: at its first value) plus one variation frame per extra candidate differing in that
+#: single slot, so a two-valued name used nine times costs ten frames, not 2**9 that
+#: failed an ordinary command closed. The window opens a command's arguments unless
+#: its program is a known-inert builtin (so an unknown wrapper or shell function does
+#: not drop its argument's resolution), an assignment seeds no name (only a use does,
+#: so a leading self-referential ``PATH="$PATH:/a"`` is untracked), a self-reference
+#: resolves to empty, value binding evicts oldest past the cap rather than failing
+#: closed, the dependency closure is a linear worklist, and one cumulative work budget
+#: across all frames bounds a pathological fan-out. No redaction pass moved.
+#: Raised again, from 29,735, for the review-driven correction of that per-slot
+#: enumeration, which omitted joint combinations (a bare kill ``$p -f $q`` whose
+#: program and target are each a reassigned variable was never paired in one frame):
+#: the frames are now a product over distinct VARIABLES, taken per command, with every
+#: use of a name substituted consistently, so the pairing is built while a benign name
+#: reused many times stays one combination. The builder lives in ``_assign``.
+#: Raised again, from 29,792, for the review-driven correction of that per-variable
+#: product: ``set`` and ``alias`` left the inert set (they reach a program through
+#: their arguments), an argument-position ``name=value`` is read as a use (so an
+#: alias body's variable is seeded), and the product is taken only over a variable
+#: whose values could make a frame dangerous (a kill or self program, a carrier of
+#: one, a mint verb, or a fragment of the protected name) -- so a frequently-reassigned
+#: benign variable does not fan an ordinary script out, with a per-command and a
+#: whole-line frame cap and a work budget bounding a genuine fan-out.
+#:
+#: LOWERED, from 29,850, for the review-driven reshape of that resolver to USE-SITE
+#: resolution: each ``$VAR`` resolves to the value its name holds at the use (the most
+#: recent assignment before it -- last-write-wins, what bash runs for a straight-line
+#: sequence), and the whole command resolves to the one frame bash runs. A reused
+#: variable is not refused for a value bash never runs, and a kill carried to its use
+#: is denied; an expansion overflow fails closed. The resolver follows bash dataflow:
+#: a straight-line reassignment replaces the reaching value (last-write-wins), a write
+#: inside a branch that may be skipped unions, and a command fans out ONLY over names
+#: that can reach a kill or mint, so a benign reused variable never multiplies the
+#: frames. The resolver's pure helpers live in `_assign`, keeping the reader module
+#: under its per-file cap; the total sits just above the straight-line resolver it
+#: replaces because the dataflow and window tracking it adds outweigh the retired
+#: any-value product.
+#:
+#: Rebased onto current ``main`` (which raised the base to 29,175 for the sed
+#: ``-e``, hosts-file, ``_deny_pattern_passes``, AWS env-filter, token-parameter
+#: URL-prefix and microvm crew-record notes above): the package total moves +318
+#: accordingly, so the pin is main's pin plus this PR's lines, carrying no spare room
+#: of its own.
+_PACKAGE_LINE_BUDGET = 30_406
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

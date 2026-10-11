@@ -437,7 +437,6 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_redirect_glue_point",
     "_redos_prone",
     "_resolve_function_aliases",
-    "_resolve_local_assignments",
     "_resolve_own_host_names",
     "_resolve_own_host_names_into_cache",
     "_resolve_param_defaults",

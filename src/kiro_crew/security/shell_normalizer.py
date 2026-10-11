@@ -26,7 +26,30 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 
-from .vocabulary import (
+from ._assign import (  # noqa: F401  (regexes re-exported for the package facade)
+    _ARRAY_ELEMENT_ASSIGN_RE,
+    _ASSIGN_CHAR_BUDGET,
+    _ASSIGN_FRAME_CAP,
+    _FUNC_DEF_RE,
+    _INDIRECT_VAR_USE_RE,
+    _PARAM_TRANSFORM_RE,
+    _REDIRECT_RE,
+    _VAR_USE_RE,
+    _assignment_persists,
+    _collect_function_aliases,
+    _compound_delta,
+    _expand_against_values,
+    _fail_closed_frames,
+    _is_window_word,
+    _mint_verb_in_substitution,
+    _overflow_frames,
+    _protected_name_in_substitution,
+    _referenced_names,
+    _resolve_function_aliases,
+    _resolve_local_assignments,
+    _strip_self_ref,
+)
+from .vocabulary import (  # noqa: F401  (_KILL_BY_NAME_PROGRAMS re-exported for tests)
     _KILL_BY_NAME_PROGRAMS,
     _SELF_NAME_RE,
     _SELF_PROGRAM_RE,
@@ -562,9 +585,6 @@ _REDIRECT_START_RE = re.compile(r"(?:\d+|&|\*|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:>{1
 _LOCAL_ASSIGN_RE = re.compile(r"\A([A-Za-z_][A-Za-z0-9_]*)=(.*)\Z", re.DOTALL)
 
 
-_VAR_USE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
-
-
 _COMPUTED_VALUE_RE = re.compile(r"\$\(|`|\$\{[^}]*\}")
 
 
@@ -587,8 +607,10 @@ def _split_glued_operators(tokens: "list[str]") -> "list[str]":
         # removed the quotes, so ``pkill -f '[;]*<name>'`` arrives as the single token
         # ``[;]*<name>`` and is indistinguishable from a real separator at this point.
         # The reported evasion is specifically an assignment glued to its use, so that
-        # is the only shape split here.
-        if not _LOCAL_ASSIGN_RE.match(token) or not _CONTROL_OPERATOR_RE.search(token):
+        # is the only shape split here.  Match the shared assign shape (``NAME=`` AND
+        # ``NAME+=``), not plain ``=`` -- else ``p+=crew;`` keeps its separator glued and
+        # the command boundary (and the standalone-vs-prefix shape) is lost.
+        if not _SHELL_ASSIGN_RE.match(token) or not _CONTROL_OPERATOR_RE.search(token):
             out.append(token)
             continue
         for piece in _CONTROL_OPERATOR_RE.split(token):
@@ -2434,7 +2456,7 @@ def _matching_close_paren(text: str, open_end: int, nest: int = 0) -> "tuple[int
     """
     depth = 1
     cases = 0
-    pos = 0
+    pos = open_end
     state = 0
     ansi = False
     while pos <= len(text):
@@ -2619,6 +2641,20 @@ _WORD_START_CHARS = " \t\n;&|()"
 #: again in command position). A plain space/tab only starts the next word of the
 #: same command, where a ``name=`` word is an ARGUMENT, not an assignment.
 _CMD_SEP_CHARS = ";&|()\n"
+#: Reserved words bash reads in command position that INTRODUCE another command,
+#: so the word after them is again in command position and a ``name=`` there is
+#: an assignment (its value's braces stay literal). ``for``/``case``/``select``
+#: are deliberately absent: the word after them is a name, not a command.
+_CMD_INTRODUCING_WORDS = frozenset(
+    {"then", "do", "else", "elif", "if", "while", "until", "!", "time", "{"}
+)
+_WORD_RUN_RE = re.compile(r"[^ \t\n;&|()]+")
+
+
+def _word_introduces_command(text: str, i: int) -> bool:
+    """True if the word at *i* is a reserved word that keeps command position."""
+    m = _WORD_RUN_RE.match(text, i)
+    return m is not None and m.group(0) in _CMD_INTRODUCING_WORDS
 
 
 def _opens_dollar(text: str, i: int, nxt: str) -> bool:
@@ -2789,12 +2825,19 @@ def _mask_quoted_braces(text: str) -> str:
             checkpoint = checkpoint if kinds else None
             i += 1
             continue
-        if live and (i == 0 or (text[i - 1] in _WORD_START_CHARS and mask[i - 1] == ".")):
+        if (
+            live
+            and ch not in _WORD_START_CHARS
+            and (i == 0 or (text[i - 1] in _WORD_START_CHARS and mask[i - 1] == "."))
+        ):
             # ``name=`` is an assignment only in command position: a leading run
             # before the command word. As an ARGUMENT (`pgrep -f x=…`) bash does
             # not assign, so its value's braces DO expand and must not be masked.
+            # The ``ch not in _WORD_START_CHARS`` guard keeps this off a SEPARATOR
+            # that merely follows another one (``; `` before an assignment), which
+            # would otherwise clear command position for the real word after it.
             assign = cmd_pos and bool(_ASSIGN_WORD_RE.match(text, i))
-            if not assign:
+            if not assign and not _word_introduces_command(text, i):
                 cmd_pos = False  # the command word ends the leading-assignment run
         elif live and ch in _WORD_START_CHARS:
             assign = False
@@ -2815,33 +2858,13 @@ def _mask_quoted_braces(text: str) -> str:
 
 
 _VAR_REF_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
-_WORD_BREAK_CHARS = frozenset(" \t\n;&|()")
 
 
-def _split_active_words(text: str) -> "list[str]":
-    """*text* split into words on UNQUOTED whitespace and ``;&|()`` only.
-
-    Word boundaries are read through :func:`_iter_shell_chars` -- the one shell
-    walker -- so a separator INSIDE quotes stays part of its word, matching how
-    the resolver tokenizes (``x="a b"`` is one word, not two).
-    """
-    words: list[str] = []
-    current: list[str] = []
-    for step in _iter_shell_chars(text):
-        if step.active and step.char in _WORD_BREAK_CHARS:
-            if current:
-                words.append("".join(current))
-                current = []
-        else:
-            current.append(step.text)
-    if current:
-        words.append("".join(current))
-    return words
-
-
-def _synthesis_words(body: str, resolve: "Callable[[str], str]", limit: int) -> "list[str] | None":
-    """The words of a bare-kill *body* after the constant-output fold, with the
-    braces bash would not expand masked; ``None`` when a same-line or
+def _synthesis_words(
+    body: str, resolve: "Callable[[str], str]", limit: int
+) -> "list[list[str]] | None":
+    """The argv FRAMES of a bare-kill *body* after the constant-output fold, with
+    the braces bash would not expand masked; ``None`` when a same-line or
     continuation-split assignment chain would build a value past *limit*
     characters.
 
@@ -2857,13 +2880,27 @@ def _synthesis_words(body: str, resolve: "Callable[[str], str]", limit: int) -> 
         return None  # nesting did not converge within the fold budget: deny
     masked = _mask_quoted_braces(folded)
     sizes: dict[str, int] = {}
-    # Size on the SAME words _self_tokens consumes. It folds line continuations
-    # and splits words quote-awarely (shlex), so the split here reads word
-    # boundaries through the one shell walker rather than a naive ``\s`` regex:
-    # a doubling value concatenated across a ``\<newline>`` or a QUOTED space
-    # (``x1="${x0} ${x0}"``) is one assignment, not fragments that slip the
-    # budget and let the eager resolver build the value and fail the allocation.
-    for word in _split_active_words(_fold_line_continuations(masked)):
+    # Size the assignment chain on the SAME dequoted, operator-split token
+    # stream the eager resolver behind _self_tokens consumes, so a quoted
+    # assignment word (``"x1=${x0}${x0}"``) is seen as the assignment it is and
+    # a doubling chain is bounded on lengths before anything is built. A split
+    # that keeps the quotes hid such a word from the ``name=`` test, and the
+    # eager build then failed its allocation into an empty, allowing result.
+    # The newline fold here is the one _self_tokens applies before it resolves.
+    command = _fold_line_continuations(masked)
+    if "\n" in command:
+        command = "".join(
+            " ; " if step.active and step.char == "\n" else step.text
+            for step in _iter_shell_chars(command)
+        )
+    try:
+        tokens = _split_glued_operators(normalize_shell_command(command))
+    except Exception:
+        # An untokenizable body (``expanduser`` on an embedded NUL, a shlex
+        # failure) sizes to nothing; _self_tokens below swallows it the same way,
+        # so the floor returns a verdict rather than letting the error escape.
+        tokens = []
+    for word in tokens:
         size = len(word) + sum(sizes.get(ref, 0) for ref in _VAR_REF_RE.findall(word))
         if size > limit:
             return None
@@ -2871,7 +2908,7 @@ def _synthesis_words(body: str, resolve: "Callable[[str], str]", limit: int) -> 
         if assign:
             name = assign.group(0).rstrip("+=")
             sizes[name] = size + (sizes.get(name, 0) if "+" in assign.group(0) else 0)
-    return _self_tokens(masked)
+    return _self_token_combinations(masked)
 
 
 def _restore_quoted_braces(text: str) -> str:
@@ -2920,6 +2957,165 @@ def _mask_param_word_braces(word: str) -> str:
             out.append(ch)
         i += 1
     return "".join(out)
+
+
+#: Bounds for the no-enumeration self-name reachability scan over an over-cap
+#: brace word: a single group with more choices than ``_SYNTH_GROUP_CAP``, or
+#: more top-level segments than ``_SYNTH_SEGMENT_CAP``, is a residual (its
+#: product names no one live process) decided WITHOUT building the product.
+_SYNTH_GROUP_CAP = 512
+_SYNTH_SEGMENT_CAP = 128
+
+
+def _group_choices(body: str, depth: int) -> "list[str] | None":
+    """Every literal string ``{<body>}`` expands to, deduped, or ``None`` when it
+    is not a brace expansion, is nested past ``_BRACE_NESTING_CAP``, or has more
+    than ``_SYNTH_GROUP_CAP`` choices (a residual the caller does not build).
+
+    One GROUP is small on its own; the fan-out this scan defeats is the PRODUCT
+    across many groups, which :func:`_word_segments` never multiplies.
+    """
+    if depth > _BRACE_NESTING_CAP:
+        return None
+    parts = _split_brace_alternatives(body)
+    if len(parts) > 1:
+        choices: list[str] = []
+        for part in parts:
+            segs = _word_segments(part, depth + 1)
+            if segs is None:
+                return None
+            product = [""]
+            for seg in segs:
+                # Check the PROSPECTIVE size before building the list, so a wide
+                # product (`{a..h}{a..h}…`) is refused as a residual rather than
+                # allocated in full and crashing the gate with MemoryError.
+                if len(product) * len(seg) > _SYNTH_GROUP_CAP:
+                    return None
+                product = [a + b for a in product for b in seg]
+            choices.extend(product)
+            if len(choices) > _SYNTH_GROUP_CAP:
+                return None
+        return list(dict.fromkeys(choices))
+    seq = _BRACE_SEQUENCE_RE.match(body)
+    if seq is not None and seq.group(1) is None:
+        # Enumerate the letter sequence HONOURING the step and direction bash
+        # applies (`{b..d..2}` is b,d -- not b,c,d). Inventing the skipped letter
+        # would spell a name bash never produces and deny a benign command.
+        start, end = ord(seq.group(3)), ord(seq.group(4))
+        tail = body.rsplit("..", 1)
+        try:
+            step = abs(int(tail[1])) if len(tail) == 2 and tail[1] else 1
+        except ValueError:
+            step = 1
+        step = step or 1
+        direction = 1 if start <= end else -1
+        return [chr(c) for c in range(start, end + direction, direction * step)]
+    return None  # ``{single}`` / a numeric range: no name letter -- not an expansion
+
+
+def _word_segments(word: str, depth: int = 0) -> "list[list[str]] | None":
+    """*word* as INDEPENDENT segments, each the list of strings it can be, so a
+    reachability scan reads them one at a time and never takes their product.
+
+    A literal run is one single-string segment; a brace group is its choice list
+    (:func:`_group_choices`). ``None`` when a group overflows ``_SYNTH_GROUP_CAP``
+    or there are more than ``_SYNTH_SEGMENT_CAP`` segments -- the residual the
+    over-cap caller already accepts.
+    """
+    segments: list[list[str]] = []
+    pairs = _brace_pairs(word)
+    lit: list[str] = []
+    i, n = 0, len(word)
+    while i < n:
+        close = pairs.get(i, -1) if word[i] == "{" else -1
+        if close != -1:
+            choices = _group_choices(word[i + 1 : close], depth)
+            if choices is not None:
+                if lit:
+                    segments.append(["".join(lit)])
+                    lit = []
+                segments.append(choices)
+                if len(segments) > _SYNTH_SEGMENT_CAP:
+                    return None
+                i = close + 1
+                continue
+        lit.append(word[i])
+        i += 1
+    if lit:
+        segments.append(["".join(lit)])
+    return segments
+
+
+def _kmp_failure(pattern: str) -> "list[int]":
+    """The KMP prefix-function of *pattern*, so matching restarts in O(1) a char."""
+    fail = [0] * len(pattern)
+    k = 0
+    for i in range(1, len(pattern)):
+        while k > 0 and pattern[i] != pattern[k]:
+            k = fail[k - 1]
+        if pattern[i] == pattern[k]:
+            k += 1
+        fail[i] = k
+    return fail
+
+
+def _advance_match(target: str, fail: "list[int]", start: int, text: str) -> int:
+    """The match progress into *target* after feeding *text*, having begun with
+    *start* characters already matched; ``len(target)`` the instant it completes."""
+    j = start
+    for ch in text:
+        while j > 0 and ch != target[j]:
+            j = fail[j - 1]
+        if ch == target[j]:
+            j += 1
+            if j == len(target):
+                return j
+    return j
+
+
+def _segments_can_reach(segments: "list[list[str]]", targets: "tuple[str, ...]") -> bool:
+    """True if ONE choice per segment can concatenate to a string CONTAINING a
+    target, decided by substring reachability per segment -- never by the product.
+
+    The set of in-progress match lengths after each segment is bounded by the
+    target length, so the scan is linear in the segments and their choices
+    whatever the product's size.
+    """
+    for target in targets:
+        fail = _kmp_failure(target)
+        progress = {0}
+        for segment in segments:
+            # A fresh match may begin at any segment boundary, so 0 is always live.
+            nxt = {0}
+            for reached in progress:
+                for choice in segment:
+                    end = _advance_match(target, fail, reached, choice)
+                    if end == len(target):
+                        return True
+                    nxt.add(end)
+            progress = nxt
+    return False
+
+
+def _braced_word_spells_self(word: str) -> bool:
+    """True if an over-cap brace *word*'s product CAN spell the protected name.
+
+    Decided across the groups without enumerating the product: a fail-open
+    fan-out otherwise let ``{k,x}{i,x}{r,x}{o,x}{c,x}{r,x}{e,x}{w,x}{,x}`` --
+    512 words, past the enumeration cap -- name the gateway to ``pidof``, which
+    takes many names at once. ``None`` segments (too wide or deep to decide
+    cheaply) stay the documented residual, as before.
+
+    Both the bare word and its resolved-word view are scanned: an empty
+    substitution or a parameter default between the letters
+    (``kiro$()c{r,x}{e,x}{w,x}…``, ``kiro${x:-}c{r,x}…``) survives the bare
+    debracket and would hide the name the shell builds once it resolves.
+    """
+    for view in (_debracket(word), _resolved_word_view(_restore_quoted_braces(word))):
+        segments = _word_segments(view)
+        if segments is not None and _segments_can_reach(segments, _SELF_PROGRAM_SPELLINGS):
+            return True
+    return False
 
 
 def _single_literal_output(body: str, resolve: "Callable[[str], str]") -> str:
@@ -3384,249 +3580,312 @@ def _self_tokens(text_lower: str) -> "list[str]":
     the lone case and leaves the escaped run intact, matching bash.
     """
     try:
-        # shlex treats bare newlines as whitespace, which joins separate
-        # commands into one argv. Preserve those boundaries after folding
-        # continuations; quoted newlines remain part of their operand.
-        command = _fold_line_continuations(text_lower)
-        if "\n" in command:
-            command = "".join(
-                " ; " if step.active and step.char == "\n" else step.text
-                for step in _iter_shell_chars(command)
-            )
-        return _resolve_function_aliases(
-            _resolve_local_assignments(normalize_shell_command(command))
-        )
+        tokens = _assignment_input(text_lower)
+        frames = _resolve_assignment_frames(tokens)
+        aliases: dict[str, str] = {}
+        for frame in frames:
+            aliases.update(_collect_function_aliases(frame))
+        return _resolve_function_aliases(frames[0], aliases)
     except Exception:
         return []
 
 
-def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:
-    """The protected program name a substitution starting at *start* could produce.
+def _assignment_input(text_lower: str) -> "list[str]":
+    """The command's tokens with line continuations folded and bare newlines kept
+    as command separators -- the input both resolvers consume."""
+    # shlex treats bare newlines as whitespace, which joins separate commands into
+    # one argv. Preserve those boundaries after folding; quoted newlines stay.
+    command = _fold_line_continuations(text_lower)
+    if "\n" in command:
+        command = "".join(
+            " ; " if step.active and step.char == "\n" else step.text
+            for step in _iter_shell_chars(command)
+        )
+    return normalize_shell_command(command)
 
-    Scans forward until the substitution closes (``shlex`` splits it across tokens
-    because it splits on whitespace only) and returns the product name, or a
-    by-name kill program, if either appears inside it.  Returns "" when neither does.
 
-    The depth is read from the shared quote-aware walk, with the quote state
-    carried ACROSS tokens because ``shlex`` splits on whitespace and a quoted word
-    can span one. A private ``str.count`` walk closed the substitution at a QUOTED
-    ``)`` and stopped scanning there, so a name hidden after it was never seen --
-    an UNDER-deny for this rule, not the over-deny a previous audit of this line
-    recorded.
+def _self_token_combinations(text_lower: str) -> "list[list[str]]":
+    """One resolved argv FRAME per combination of candidate values (plus base's eager
+    frame); the scan reads every frame, so a decoy value cannot hide a real one."""
+    try:
+        tokens = _assignment_input(text_lower)
+        frames = _resolve_assignment_frames(tokens)
+        base = _resolve_local_assignments(tokens)  # base's eager deny backstop; OR it in
+        if base not in frames:
+            frames = frames + [base]
+        aliases: dict[str, str] = {}
+        for frame in frames:
+            aliases.update(_collect_function_aliases(frame))
+        return [_resolve_function_aliases(frame, aliases) for frame in frames]
+    except Exception:
+        return []
+
+
+#: The assignment builtins whose ``name=value`` operands are real bindings (bash sets
+#: the variable), so an operand resolves like a leading assignment, not a literal arg.
+_DECLARATION_BUILTINS = frozenset({"export", "declare", "local", "readonly", "typeset"})
+
+
+def _resolve_assignment_frames(tokens: "list[str]") -> "list[list[str]]":
+    """Resolve ``$VAR`` uses the way bash would and fan out ONLY names that reach a
+    kill/mint window. The window resolver ADDS the branch-union reach on top of base's
+    eager resolver (``_resolve_local_assignments``), which the floor scans alongside it.
+
+    Straight-line flow is last-write-wins; at a control-flow JOIN (an ``if``/``case``
+    arm, a loop body with the pre-loop value, the right side of ``&&``/``||``, a subshell
+    or function body) the reaching set is the UNION of every arriving value. A write bash
+    does not persist (prefix/background/pipeline) leaves the set unchanged; only a
+    command-position word (or declaration-builtin operand) binds. A computed write the
+    resolver cannot evaluate makes the name UNKNOWN -- a kill/mint window reading it fails
+    closed. Fan-out runs over the WINDOW only, counting distinct value combinations (never
+    uses): a benign or singleton name resolves to its last-write value and never
+    multiplies; an expansion or fan-out past the budget fails closed when dangerous.
     """
-    depth = 0
-    state = 0
-    ansi = False
-    for token in tokens[start:]:
-        walk = _shell_quote_walk(token, state=state, ansi=ansi)
-        depth += walk.paren_delta
-        state, ansi = walk.end_state, walk.end_ansi
-        m = _SELF_NAME_RE.search(token)
-        if m:
-            return m.group(0)
-        for verb in _KILL_BY_NAME_PROGRAMS:
-            if verb in token:
-                return verb
-        if depth <= 0 and state == 0 and token is not tokens[start]:
-            break
-    return ""
-
-
-_FUNC_DEF_RE = re.compile(r"\A(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\)")
-
-
-def _resolve_function_aliases(tokens: "list[str]") -> "list[str]":
-    """Substitute a shell FUNCTION name with the protected program it forwards to.
-
-    ``x(){ <name> "$@";}; x <verb>`` never puts the program and the verb in one argv --
-    the function body holds the program and the call site holds the verb.  A function
-    whose body invokes a protected program is therefore treated as an alias for it, so
-    the ordinary argv checks see ``<name> <verb>`` at the call site.
-
-    Only a LITERAL body is inspected, and only the program it invokes is carried over;
-    no attempt is made to model parameter positions.  Over-approximating is the safe
-    direction -- the alias only matters where the function is called as a program.
-    """
-    aliases: dict[str, str] = {}
-    i = 0
-    while i < len(tokens):
-        # ``alias x=<name>`` then ``x <verb>`` is the same evasion as a function
-        # wrapper: the definition holds the program and the call site holds the verb.
-        if tokens[i] == "alias" and i + 1 < len(tokens):
-            spec = _LOCAL_ASSIGN_RE.match(tokens[i + 1])
-            if spec and spec.group(2):
-                target = _normalize_operand(spec.group(2))
-                if _is_self_program(target):
-                    aliases[spec.group(1)] = "kirocrew"
-                elif _program_basename(target) in _KILL_BY_NAME_PROGRAMS:
-                    aliases[spec.group(1)] = _program_basename(target)
-        m = _FUNC_DEF_RE.match(tokens[i])
-        if m:
-            # Walk the body until the closing brace, taking the first protected program.
-            for body_token in tokens[i + 1 :]:
-                base = _program_basename(body_token)
-                if _is_self_program(body_token):
-                    aliases[m.group(1)] = "kirocrew"
-                    break
-                if base in _KILL_BY_NAME_PROGRAMS:
-                    aliases[m.group(1)] = base
-                    break
-                if "}" in body_token:
-                    break
-        i += 1
-    if not aliases:
-        return tokens
-    return [aliases.get(tk, tk) for tk in tokens]
-
-
-# ``${VAR:0}`` / ``${VAR^^}`` / ``${VAR/x/y}`` and friends TRANSFORM a variable's own
-# value.  The ``:-``/``:+``/``:=``/``:?`` default forms are deliberately NOT matched here --
-# those carry a literal of their own and are handled by ``_resolve_param_defaults``.
-_PARAM_TRANSFORM_RE = re.compile(r"\$\{([A-Za-z_]\w*)(?::(?![-+=?])[^}]*|[#%^,/@][^}]*)\}")
-
-
-# ``${!VAR}`` expands to the value of the variable NAMED by ``VAR`` -- one more hop
-# than ``${VAR}``, through the same table.
-_INDIRECT_VAR_USE_RE = re.compile(r"\$\{!([A-Za-z_][A-Za-z0-9_]*)\}")
-
-
-def _mint_verb_in_substitution(tokens: "list[str]", idx: int) -> bool:
-    """True if the substitution starting at *idx* prints the credential-minting verb.
-
-    The program-name twin of this check answers "does this compute a protected
-    PROGRAM?".  This one answers "does it compute the VERB?", for the spelling that
-    hides that half instead (``T=$(printf <verb>); <name> $T``).
-    """
-    joined = " ".join(tokens[idx:])
-    for body in _substitution_bodies(joined):
-        if any(_is_mint_verb(word) for word in body.split()):
-            return True
-    return False
-
-
-def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
-    """Substitute ``$VAR`` uses with a literal assigned earlier in the same command.
-
-    Only LITERAL right-hand sides are tracked, and only assignments that appear in
-    this same command text -- there is no attempt to model the ambient environment.
-    That is enough for the evasion it closes, where the attacker must supply both
-    halves themselves.
-
-    A value that REFERENCES an already-tracked variable is expanded before it is
-    classified, so a name assembled across several assignments still resolves to the
-    literal the shell will run.
-    """
-    values: dict[str, str] = {}
-    out: list[str] = []
-    # ``X=<name>;$X <verb>`` glues the assignment and the next command into ONE token,
-    # because ``shlex`` splits on whitespace only.  Split on top-level control operators
-    # first so the assignment is seen as an assignment and the use as a use.
     tokens = _split_glued_operators(tokens)
+    live: dict[str, tuple[int, list[str]]] = {}  # name -> (epoch, reaching values)
+    unknown: set[str] = set()  # names a computed write left UNEVALUABLE (fail closed in a window)
+    budget = [_ASSIGN_CHAR_BUDGET]
+    overflow = [False]  # an expansion/fan-out past budget: fail closed or fall back
+    epoch = [0]  # bumped on each write that changes a name's reaching set
+
+    def expand_values(text: str) -> "list[str]":
+        """*text* resolved against every reaching value (a product), for an RHS value."""
+        if "$" not in text or not live:
+            return [text]
+        table = {name: vals for name, (_ep, vals) in live.items()}
+        got = _expand_against_values(text, table, budget)
+        if got is None:
+            overflow[0] = True
+            return [text]
+        return got or [text]
+
+    def write(name: str, values: "list[str]", conditional: bool) -> None:
+        """Record *values* for *name*: a UNION inside a skippable construct, a REPLACE on
+        straight-line flow. The epoch bumps on a change, so a choice for an earlier value
+        is not reused after a reassignment."""
+        values = [v for v in values if v]
+        if not values:
+            if not conditional and name in live:
+                live.pop(name)
+                epoch[0] += 1
+            if not conditional:
+                unknown.discard(name)
+            return
+        if conditional:
+            values = list(live.get(name, (0, []))[1]) + values
+        values = list(dict.fromkeys(values))
+        if live.get(name, (0, []))[1] != values:
+            epoch[0] += 1
+            live[name] = (epoch[0], values)
+        if not conditional:
+            unknown.discard(name)  # a straight-line known value clears any prior UNKNOWN
+
+    def mark_unknown(name: str, conditional: bool) -> None:
+        """A computed write the resolver cannot evaluate makes *name* UNKNOWN -- a
+        straight-line one drops the prior value, a conditional one unions the uncertainty.
+        A kill/mint window reading it fails closed (at the use site); elsewhere ignored."""
+        if not conditional and name in live:
+            live.pop(name)
+            epoch[0] += 1
+        unknown.add(name)
+
+    # Each frame is (tokens, choices); a choice pins a fanned-out name, keyed by epoch.
+    frames: list[tuple[list[str], dict[str, tuple[int, str]]]] = [([], {})]
+
+    def ensure_choice(name: str, window: bool) -> None:
+        """Fan the frames out over *name*'s reaching values, ONLY inside a kill/mint
+        *window* and only when the name is multi-valued -- a benign or straight-line
+        singleton name never multiplies the frames, and a value used outside every
+        window (``echo $x``, ``cp $x``) is read at its last-write value, not fanned out."""
+        nonlocal frames
+        if not window or name not in live:
+            return
+        ep, vals = live[name]
+        if len(vals) <= 1:
+            return
+        built: list[tuple[list[str], dict[str, tuple[int, str]]]] = []
+        for toks, choices in frames:
+            pinned = choices.get(name)
+            if pinned is not None and pinned[0] == ep:
+                built.append((toks, choices))
+                continue
+            for value in vals:
+                nxt = dict(choices)
+                nxt[name] = (ep, value)
+                built.append((list(toks), nxt))
+                if len(built) > _ASSIGN_FRAME_CAP:
+                    overflow[0] = True
+                    return
+        frames = built
+
+    def resolve_in_frame(token: str, choices: "dict[str, tuple[int, str]]") -> str:
+        """*token* with each ``$VAR`` replaced by this frame's chosen value (a fanned-out
+        name) or its last-write value (a benign/singleton name) -- one consistent set."""
+        if "$" not in token:
+            return token
+        single: dict[str, list[str]] = {}
+        for name, (ep, vals) in live.items():
+            pinned = choices.get(name)
+            single[name] = [pinned[1]] if (pinned and pinned[0] == ep) else [vals[-1]]
+        got = _expand_against_values(token, single, budget)
+        if got is None:
+            overflow[0] = True
+            return token
+        return got[0] if got else token
+
+    cmd_pos = True  # a leading word here binds; depth>0 or andor makes a write skippable
+    decl = False  # a declaration builtin, so its ``name=value`` operands bind
+    depth = 0
+    andor = False  # on the right side of ``&&``/``||`` until the next ``;``/newline
+    in_pipeline = False  # a later pipeline element: its write does not persist
+    window_cmd = False  # the current command is a kill/mint window: its names fan out
+    mint_window = False  # the current command's program IS the self/mint surface
+    pending_redir_target = False  # the previous token was a bare redirect; this is its file
     for idx, token in enumerate(tokens):
-        assign = _LOCAL_ASSIGN_RE.match(token)
-        # ``NAME+=tail`` APPENDS, and the pattern above cannot match it at all (``+`` is
-        # not a name character), so an appended PROGRAM word was invisible here: `F=fi;
-        # F+=nd; $F <fenced> -exec cat {} +` ran a `find` this resolver never saw, while
-        # its single-assignment twin `F=fin; ${F}d` -- closed in an earlier round --
-        # denied (found in review). Seven spellings did it, including an empty initial
-        # value, repeated appends, a quoted tail and an append feeding a braced use.
-        #
-        # Append is in the same closed class as those: the tail is a LITERAL, so what the
-        # shell will run is decided by the text alone. That is what separates it from
-        # `$(printf find)`, whose value needs a program run and is out of scope here.
-        #
-        # `_SHELL_ASSIGN_RE` is REUSED rather than a second append pattern being added:
-        # it already carries the optional ``+`` group for this exact problem on the
-        # path-tracking side, so there is one spelling of the rule in the module. It is
-        # matched only in the branch the assignment pattern rejects, which keeps this
-        # additive -- renumbering the shared pattern's groups instead would have rewritten
-        # every existing reader of them for no behavioural gain.
-        append = None if assign else _SHELL_ASSIGN_RE.match(token)
-        if append and append.group(2):
+        if overflow[0]:
+            break
+        if token.strip(";&|\n") == "":  # a bare control-operator token
+            for toks, _choices in frames:
+                toks.append(token)
+            is_pipe = "|" in token and "||" not in token
+            if is_pipe:
+                in_pipeline = True
+            else:
+                andor = "&&" in token or "||" in token
+                in_pipeline = False
+            cmd_pos, decl, window_cmd, mint_window = True, False, False, False
+            continue
+        bare = token.rstrip(";&|\n")
+        was_cmd = cmd_pos  # command position AT this token, for the open-construct depth
+        assign = _LOCAL_ASSIGN_RE.match(bare)
+        append = None if assign else _SHELL_ASSIGN_RE.match(bare)
+        binds = cmd_pos or decl  # a leading word, or an ``export``/``declare`` operand
+        conditional = depth > 0 or andor  # a write here may be skipped: union, not kill
+        # A write persists unless bash runs it detached (prefix/background/pipeline).
+        persists = decl or (not in_pipeline and _assignment_persists(tokens, idx))
+        if binds and (assign or append):
+            for toks, _choices in frames:
+                toks.append(token)  # the binding word, literal
+        else:
+            # A use: in a kill/mint window its multi-valued names fan out (the program
+            # word, a self-name or a mint-verb token marks the window).
+            if was_cmd and _is_window_word(bare):
+                window_cmd = True
+            if _SELF_NAME_RE.search(bare) or _is_mint_verb(bare):
+                window_cmd = True
+            if was_cmd and (_is_self_program(bare) or _is_mint_verb(bare)):
+                mint_window = True  # the program is the self/mint surface itself
+            for name in _referenced_names(bare):
+                ensure_choice(name, window_cmd)
+                if overflow[0]:
+                    break
+                if name in unknown and (was_cmd or mint_window):
+                    # An UNKNOWN name as the PROGRAM of a window (it could be a kill), or
+                    # fed to the self/mint surface, fails this command closed. An UNKNOWN
+                    # non-program operand of a by-name/by-pid kill does not: a dropped
+                    # protected value is kept by the eager resolver, and PIDs from a
+                    # lookup of ANOTHER name are benign (the pgrep-of-self rule scopes it).
+                    overflow[0] = True
+                    break
+            for toks, choices in frames:
+                toks.append(resolve_in_frame(token, choices))
+        if binds and persists and append and append.group(2):
+            # ``NAME+=tail`` appends a literal tail onto each reaching value.
             name, tail = append.group(1), append.group(3)
-            if values and "$" in tail:
-                # Same reason the assignment path expands first: a tail built from an
-                # already-tracked variable is a literal once expanded, and left
-                # unexpanded it reads as computed and the append is dropped.
-                tail = _VAR_USE_RE.sub(
-                    lambda m: values.get(m.group(1) or m.group(2), m.group(0)), tail
-                )
-            if _is_computed_value(tail):
-                # No literal to concatenate. Over-approximate exactly as the assignment
-                # path does: the value only matters where it is later used as a program,
-                # so a wrong guess there is a refusal rather than a bypass.
+            resolved_tail = expand_values(tail)[0]
+            if _is_computed_value(resolved_tail):
                 produced = _protected_name_in_substitution(tokens, idx)
                 if produced:
-                    values[name] = produced
-                out.append(token)
-                continue
-            piece = tail.strip("\"'").rstrip(";&|")
-            # `F=` records nothing, so an append to an unset name starts from empty
-            # rather than being discarded -- that was one of the seven spellings, and
-            # bash builds the value the same way.
-            values[name] = values.get(name, "") + piece
-            out.append(token)
-            continue
-        if assign and values and "$" in (assign.group(2) or ""):
-            # A new value may be built FROM a variable already tracked
-            # (``x=p; x=${x}kill``).  Expanding before classifying is what makes the
-            # result a literal at all: left unexpanded it looks computed, the earlier
-            # binding stays in place, and the reassignment is silently ignored.
-            expanded = _VAR_USE_RE.sub(
-                lambda m: values.get(m.group(1) or m.group(2), m.group(0)),
-                assign.group(2),
-            )
-            if expanded != assign.group(2):
-                token = f"{assign.group(1)}={expanded}"
-                assign = _LOCAL_ASSIGN_RE.match(token)
-        if assign and _is_computed_value(assign.group(2)):
-            # ``X=$(printf <name>); $X <verb>`` COMPUTES the value, so there is no
-            # literal to carry forward.  Resolve it conservatively instead: if the
-            # substitution that produces it names a protected program anywhere, treat
-            # the variable as holding that name.  Over-approximating here is the safe
-            # direction -- the value only matters when ``$X`` is later used as a
-            # program, and a wrong guess there is a refusal, not a bypass.
-            produced = _protected_name_in_substitution(tokens, idx)
-            if produced:
-                values[assign.group(1)] = produced
-            elif _mint_verb_in_substitution(tokens, idx):
-                # ``T=$(printf <verb>); <name> $T`` computes the VERB rather than the
-                # program.  Same reasoning as the program case: the value only matters
-                # where it is later used, so binding it to the verb is the safe
-                # over-approximation.
-                values[assign.group(1)] = "token"
-            out.append(token)
-            continue
-        if assign and assign.group(2):
-            # A trailing ``;``/``&&`` belongs to the command structure, not the
-            # value: ``shlex`` splits on whitespace only, so ``X=name;`` arrives
-            # with the operator attached.
-            value = assign.group(2).strip("\"'").rstrip(";&|")
-            if value:
-                values[assign.group(1)] = value
-            out.append(token)
-            continue
-        if values and "$" in token:
-            # ``${!V}`` is INDIRECT: it expands to the value of the variable NAMED by
-            # ``V``, so resolving it takes two hops through the same table.  Done before
-            # the ordinary substitution so what remains afterwards is a plain literal.
-            # A TRANSFORMATION on a tracked variable (``${K:0}``, ``${K^^}``, ``${K/x/y}``)
-            # still expands to something derived from the tracked value, but none of those
-            # spellings are a plain ``${K}``.  Resolved to the value itself: the
-            # transformation is not modelled, and over-approximating here is the safe
-            # direction for the same reason it is for a computed value -- the result only
-            # matters where it is used as a program or verb, and a wrong guess there is a
-            # refusal, not a bypass.  The ``:-``/``:+``/``:=``/``:?`` DEFAULT forms are
-            # excluded: they carry their own literal and are resolved separately.
-            token = _PARAM_TRANSFORM_RE.sub(lambda m: values.get(m.group(1), m.group(0)), token)
-            token = _INDIRECT_VAR_USE_RE.sub(
-                lambda m: values.get(values.get(m.group(1), ""), m.group(0)), token
-            )
-            token = _VAR_USE_RE.sub(
-                lambda m: values.get(m.group(1) or m.group(2), m.group(0)), token
-            )
-        out.append(token)
-    return out
+                    base = live.get(name, (0, [""]))[1] or [""]
+                    write(name, [b + produced for b in base], conditional)
+                else:
+                    # A computed tail the resolver cannot evaluate makes the whole value
+                    # UNKNOWN (``X+=$(printf …)`` -- the appended bytes are unknown).
+                    mark_unknown(name, conditional)
+            else:
+                piece = _strip_self_ref(resolved_tail.strip("\"'").rstrip(";&|"), name)
+                base = live.get(name, (0, [""]))[1] or [""]
+                write(name, [b + piece for b in base], conditional)
+        elif binds and persists and assign:
+            name, rhs = assign.group(1), assign.group(2)
+            rhs_values = expand_values(rhs)  # a ``${a}`` parameter expansion resolves here
+            if _is_computed_value(rhs_values[0]):
+                # ``X=$(printf <name>)`` COMPUTES: carry the program/verb it names.
+                produced = _protected_name_in_substitution(tokens, idx) or (
+                    "token" if _mint_verb_in_substitution(tokens, idx) else ""
+                )
+                if produced:
+                    write(name, [produced], conditional)
+                else:
+                    # A compute over a tracked name (``P=$(echo $P)``) can pass its value
+                    # through, so keep the referenced names' reaching values across the
+                    # value's paren span rather than dropping the name.
+                    span: list[str] = []
+                    pdepth = 0
+                    for part in tokens[idx:]:
+                        span.append(part)
+                        pdepth += part.count("(") - part.count(")")
+                        if pdepth <= 0 and part is not tokens[idx]:
+                            break
+                    carried = [
+                        v
+                        for ref in _referenced_names(" ".join(span))
+                        for v in live.get(ref, (0, []))[1]
+                    ]
+                    if carried:
+                        write(name, carried, conditional)
+                    else:
+                        # A compute over no tracked name is UNEVALUABLE: the value is
+                        # UNKNOWN, so a kill/mint window that later reads it fails closed.
+                        mark_unknown(name, conditional)
+            else:
+                # A self-reference expands to empty, as bash expands an unset variable.
+                values = [
+                    _strip_self_ref(rv.strip("\"'").rstrip(";&|"), name).strip()
+                    for rv in rhs_values
+                ]
+                if any(values):
+                    write(name, values, conditional)
+                elif not conditional:
+                    write(name, [], False)
+        elif cmd_pos and _program_basename(bare) in _DECLARATION_BUILTINS:
+            decl = True  # its ``name=value`` operands bind
+        depth = max(0, depth + _compound_delta(bare, was_cmd))
+        # A trailing control operator glued to a word (``b;``, ``x &&``) ends its command
+        # like a bare one: reset the pipeline/and-or state the next command inherits.
+        trail = token[len(bare) :]
+        if trail:
+            if "|" in trail and "||" not in trail:
+                in_pipeline = True
+            else:
+                andor = "&&" in trail or "||" in trail
+                in_pipeline = False
+            window_cmd = False
+            mint_window = False
+        # A leading assignment, reserved word or group opener keeps command position; a
+        # redirection, its target, or a leading option is a transparent prefix; an
+        # interior control operator starts a new command; else it is an argument.
+        tail_char = bare[-1] if bare else ""
+        redir = _REDIRECT_RE.match(bare)
+        target_now = pending_redir_target  # this token is a bare redirect's file target
+        pending_redir_target = redir is not None and bare == redir.group(0)
+        if token != bare or tail_char in "(){}" or _CONTROL_OPERATOR_RE.search(bare):
+            cmd_pos, decl = True, False
+            pending_redir_target = False
+        elif target_now or redir or (cmd_pos and bare.startswith("-")):
+            pass  # transparent: command position is unchanged
+        elif (
+            (binds and (assign or append))
+            or _ARRAY_ELEMENT_ASSIGN_RE.match(bare)
+            or bare in _CMD_INTRODUCING_WORDS
+        ):
+            cmd_pos = True
+        else:
+            cmd_pos = False
+    if overflow[0]:
+        values = [v for _ep, vals in live.values() for v in vals]
+        return _overflow_frames(tokens, values)
+    return [toks for toks, _choices in frames]
 
 
 def _nested_shell_payloads(
@@ -3945,10 +4204,16 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
     pending: list[tuple[str, int, bool]] = [(text_lower, len(text_lower) + 1, True)]
     while pending:
         source, parent_len, allow_join = pending.pop()
-        tokens = _self_tokens(source)
-        if not tokens:
+        # One argv frame per combination of candidate assignment values. Each frame
+        # keeps correct argv position, so a decoy value sits in its own frame rather
+        # than beside the command word; the floors that consume this read every
+        # frame, and nested-payload discovery runs over every frame (a decoy first
+        # value must not hide an ``eval`` payload a later frame carries).
+        frames = [frame for frame in _self_token_combinations(source) if frame]
+        if not frames:
             continue
-        out.append((source, tokens))
+        for frame in frames:
+            out.append((source, frame))
         # Every substitution body is itself a command line -- command substitution
         # (``$( )``, backticks) and PROCESS substitution (``<( )``, ``>( )``) alike, since
         # bash runs the inner command in all of them.  Walking them here means the
@@ -3966,8 +4231,12 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
         # reads folded, and the fold preserves single-quoted and ANSI-C spans, so a
         # continuation that bash keeps literal stays literal in the body too.
         joined_here: set[str] = set()
-        nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
-        for payload in list(nested) + _substitution_bodies(_fold_line_continuations(source)):
+        nested: list[str] = []
+        for frame in frames:
+            nested.extend(
+                _nested_shell_payloads(frame, allow_join=allow_join, joined_out=joined_here)
+            )
+        for payload in nested + _substitution_bodies(_fold_line_continuations(source)):
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
             # parent, so it is strictly shorter than the parent's source text.

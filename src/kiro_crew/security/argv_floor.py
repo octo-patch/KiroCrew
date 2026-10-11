@@ -849,25 +849,25 @@ def _kill_body_synthesizes_self(body: str) -> bool:
     """True if a bare-kill substitution *body* builds the protected name at runtime.
 
     Brace-expands each folded word under ONE character budget for the body,
-    failing closed once it or the assignment bound is spent.  Neither an
-    unresolvable operand NOR a brace product past the fan-out cap is failed
-    closed: both are the documented residual (the issue's reported forms all fit
-    within the cap, and a wider product cannot name a single live process).
+    failing closed once it or the assignment bound is spent. An over-cap product
+    is judged across its groups by ``_braced_word_spells_self`` (without building
+    it) and denied when a selection spells the name; the residual is an
+    unresolvable operand or an over-cap product no selection of which spells it.
     """
     words = _shell_normalizer._synthesis_words(body, _static_substitution_output, _BRACE_CHAR_CAP)
     if words is None:
         return True
     budget = [_BRACE_CHAR_CAP]
 
-    for word in words:
-        # Mask ${...} braces so an ENCLOSING brace group still expands.
-        alternatives = _brace_expansions(
-            _shell_normalizer._mask_param_word_braces(word), budget=budget
-        )
+    for word in (w for frame in words for w in frame):
+        masked = _shell_normalizer._mask_param_word_braces(word)
+        alternatives = _brace_expansions(masked, budget=budget)
         if budget[0] < 0:
             return True
         if alternatives is None:
-            continue  # over-cap fan-out: a residual, not failed closed
+            if _shell_normalizer._braced_word_spells_self(masked):
+                return True
+            continue
         for alt in alternatives:
             alt = _shell_normalizer._restore_quoted_braces(alt)
             if _SELF_NAME_RE.search(_debracket(alt)) or _SELF_NAME_RE.search(
@@ -1003,7 +1003,7 @@ def _is_self_kill(text_lower: str) -> bool:
                 _resolve_param_defaults(body)
             ):
                 return True
-            for word in _shell_normalizer._self_tokens(body):
+            for word in (w for c in _shell_normalizer._self_token_combinations(body) for w in c):
                 if _SELF_NAME_RE.search(_debracket(word)) or _SELF_NAME_RE.search(
                     _shell_normalizer._resolved_word_view(word)
                 ):
@@ -2462,7 +2462,7 @@ def _brace_alternatives(body: str, cap: int = _BRACE_EXPANSION_CAP) -> "list[str
         direction = 1 if start <= end else -1
         return [render(v) for v in range(start, end + direction, direction * step)]
     if "," in body:
-        parts = body.split(",")
+        parts = list(dict.fromkeys(body.split(",")))  # dedupe identical alts before the cap
         return parts if len(parts) <= cap else [""] * (cap + 1)  # cap the alternation
     return None
 
