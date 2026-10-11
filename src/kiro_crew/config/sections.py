@@ -1969,6 +1969,24 @@ class AgentConfig:
             "sessions it created itself.",
         ),
     )
+    session_manager_chain: bool = field(
+        default=False,
+        metadata=_meta(
+            "Session Manager Chain",
+            "Let a session drive the whole reporting line under it, not only the "
+            "sessions it manages directly, and move a departing manager's sessions "
+            "up to the manager above it. Off by default: with it off, one session "
+            "reaches the sessions it created or was handed, which is the reach "
+            "Session Control grants on its own. Turn it on and a lead that opened a "
+            "conductor can also send to, read, stop and close the workers that "
+            "conductor opened -- reach it already has by telling the conductor to "
+            "act, without the relay -- and closing that conductor hands its workers "
+            "to the lead instead of leaving them with no one who can reach them. The "
+            "line is walked live under a fixed depth bound and denies reach at every "
+            "edge it cannot read, so a missing or looping record withholds reach "
+            "rather than widening it.",
+        ),
+    )
     member_dispatch: bool = field(
         default=True,
         metadata=_meta(

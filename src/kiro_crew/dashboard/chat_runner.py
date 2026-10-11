@@ -7135,6 +7135,15 @@ async def _start_next_queued_turn(
     # qualifying.
     # Everything below — the note flush peeking at queue[0], the user-intervention
     # purge, the dequeue itself — must see only entries that may still deliver.
+    # NO SUSPENSION HERE, and that is deliberate. This sweep needs to know whether the
+    # manager line was in force for each entry it judges, and both ways of asking at
+    # this point were wrong: reading the config inline parses the file on a cache miss
+    # and stalls the loop, and awaiting it off-loop put a suspension in front of the
+    # dequeue -- where a concurrent direct send starts a turn that the drain then
+    # overwrites, and the first turn's cleanup clears ownership from under the second.
+    #
+    # So each entry carries the policy that admitted it (``send_origin_chain_applied``)
+    # and the sweep reads that. Nothing here waits.
     if _drop_stale_admissions(state, slot):
         # The head entry is waiting on a manager read -- neither deliverable nor
         # droppable yet. Start nothing from it: delivering would grant a reach this

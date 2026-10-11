@@ -497,12 +497,31 @@ async def close_slot(
     *,
     pre_pop_check: Callable[[], None] | None = None,
 ) -> None:
-    """Close a slot while releasing its admission fence on every aborted path."""
+    """Close a slot while releasing its admission fence on every aborted path.
+
+    A close that RETURNS is a close that committed -- every failure arm inside raises
+    ``SlotCloseError``, and the two arms that return early return because the archival
+    is done or belongs to a replacement -- so this is the one place that knows the tab
+    is really gone without knowing which exit it left by. That is what the reporting
+    line needs: the departing session's own manager is recorded HERE, on the committed
+    side, so a close that fails and puts the tab back has recorded no departure.
+    """
     try:
         await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
     finally:
         if state.get_slot(name) is slot:
             slot.cancel_close()
+    # Past the block above only when the close RETURNED, so only when it committed.
+    # Deferred import for the cycle this package documents elsewhere: session_control
+    # reaches chat_handlers, which reaches this module.
+    from kiro_crew.dashboard.session_control import note_manager_departed
+
+    # One mapping write about the slot that just left, so the reporting line below it
+    # can be read THROUGH this departure instead of the departure rewriting anybody's
+    # manager. No save, no loop over other slots, and no config read -- which is why it
+    # is safe here with no switch check: recording what a session reported to is inert
+    # until something reads the line, and only the walk does that, behind the switch.
+    note_manager_departed(state, name, slot)
 
 
 async def _close_slot(
@@ -702,6 +721,15 @@ async def _close_slot(
             state.push_slots_update()
             raise
     state._slots.pop(name, None)
+    # The key is FREE from here, and what this slot reported to is not published until
+    # the close commits, below. So from here until then the walk reads the record,
+    # which still describes whichever occupant held this key BEFORE this one -- a
+    # previous manager with reach over the sessions THIS one opened, for as long as the
+    # close takes. Clear that edge now; the manager is handed up on the committed side.
+    # Deferred import for the cycle this package documents elsewhere.
+    from kiro_crew.dashboard.session_control import note_key_vacated
+
+    note_key_vacated(name, slot)
     # Release any blocking wait before cancelling the task: a question pending on
     # the blocking POST /api/ask-question path holds an MCP worker on an open
     # HTTP request, and the slot is going away, so nobody will answer its card.
@@ -1101,6 +1129,13 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         if not removed:
             candidate.cancel_close()
             continue
+        # Same vacancy as the single-tab close, for the same reason: this pass archives
+        # after awaits, so between here and the departure record below the key is out
+        # of the table while the record still describes its PREVIOUS occupant. Clear
+        # that edge at the pop and publish the manager after the archival.
+        from kiro_crew.dashboard.session_control import note_key_vacated
+
+        note_key_vacated(name, removed)
         # Same tombstone as the single-tab close: the archive pass must not
         # race a concurrent channel reconcile into resurrecting the slot. Its
         # instant is persisted as closed_at for the same teardown-window
@@ -1248,6 +1283,15 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             logger.warning("Cleanup: session remove failed for %s", name, exc_info=True)
         else:
             _release_closed_execution(state, removed, closing_key, closing_execution)
+        # Same departure record as the single-tab close, and AFTER the archival for the
+        # same reason the archive's own steps are: the pop above is not this path's
+        # committed point, because the save's failure arm puts the slot back, and a slot
+        # that came back has not departed. An archived manager is the case that most
+        # needs the line readable through it: the sweep retires quiet sessions, and a
+        # conductor waiting on its workers is quiet.
+        from kiro_crew.dashboard.session_control import note_manager_departed
+
+        note_manager_departed(state, name, removed)
         archived.append(name)
         # Collect running tasks for concurrent cancellation after the loop
         if removed.running and removed.task is not None:

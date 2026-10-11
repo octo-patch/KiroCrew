@@ -111,6 +111,10 @@ def test_session_send_stamps_the_sending_slot(tmp_path):
         # the session that made it and a key alone names whoever holds that key at the
         # drain -- including a replacement the sender's grant was taken from.
         "tab": caller._tab_id,
+        # The manager-line switch as the admission saw it. The drain re-asserts the
+        # policy that admitted the entry and reads no config of its own, so the policy
+        # travels with the entry.
+        "chain": False,
     }
     # The stamp rides ALONGSIDE the containment snapshot; it never displaces it,
     # because that snapshot is the drain's authorization input.
@@ -224,6 +228,7 @@ def test_requeued_steer_notifies_its_sender(tmp_path):
         "sender": caller.key,
         "fenced": False,
         "tab": caller._tab_id,
+        "chain": False,
     }, "the requeue keeps what the drain re-checks, not only where to report"
 
     _link(target)
@@ -348,6 +353,7 @@ def test_send_origin_meta_omits_an_empty_key(tmp_path):
                 "sender": "chat-7",
                 "fenced": fenced,
                 "tab": caller._tab_id,
+                "chain": False,
             },
         }
 
@@ -378,6 +384,7 @@ def test_send_origin_meta_omits_a_key_with_no_tab_identity(tmp_path):
             "sender": key,
             "fenced": True,
             "tab": "",
+            "chain": False,
         }
 
 

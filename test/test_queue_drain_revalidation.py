@@ -828,6 +828,20 @@ _NON_CONTAINMENT_REFUSALS = {
     # `manager_unknown` above covers a value that cannot be READ; that one covers a
     # value read and then moved.
     "not_creator",
+    # The three ways the manager LINE can refuse, which are `not_creator`'s own case one
+    # level further up: the same caller-relative relation, read through more than one
+    # hop. Not per-slot constraints, so they are not re-asserted from the snapshot --
+    # the relation they describe is between the target's line and one entry's stamped
+    # sender, which is per-entry and lives in `session_control.sender_lost_its_reach`
+    # beside `not_creator`'s half.
+    #
+    # They are three codes rather than one because they are three different facts and a
+    # person debugging a denial needs them apart: the record was DROPPED by the cap, the
+    # key is held by a session the edges are not about, or a hop's own recorded manager
+    # may not hold it. Each refuses; none explains either of the others.
+    "manager_line_forgotten",
+    "manager_line_ambiguous",
+    "manager_line_inadmissible",
     # Not containment: global config state, a resolution failure, and the
     # self-target guard. None of the three can change while an entry waits in a
     # queue in a way the drain could act on.
@@ -1649,6 +1663,9 @@ def test_a_revoked_senders_message_does_not_survive_a_restart(tmp_path):
         "sender": lead.key,
         "fenced": True,
         "tab": lead._tab_id,
+        # The policy that admitted it travels with it: the drain re-asserts
+        # that one and reads no config of its own.
+        "chain": False,
     }
 
     # The worker was handed away before the restart; the restored entry is re-checked.

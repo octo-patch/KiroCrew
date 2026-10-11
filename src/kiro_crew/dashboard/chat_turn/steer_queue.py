@@ -578,9 +578,16 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> bool:
             # The same split as above, reached by the other road: this raise is the
             # sender re-compare's own read of the manager, and an entry admitted before
             # `manager_unknown` was recorded arrives here without having gone through
-            # that branch. One code waits; the rest drop under the name the refusal
-            # already carries, deduped so a notice states the reason once.
-            if exc.code == _sc.MANAGER_READ_PENDING:
+            # that branch. The codes that WAIT drop nothing; the rest drop under the name
+            # the refusal already carries, deduped so a notice states the reason once.
+            #
+            # ASKED, not listed. This line compared against one code, and the manager
+            # line added a second refusal that waits -- a hop mid-close or mid-handoff --
+            # so the entry a 409 had just promised to hold was deleted instead, with the
+            # sender told its accepted message was dropped. The set lives with the
+            # refusals in `session_control`, so the next one that waits is honoured here
+            # without this line being edited again.
+            if _sc.manager_refusal_holds_the_entry(exc.code):
                 held_for_manager = True
             elif "manager_unknown" not in changed:
                 changed = [*changed, "manager_unknown"]

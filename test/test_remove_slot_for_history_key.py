@@ -3964,3 +3964,87 @@ class TestTheExclusionMustNotCatchASuccessorUnit:
         _exclude_slot_units(state, session_ledger, self._claim())
 
         session_ledger.exclude_units.assert_called_once_with("chat-1", ())
+
+
+class TestDeletingAManagerRecordsWhatItReportedTo:
+    """A history delete is the third way a LIVE slot leaves the table.
+
+    It needs the departure recorded most: a closed tab can be reopened, while this
+    session is gone for good, so without a record of what IT reported to, the sessions
+    under it could never be reached again.
+
+    Nothing is written to those sessions. The record is one mapping entry about the
+    departing slot, and the reporting line below it is resolved when the line is READ.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_registry(self):
+        from kiro_crew.dashboard import session_control as sc
+
+        sc._key_occupancy.clear()
+        sc._departed_managers.clear()
+        # The PREMISE, stated rather than inherited from whatever ran before: the
+        # bookkeeping writers record nothing until an async reader has published the
+        # switch, so a test about what a delete records has to say the feature is on.
+        # Left to the ambient value, this file passes or fails on test ORDER.
+        seen = sc._chain_switch_seen[0]
+        sc.note_chain_switch(True)
+        yield
+        sc._key_occupancy.clear()
+        sc._departed_managers.clear()
+        sc._chain_switch_seen[0] = seen
+
+    @staticmethod
+    def _report(key: str, manager: str) -> MagicMock:
+        slot = _make_slot(key)
+        slot._manager = ""
+        slot._created_by = manager
+        slot._dirty = False
+        return slot
+
+    def _team(self):
+        """A lead, a conductor the lead created, and a worker the conductor created."""
+        lead = self._report("chat-lead", "chat-owner")
+        conductor = self._report("chat-conductor", "chat-lead")
+        worker = self._report("chat-worker", "chat-conductor")
+        conductor.linked_session_key = ""
+        state = _make_state({slot.key: slot for slot in (lead, conductor, worker)})
+        state.get_slot = MagicMock(side_effect=lambda name: state._slots.get(name))
+        return state, lead, conductor, worker
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_conductor_records_the_lead_above_it(self):
+        from kiro_crew.dashboard import session_control as sc
+
+        state, _lead, conductor, worker = self._team()
+
+        await _remove_slot_for_history_key(state, f"dashboard_{conductor.key}")
+
+        assert conductor.key not in state._slots
+        # Read the way the walk reads it: resolve the key's occupancy, then match the
+        # pair exactly, because the record is keyed on the pair.
+        held = sc._key_occupancy[conductor.key]
+        entry = sc._departed_managers[(conductor.key, held)]
+        assert entry.manager == "chat-lead"
+        # SETTLED, not pending: this path pops and records in one synchronous step, so
+        # there is no window in which the line is unknown.
+        assert not entry.pending
+        # The worker is untouched: no field of its own was rewritten by the delete.
+        assert worker._manager == ""
+        assert worker._created_by == "chat-conductor"
+        assert not worker._dirty
+
+    @pytest.mark.asyncio
+    async def test_a_preserved_slot_records_no_departure(self):
+        """The record sits behind the pop, so a delete that declines it records nothing."""
+        from kiro_crew.dashboard import session_control as sc
+
+        state, _lead, conductor, _worker = self._team()
+        conductor.linked_session_key = "slack:team:direct:42"
+        claim = _capture_history_delete_claim(state, conductor.linked_session_key)
+        conductor.linked_session_key = "workflow:successor"
+
+        await _remove_slot_for_history_key(state, "slack:team:direct:42", delete_claim=claim)
+
+        assert state._slots[conductor.key] is conductor
+        assert not [key for key, _ in sc._departed_managers if key == conductor.key]

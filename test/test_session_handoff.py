@@ -167,19 +167,27 @@ def test_the_new_manager_reaches_the_verbs_a_handoff_widens(tmp_path):
         assert admitted is worker, operation
 
 
-def test_the_giver_stops_reaching_what_it_handed_over(tmp_path):
+def test_the_giver_stops_reaching_a_session_it_handed_off_its_own_line(tmp_path):
     """One direct manager at a time: the reach MOVES rather than being shared.
 
-    The giver keeps its creation record and nothing else, so a lead that handed a
-    worker away cannot send to it behind the conductor's back.
+    Handed OFF the giver's line, which is where the move is total: the receiver here is
+    the person's own tab, so the lead manages neither it nor the worker under it, and
+    the creation record it keeps buys it nothing. A receiver the giver still manages is
+    the other case and is pinned beside the line walk -- a lead keeps reaching a worker
+    it handed to its own conductor, because it drives that conductor either way.
     """
     state = _make_state(tmp_path)
-    lead, _conductor, worker = _team(state, handed=True)
+    lead, _conductor, worker = _team(state)
+    worker._manager = "chat-owner-tab"
     with pytest.raises(sc.SessionControlError) as exc:
         sc.authorize_target(
             state, caller_session_key=_key(lead), target=worker.key, operation="send"
         )
-    assert exc.value.code == "not_creator"
+    # Handed to the owner's tab with no recorded occupancy, so #19135's own record
+    # check refuses as manager_session_changed before the line is walked: the base
+    # cannot confirm who holds that tab. Either way the giver no longer reaches it,
+    # which is the point here -- the reach moved off the giver's line.
+    assert exc.value.code == "manager_session_changed"
     assert worker._created_by == lead.key, "the creation record is not what moved"
 
 

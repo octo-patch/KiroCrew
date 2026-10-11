@@ -3443,6 +3443,19 @@ async def _remove_slot_for_history_key(
             popped = state._slots.pop(claim.registry_key, None)
             if popped is claim.slot:
                 slot = claim.slot
+                # The same departure record the two close paths write, on the third way
+                # a LIVE slot leaves the table. A deleted session needs it most: a
+                # closed tab can be reopened, while this one is going for good, so
+                # without a record of what it reported to, the sessions under it could
+                # never be sent to, read, stopped or closed again.
+                #
+                # Here rather than later because this pop is the committed removal:
+                # nothing below puts the slot back, and the slot object is still in hand
+                # to read its own manager from. Synchronous and one mapping write, so
+                # there is no window between the pop and the record.
+                from kiro_crew.dashboard.session_control import note_manager_departed
+
+                note_manager_departed(state, claim.registry_key, claim.slot)
         else:
             logger.info(
                 "History delete: slot %s was replaced, rerouted, or reclaimed; preserving it",

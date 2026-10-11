@@ -1840,7 +1840,20 @@ def test_every_authorization_read_of_the_manager_goes_through_the_chokepoint(tmp
     #: The two functions allowed to read the manager without refusing first, each for a
     #: stated reason. ``require_manager_of`` IS the refusal, and nothing else may read
     #: the raw value for an authorization answer.
-    permitted = {"require_manager_of"}
+    permitted = {
+        "require_manager_of",
+        # The two BOOKKEEPING readers, named rather than hidden behind a private copy of
+        # the read. A copy was exactly that -- same expression, different name, so this
+        # test passed while an authorizing walk called it.
+        #
+        # ``note_manager_departed`` writes down the manager a departing slot ACTUALLY
+        # had; refusing there would record nothing and lose the line.
+        # ``_rebuild_departures_from_log`` is what MAKES the value known at a start, so
+        # it cannot ask a refusal that depends on the value being known. Neither
+        # authorizes anything, and every READ of those records goes through the walk.
+        "note_manager_departed",
+        "_rebuild_departures_from_log",
+    }
     offenders: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -3851,7 +3864,20 @@ def test_only_the_record_maker_and_the_comparison_read_the_live_occupant(tmp_pat
     #: the whole question it asks. ``_gate`` is ``_commit``'s own other half: it reads
     #: the RECEIVER's occupant, which is the value the commit a few lines later
     #: records, and the two halves of one verb must not read it differently.
-    permitted = {"_commit", "_gate", "_manager_record_refusal"}
+    #: The manager LINE's own comparisons, admitted for the reason
+    #: ``_manager_record_refusal`` is: each one exists to ask whether the occupant
+    #: answering a key is the session an edge, a record or an asker meant, and none of
+    #: them publishes, records or applies anything -- they return a bool or the identity
+    #: the bool is read from. ``_occupant_identity`` is the single reader the other two
+    #: ask through, which is why there are three names and one read.
+    permitted = {
+        "_commit",
+        "_gate",
+        "_manager_record_refusal",
+        "_occupant_identity",
+        "_key_is_ambiguous",
+        "_took_the_key_from_somebody",
+    }
     #: The asker's own key. A read of this is the caller identifying itself to the one
     #: comparison, and it cannot name a stranger: the caller is the occupant.
     own_key = {"caller_key"}
@@ -4518,3 +4544,321 @@ def test_a_handoff_during_the_index_read_is_not_wiped_by_the_older_verdict(tmp_p
             state, caller_session_key=_key(lead), target=worker.key, operation="send"
         )
     assert exc.value.code == "not_creator", "the revoked creator does not get it back"
+
+
+# -- a commit landing after the target departed ---------------------------------
+
+
+def _archive_the_target_during_the_manager_append(state, target, calls: list[dict]) -> None:
+    """Take the TARGET out of the live table from the manager entry's settle callback.
+
+    The window the idle-archive sweep really occupies: this verb's commit runs after the
+    manager append, the sweep takes its own slot lock and not this one's, and an idle
+    conductor is exactly the kind of session it archives. By the time the commit
+    publishes, the slot it publishes onto is no longer reachable from the table.
+
+    Unlike the recipient-side helpers above, nothing about the handoff is refused here --
+    it succeeds, which is what makes the stale record it would otherwise leave behind the
+    whole of the problem.
+    """
+    original = emit.on_manager_set
+
+    def _archive_then_settle(sid, **kw):
+        if not any(call["op"] == "manager" for call in calls):
+            departed = state._slots.pop(target.key, None)
+            if departed is not None:
+                # The sweep's own departure record, written with the manager committed
+                # at that moment -- which is still the one being replaced, because this
+                # append has not landed yet.
+                sc.note_manager_departed(state, target.key, departed)
+        original(sid, **kw)
+
+    emit.on_manager_set = _archive_then_settle
+
+
+def test_a_commit_after_the_target_was_archived_leaves_the_new_manager_reachable(
+    tmp_path, monkeypatch
+):
+    """The finding: a departure recorded inside the commit window names the OLD manager.
+
+    The sweep archives the conductor while the handoff's manager entry is in flight, so
+    its departure records the lead. The commit then publishes the recipient onto a slot
+    that has left the table. Read through that record, the conductor's workers answer to
+    the lead -- the manager the handoff just took them from -- and refuse the recipient,
+    with nothing correcting it until the entry is evicted or the gateway restarts.
+
+    Driven through the real verb rather than by calling the recorder, because the thing
+    under test is whether the COMMIT corrects its own occupancy's record.
+    """
+    calls = _entries(monkeypatch)
+    state = _make_state(tmp_path)
+    lead, conductor, worker = _team(state)
+    _hold(state, worker.key, lead.key, sid="sid-worker")
+
+    real_settlement = emit.awaiting_settlement
+    real_commit = emit.awaiting_commit
+
+    async def _manager_entry_stays_queued(emit_call, *, what=""):
+        # ONLY the manager entry is left QUEUED -- outcome unknown, which is the one
+        # settlement value that can still land after this verb refuses. The tree append
+        # the verb makes first keeps its real (stubbed-and-settled) path, because
+        # stalling that one refuses `tree_write_pending` before the commit is reached.
+        if what.startswith("the handoff of"):
+            emit_call(lambda _landed: None)
+            return None
+        return await real_settlement(emit_call, what=what)
+
+    async def _correction_is_rejected(emit_call, *, what=""):
+        # And the correction behind it is REJECTED. The correlated pair: a writer backed
+        # up enough to time out the grant is the same writer at its ceiling here.
+        if "back to" in what:
+            emit_call(lambda _landed: None)
+            return False
+        return await real_commit(emit_call, what=what)
+
+    monkeypatch.setattr(emit, "awaiting_settlement", _manager_entry_stays_queued)
+    monkeypatch.setattr(emit, "awaiting_commit", _correction_is_rejected)
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _run(
+            sc.handoff_target(
+                state, caller_session_key=_key(lead), target=worker.key, to=conductor.key
+            )
+        )
+
+    assert exc.value.code == "handoff_unresolved", "not 'the giver still manages it'"
+    assert exc.value.status == 409
+    assert worker._manager_unresolved is True, "the slot answers no one until it is re-read"
+    assert worker._manager == "", "and nothing was published"
+    assert [call["op"] for call in calls].count("manager") == 2, "the grant, then the correction"
+
+    # And the refusal is now what every reader of the value gets, including the giver
+    # that was being served before.
+    with pytest.raises(sc.SessionControlError) as served:
+        sc.authorize_target(
+            state, caller_session_key=_key(lead), target=worker.key, operation="send"
+        )
+    assert served.value.code == "manager_unresolved"
+
+
+# -- the manager-line cycle through hops that are neither endpoint ---------------
+
+
+@pytest.fixture
+def _chain_on(_floor_monkeypatch):
+    """``agent.session_manager_chain`` ON, which the manager line only exists behind.
+
+    Not autouse: every other test in this file is about the tree edge and the manager
+    FIELD, which the switch does not gate. Only the ones below walk the line.
+
+    Both halves of the switch, because the feature has two readers. The async readers
+    call ``manager_chain_enabled`` and the SYNC bookkeeping writers cannot -- a config
+    read on the loop is the one thing a close path must not do -- so they consult what
+    an async reader last published. Patching only the reader leaves every departure
+    unrecorded, and a test about reading a closed hop's line then describes a gateway
+    where nothing was ever written.
+    """
+    _floor_monkeypatch.setattr(sc, "manager_chain_enabled", lambda: True)
+    seen = sc._chain_switch_seen[0]
+    _no_records()
+    sc.note_chain_switch(True)
+    yield
+    # Cleared on BOTH sides. These are the only tests here that record anything, and
+    # they reuse one set of keys between them: a record the previous one left makes the
+    # next one's fresh slot under the same name read as having taken that name from
+    # somebody, which is an ambiguous hop the test never created. The same record left
+    # behind does it to the next FILE, so the exit half is not tidying either.
+    _no_records()
+    sc._chain_switch_seen[0] = seen
+
+
+def _no_records():
+    """The in-memory occupancy and departure tables as a fresh process has them."""
+    sc._key_occupancy.clear()
+    sc._departed_managers.clear()
+    sc._recently_evicted_keys.clear()
+    sc._key_occupancy_evictions[0] = 0
+    sc._departures_rebuilt[0] = True
+
+
+def _published(slot, manager):
+    """Publish *manager* onto *slot* the way a committed handoff does.
+
+    Through the base PR's own writer, so the edge carries the manager's OCCUPANCY
+    beside its key: an edge naming a key alone is one whose occupant cannot be
+    identified, and every read of it refuses.
+    """
+    sc.publish_manager(
+        slot, manager=manager.key, manager_tab=str(getattr(manager, "_tab_id", "") or "")
+    )
+    return slot
+
+
+def _created_edge(slot, creator):
+    """Point *slot* at *creator* by CREATION, with no published handoff on it.
+
+    The base PR answers a PUBLISHED edge whose manager has closed with a refusal of its
+    own -- that name is not the session the record names -- and that answer arrives
+    before any question about the line above. A creation edge carries no recorded
+    occupant, so it is read the way it was read before this feature existed, which is
+    what lets a test be about the closed hop rather than about the edge below it.
+    """
+    slot._manager = ""
+    slot._manager_tab = ""
+    slot._created_by = creator.key
+    return slot
+
+
+def _manager_line_tree(state):
+    """``L`` manages ``A`` and ``D``; ``A`` manages ``C``; ``D`` manages ``B``.
+
+    The finding's shape. The loop a second handoff closes runs A -> B -> D -> C -> A,
+    so neither move shares an endpoint with the other and no per-endpoint fence can see
+    it coming. Every node is opened by the owner tab so none is ownership-fenced and any
+    of them may hand any other over, which is what lets the sequence be driven at all.
+    """
+    owner = _live(state, _slot(state, "chat-owner-tab"), "sid-owner")
+    lead = _live(state, _slot(state, "chat-l"), "sid-l")
+    lead._created_by = owner.key
+    nodes = {}
+    for name in ("a", "b", "c", "d"):
+        slot = _live(state, _slot(state, f"chat-{name}"), f"sid-{name}")
+        slot._created_by = owner.key
+        nodes[name] = slot
+    # PUBLISHED, not assigned: the base PR's one writer records the manager's key AND
+    # the occupancy it was published to, and an edge carrying only a key names an
+    # occupant nobody can identify -- which refuses before the question these tests ask
+    # is reached.
+    _published(nodes["a"], lead)
+    _published(nodes["d"], lead)
+    _published(nodes["c"], nodes["a"])
+    _published(nodes["b"], nodes["d"])
+    return owner, lead, nodes
+
+
+def test_a_handoff_is_refused_while_an_intermediate_hop_has_an_unsettled_append(
+    tmp_path, monkeypatch, _chain_on
+):
+    """The finding: the second move passes every endpoint fence and closes the loop.
+
+    ``A -> B`` is left queued, so A's own ``_manager`` still reads as L's. The second
+    move, ``D -> C``, names D and C -- neither of which is A -- so the endpoint fences
+    have nothing to say. The walk from C runs C -> A -> L and, reading A's committed
+    field, concludes L is not below D and the move is safe. Both deferred commits then
+    land and the manager line is A -> B -> D -> C -> A, with L cut off and no recovery.
+
+    So the walk reads the unsettled state of every hop it passes THROUGH, and the
+    refusal is the retryable one: A's manager is decided and not yet published.
+    """
+    calls = _entries(monkeypatch)
+    state = _make_state(tmp_path)
+    owner, lead, nodes = _manager_line_tree(state)
+
+    # A's handoff is handed to the writer and never settles.
+    queued: asyncio.Future[bool] = asyncio.get_event_loop_policy().new_event_loop().create_future()
+    sc._tree_pending_slots[nodes["a"].key] = queued
+    try:
+        assert sc._hop_handoff_unsettled(nodes["a"].key)
+        # Neither endpoint of the second move is A.
+        assert not sc._hop_handoff_unsettled(nodes["d"].key)
+        assert not sc._hop_handoff_unsettled(nodes["c"].key)
+
+        with pytest.raises(sc.SessionControlError) as exc:
+            _run(
+                sc.handoff_target(
+                    state,
+                    caller_session_key=_key(owner),
+                    target=nodes["d"].key,
+                    to=nodes["c"].key,
+                )
+            )
+
+        assert exc.value.code == "manager_line_pending", exc.value.code
+        # Nothing moved, so no loop can be completed by the deferred commits.
+        assert nodes["d"]._manager == lead.key
+        assert nodes["c"]._manager == nodes["a"].key
+        # And nothing reached the manager log, which is what makes a persisted cycle
+        # unreachable rather than merely unlikely: the refusal lands before any append,
+        # so there is no entry for a rebuild to read a loop out of.
+        assert [call for call in calls if call["op"] == "manager"] == []
+    finally:
+        sc._tree_pending_slots.pop(nodes["a"].key, None)
+
+
+def test_the_same_handoff_is_decided_once_the_intermediate_append_settles(
+    tmp_path, monkeypatch, _chain_on
+):
+    """The refusal is temporary: a settled hop is read and the move is judged for real.
+
+    With A's append landed, the walk reads A's published manager and answers the cycle
+    question properly -- here it refuses as a PROVEN loop, because A now manages B and
+    the line from C really does reach D.
+    """
+    _entries(monkeypatch)
+    state = _make_state(tmp_path)
+    owner, _lead, nodes = _manager_line_tree(state)
+    _published(nodes["a"], nodes["b"])  # the first handoff published
+
+    assert not sc._hop_handoff_unsettled(nodes["a"].key)
+    with pytest.raises(sc.SessionControlError) as exc:
+        _run(
+            sc.handoff_target(
+                state, caller_session_key=_key(owner), target=nodes["d"].key, to=nodes["c"].key
+            )
+        )
+    assert exc.value.code == "would_cycle", exc.value.code
+
+
+def test_a_departed_hop_with_an_unsettled_handoff_is_refused_too(tmp_path, monkeypatch, _chain_on):
+    """The same loop, with the middle hop CLOSED rather than live.
+
+    The worse of the two cases, and the one a check placed after the live/departed
+    branch never reaches: A's departure record looks settled and names the manager it is
+    moving away from, with nothing in it to say a different one is queued. So the walk
+    follows it, the crossing handoff passes, and the commits close
+    A -> B -> D -> C -> A exactly as they would with A live.
+
+    The question is asked of every hop before anything branches on whether its slot is
+    still in the table, because whether a manager has been published has nothing to do
+    with that.
+    """
+    calls = _entries(monkeypatch)
+    state = _make_state(tmp_path)
+    owner, lead, nodes = _manager_line_tree(state)
+    # C reaches A by CREATION here rather than by a published handoff, because the base
+    # PR answers a published edge whose manager has closed with its own refusal -- "that
+    # name is not the session the record names" -- and that answer arrives before the
+    # question this test asks. The hop being closed mid-append is what the test is
+    # about, and the creation chain is the ordinary way a line reaches a hop anyway.
+    _created_edge(nodes["c"], nodes["a"])
+
+    # A closes while its handoff append is still queued: the record names L, the
+    # manager it is moving away from.
+    queued: asyncio.Future[bool] = asyncio.get_event_loop_policy().new_event_loop().create_future()
+    sc._tree_pending_slots[nodes["a"].key] = queued
+    try:
+        state._slots.pop(nodes["a"].key, None)
+        sc.note_manager_departed(state, nodes["a"].key, nodes["a"])
+        held = sc._key_occupancy[nodes["a"].key]
+        assert sc._departed_managers[(nodes["a"].key, held)].manager == lead.key
+        assert not sc._departed_managers[(nodes["a"].key, held)].pending, "it looks settled"
+
+        with pytest.raises(sc.SessionControlError) as exc:
+            _run(
+                sc.handoff_target(
+                    state,
+                    caller_session_key=_key(owner),
+                    target=nodes["d"].key,
+                    to=nodes["c"].key,
+                )
+            )
+
+        assert exc.value.code == "manager_line_pending", exc.value.code
+        # From the LOOP GUARD and not from some other check that answers the same code:
+        # the recipient's own authorization can refuse for a pending line too, and a
+        # test that accepted either would pass without the guard existing.
+        assert "would close a loop" in exc.value.message, exc.value.message
+        assert nodes["d"]._manager == lead.key
+        assert [call for call in calls if call["op"] == "manager"] == []
+    finally:
+        sc._tree_pending_slots.pop(nodes["a"].key, None)
