@@ -298,6 +298,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     apply_skill_mapping,
     enumerate_skill_catalog,
     read_bounded_json,
+    rebuild_agent_spec,
 )
 from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     TEMPLATE_DEFINITION_KEYS,

@@ -1696,15 +1696,52 @@ async def test_a_skill_package_mutation_rebuilds_the_agent_config(
     manager = _FakeManager()
     monkeypatch.setattr(agents, "_require_owner", AsyncMock(return_value=None))
     monkeypatch.setattr(agents, "_capability_manager", lambda: manager)
-    rebuild = MagicMock()
-    monkeypatch.setattr(agents, "install_agent", rebuild)
+    # The handler now reports the rebuild VERDICT: a confirmed rewrite returns
+    # True, which rides back as ``agent_spec_rewritten`` so the UI can tell the
+    # user the package actually reached the agent spec.
+    rebuild = MagicMock(return_value=True)
+    monkeypatch.setattr(agents, "rebuild_agent_spec", rebuild)
     request = _post({"package": " pkg-1 "})
     response = await getattr(agents, handler)(request)
     assert response.status == 200
-    assert json.loads(response.body) == {"ok": True, "package": "pkg-1"}
+    assert json.loads(response.body) == {
+        "ok": True,
+        "package": "pkg-1",
+        "agent_spec_rewritten": True,
+    }
     assert manager.calls == [(op, "pkg-1")]
-    rebuild.assert_called_once_with()
+    rebuild.assert_called_once()
     request.app["state"].push_refresh.assert_called_once_with("agents")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler", "op"),
+    [
+        ("api_capability_skills_install", "install_skill"),
+        ("api_capability_skills_uninstall", "uninstall_skill"),
+    ],
+)
+async def test_a_skill_package_mutation_reports_a_declined_rewrite(
+    handler: str, op: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declined rewrite is reported, not hidden: when the skill package op
+    succeeds but the shared-home guard declines to rewrite the spec, the response
+    says ``agent_spec_rewritten: False`` with a 200 — the package landed, the spec
+    did not — rather than an unqualified success."""
+    manager = _FakeManager()
+    monkeypatch.setattr(agents, "_require_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(agents, "_capability_manager", lambda: manager)
+    rebuild = MagicMock(return_value=False)
+    monkeypatch.setattr(agents, "rebuild_agent_spec", rebuild)
+    response = await getattr(agents, handler)(_post({"package": "pkg-1"}))
+    assert response.status == 200
+    assert json.loads(response.body) == {
+        "ok": True,
+        "package": "pkg-1",
+        "agent_spec_rewritten": False,
+    }
+    assert manager.calls == [(op, "pkg-1")]
 
 
 @pytest.mark.asyncio
@@ -1715,8 +1752,8 @@ async def test_a_skill_package_mutation_refuses_before_and_after_the_seam(
     handler: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(agents, "_require_owner", AsyncMock(return_value=None))
-    rebuild = MagicMock()
-    monkeypatch.setattr(agents, "install_agent", rebuild)
+    rebuild = MagicMock(return_value=True)
+    monkeypatch.setattr(agents, "rebuild_agent_spec", rebuild)
     route = getattr(agents, handler)
 
     missing = await route(_post({"package": "  "}))
