@@ -89,6 +89,18 @@ export const selectComposerBusy = (state: RootState, slot: string | null): boole
   return !!dashSlot?.subagents_running
 }
 
+/** Whether the composer's project chip must stay locked. A busy composer
+ *  normally leaves it enabled so a pick stages for the next turn, but any
+ *  attached sub-agent keeps it locked, streaming reply or not: the server's
+ *  deferred session reset stays armed while children share the runtime, so a
+ *  pick would not land at the next turn. */
+export const selectProjectChipLocked = (state: RootState, slot: string | null): boolean => {
+  if (!slot) return false
+  if (selectSlotSubagentsActive(state, slot)) return true
+  const dashSlot = state.dashboard.slots.find((sl) => sl.key === slot)
+  return !!dashSlot?.subagents_running
+}
+
 /** `meta.injectKind` values the gateway stamps on an `inject` row that dispatched a
  *  turn. Every other inject row opens nothing. Mirrors `_TURN_INJECT_KINDS` in
  *  `dashboard/state.py`. Keyed by `InjectKind` (see `pages/chat/RecoveryCard.tsx`)

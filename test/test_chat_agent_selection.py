@@ -715,6 +715,68 @@ async def test_live_provider_switch_preserves_selection_after_restore(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_project_pick_during_a_provider_switch_is_staged_not_fatal(tmp_path, monkeypatch):
+    """A project picked while the reply switches agents applies from the next turn.
+
+    The pick lands as the switch begins (after the session is
+    registered, so the project route is free to write). The turn must finish
+    the switch instead of aborting with "retry the turn", record it under the
+    project the turn runs in, and leave the pick for the next turn.
+    """
+    state, slot, _ = await asyncio.wait_for(_template_chat(tmp_path, monkeypatch), 30)
+    key = "dashboard:template-chat"
+    later_agent = "kirocrew-worker"
+    start = tmp_path / "start-project"
+    picked = tmp_path / "picked-mid-turn"
+    start.mkdir()
+    picked.mkdir()
+    slot.project = str(start)
+    monkeypatch.setattr(
+        "kiro_crew.config.loader._materialized_kiro_agent",
+        lambda name, project_dir=None: name if name in (TEMPLATE, later_agent) else "",
+    )
+    provider = state.sessions.get_or_create.return_value[0]
+    state.sessions.reset = AsyncMock(return_value=True)
+    publish = chat_runner.record_provider_agent_switch
+    refuse = chat_runner.refuse_stale_switch
+    recorded_projects: list = []
+
+    async def pick_during_switch(client, agent):
+        # The chip pick lands at the switch branch's first await, before the
+        # binding re-checks and the record call.
+        await refuse(client, agent)
+        slot.project = str(picked)
+
+    def recording(config, session_key, prior, new_agent, project_dir):
+        recorded_projects.append(project_dir)
+        return publish(config, session_key, prior, new_agent, project_dir)
+
+    monkeypatch.setattr(chat_runner, "refuse_stale_switch", pick_during_switch)
+    monkeypatch.setattr(chat_runner, "record_provider_agent_switch", recording)
+
+    async def switch(*args, **kwargs):
+        yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text=later_agent)
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    provider.stream = switch
+    await asyncio.wait_for(chat_runner._run_chat(state, slot, "switch the template"), 30)
+    await asyncio.wait_for(drain_background_tasks(state), 30)
+
+    # The switch completed and was recorded under the turn's own project.
+    assert recorded_projects == [str(start)]
+    assert slot.agent == later_agent
+    assert await asyncio.to_thread(session_agent_selection_kind, key, later_agent) == "template"
+    errors = [m for m in slot.messages if "retry the turn" in str(m.get("content", ""))]
+    assert errors == []
+    state.sessions.record_failure.assert_not_awaited()
+    # The pick stands, and the next turn allocates in the new project.
+    assert slot.project == str(picked)
+    await asyncio.wait_for(chat_runner._run_chat(state, slot, "continue"), 30)
+    await asyncio.wait_for(drain_background_tasks(state), 30)
+    assert state.sessions.get_or_create.call_args.kwargs["cwd"] == str(picked)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("interruption", "cancel_count"),
     [

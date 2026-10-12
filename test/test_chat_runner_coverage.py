@@ -1760,7 +1760,9 @@ class TestExpandDollarSkills:
     def test_no_dollar_token_is_untouched(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
 
-        assert chat_runner._expand_dollar_skills("plain", state, slot, "dashboard:x") == (
+        assert chat_runner._expand_dollar_skills(
+            "plain", state, slot, "dashboard:x", slot.project or ""
+        ) == (
             "plain",
             0,
         )
@@ -1771,7 +1773,9 @@ class TestExpandDollarSkills:
         skills.resolve_dollar_skills.side_effect = RuntimeError("bad glob")
 
         with patch.object(chat_runner, "_get_skills", return_value=skills), _quiet_sel() as sel:
-            out = chat_runner._expand_dollar_skills("$broken", state, slot, "dashboard:x")
+            out = chat_runner._expand_dollar_skills(
+                "$broken", state, slot, "dashboard:x", slot.project or ""
+            )
 
         assert out == ("$broken", 0)
         assert sel.return_value.log_tool_invocation.call_args.kwargs["outcome"] == "error"
@@ -1783,7 +1787,9 @@ class TestExpandDollarSkills:
         skills.has_dollar_candidate.return_value = True
 
         with patch.object(chat_runner, "_get_skills", return_value=skills), _quiet_sel() as sel:
-            out = chat_runner._expand_dollar_skills("$nope", state, slot, "dashboard:x")
+            out = chat_runner._expand_dollar_skills(
+                "$nope", state, slot, "dashboard:x", slot.project or ""
+            )
 
         assert out == ("$nope", 0)
         assert sel.return_value.log_tool_invocation.call_args.kwargs["outcome"] == "not_found"
@@ -1797,7 +1803,7 @@ class TestExpandDollarSkills:
 
         with patch.object(chat_runner, "_get_skills", return_value=skills):
             expanded, count = chat_runner._expand_dollar_skills(
-                "run $deploy", state, slot, "dashboard:x"
+                "run $deploy", state, slot, "dashboard:x", slot.project or ""
             )
 
         assert count == 1
@@ -6354,6 +6360,43 @@ class TestRunChatWakaTimeCodingAccounting:
         client.reject_tool.assert_not_awaited()
         note_activity.assert_called_once()
         assert note_activity.call_args.kwargs["config"] is config
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_project_is_the_turn_start_snapshot(self, tmp_path):
+        """A project picked while the turn streams does not relabel its heartbeat.
+
+        The pick lands as the session registers (the route is free to write
+        slot.project from then on); the heartbeat still names the project the
+        turn prepared on and runs in.
+        """
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        start = tmp_path / "start-project"
+        picked = tmp_path / "picked-mid-turn"
+        start.mkdir()
+        picked.mkdir()
+        slot.project = str(start)
+
+        async def _claim(*_args, **_kwargs):
+            slot.project = str(picked)
+            return client, True, False
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_claim)
+        _set_stream(client, [_statusless_coding_tool_call(), _complete()])
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
+            await _drive(state, slot)
+
+        note_activity.assert_called_once()
+        assert note_activity.call_args.args[0] == str(start)
+        assert slot.project == str(picked)
 
     @pytest.mark.asyncio
     async def test_many_auto_approved_coding_calls_keep_one_turn_bit(self, tmp_path):

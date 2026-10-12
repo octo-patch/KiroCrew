@@ -244,6 +244,10 @@ export interface ChatInputProps {
   /** Show used/window token counts in the inline context readout. */
   showContextTokens?: boolean
   isRunning?: boolean
+  /** Lock the project chip: the composer is busy only because sub-agents are
+   *  attached. A pick there cannot land at the next turn, because the deferred
+   *  session reset stays armed while children share the runtime. */
+  projectLocked?: boolean
   onStop?: () => void
   /**
    * True when an EMPTY composer can hand the thread back to the agent, so the

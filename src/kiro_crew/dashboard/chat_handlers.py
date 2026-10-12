@@ -5474,8 +5474,8 @@ async def switch_slot_agent(
     # runs FIRST, and the slot is mutated only after the reset succeeds — a
     # failed request provably changed nothing, the invariant the frontend's
     # slotSwitch failure-recovery relies on, with no rollback machinery to
-    # race against concurrent writers (e.g. the project endpoint, which does
-    # not take this lock).
+    # race against concurrent writers (e.g. the in-turn set_project directive,
+    # which does not take this lock).
     # Two locks, in the order documented at _slot_switch_session_lock:
     # slot._lock, then the session lock. An ExitStack because the session
     # lock's KEY is only known after the in-lock read below, and locking on
@@ -8850,7 +8850,20 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     # reset stays DEFERRED via the flag (the killpg constraint below), so no
     # reset is awaited while holding the lock beyond what the other switch
     # handlers already hold.
-    async with slot._lock:
+    #
+    # Two locks, in the order documented at _slot_switch_session_lock:
+    # slot._lock, then the session lock. The session lock is the one a turn's
+    # dispatch in chat_runner._run_chat holds while it captures its binding
+    # (slot.project included) and registers its session. Without it a pick
+    # made in the first moments of a reply lands inside that window, and the
+    # turn's _require_current_binding check fails the message just sent with
+    # "conversation binding changed during preparation". Under it the pick
+    # waits until the turn has registered (the dispatch releases the lock
+    # there, never holding it across the turn), so the running reply keeps
+    # its captured project and the pick applies from the next turn via the
+    # deferred reset below.
+    async with contextlib.AsyncExitStack() as _stack:
+        await _stack.enter_async_context(slot._lock)
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
             return _slot_not_found()
         # The session the deferred reset will address — ``effective_session_key``,
@@ -8864,6 +8877,13 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # action cannot disagree. session_directive_apply's set_project path
         # already resolves the flag the same way.
         session_key = effective_session_key(slot)
+        # Keyed on the value resolved just above, so the lock provably guards
+        # the session this request acts on (see _slot_switch_session_lock).
+        await _stack.enter_async_context(_slot_switch_session_lock(session_key))
+        # Second lock-acquisition await, second re-check: a same-name recreate
+        # lands during this wait just as easily as during the first.
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+            return _slot_not_found()
         # App isolation on the SESSION, not just the slot (the cancel routes'
         # policy): slot ownership does not imply ownership of a linked
         # channel session, so an app caller may not repoint the project a

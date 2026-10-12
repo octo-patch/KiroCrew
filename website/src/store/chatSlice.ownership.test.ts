@@ -171,7 +171,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['automations', automations, ['selectAutomationForSlot', 'selectSidebarAutomationRunningKeys']],
   ['side', side, ['queueEditBroadcastAt']],
   ['selectors', selectors, [
-    'selectActiveSlotProject', 'selectComposerBusy', 'selectContinuable', 'selectSendConfirmed', 'selectSlotMessages',
+    'selectActiveSlotProject', 'selectComposerBusy', 'selectContinuable', 'selectProjectChipLocked', 'selectSendConfirmed', 'selectSlotMessages',
     'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectTrailingSendUnconfirmed',
     'selectSlotTurnFromWake', 'selectTurnInterrupted', 'QUIET_END_SERVER', 'QUIET_END_TOOL',
   ]],

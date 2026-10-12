@@ -21478,7 +21478,7 @@ class TestExpandDollarSkills:
 
         state = self._state_with_skills(tmp_path, monkeypatch)
         slot = _ChatSlot("s1")
-        out, n = _expand_dollar_skills("plain message", state, slot, "sess")
+        out, n = _expand_dollar_skills("plain message", state, slot, "sess", slot.project or "")
         assert out == "plain message"
         assert n == 0
         state.push_slots_update.assert_not_called()
@@ -21492,7 +21492,9 @@ class TestExpandDollarSkills:
             ("oncall-handover", "---\nname: oncall-handover\n---\n# Handover\nBODY-A"),
         )
         slot = _ChatSlot("s1")
-        out, n = _expand_dollar_skills("please $oncall-handover now", state, slot, "sess")
+        out, n = _expand_dollar_skills(
+            "please $oncall-handover now", state, slot, "sess", slot.project or ""
+        )
         assert n == 1
         # original message preserved, skill body appended as a [Skill: name] block
         assert out.startswith("please $oncall-handover now")
@@ -21521,7 +21523,9 @@ class TestExpandDollarSkills:
         )
         slot = _ChatSlot("s1")
 
-        out, n = _expand_dollar_skills("use $first then $second", state, slot, "sess")
+        out, n = _expand_dollar_skills(
+            "use $first then $second", state, slot, "sess", slot.project or ""
+        )
 
         assert n == 2
         assert out.index("[Skill: first]") < out.index("[Skill: second]")
@@ -21547,7 +21551,9 @@ class TestExpandDollarSkills:
         sel_mock = MagicMock()
         monkeypatch.setattr(chat_runner, "sel", lambda: sel_mock)
 
-        out, n = chat_runner._expand_dollar_skills("$does-not-exist hi", state, slot, "sess")
+        out, n = chat_runner._expand_dollar_skills(
+            "$does-not-exist hi", state, slot, "sess", slot.project or ""
+        )
         assert (out, n) == ("$does-not-exist hi", 0)
         state.push_slots_update.assert_not_called()
         # a real $skill-shaped token that didn't resolve IS audited as not_found
@@ -21569,7 +21575,9 @@ class TestExpandDollarSkills:
         monkeypatch.setattr(chat_runner, "sel", lambda: sel_mock)
 
         # $5 / $PATH / bare $ are NOT skill-shaped → no not_found noise.
-        out, n = chat_runner._expand_dollar_skills("it costs $5 not $PATH", state, slot, "sess")
+        out, n = chat_runner._expand_dollar_skills(
+            "it costs $5 not $PATH", state, slot, "sess", slot.project or ""
+        )
         assert (out, n) == ("it costs $5 not $PATH", 0)
         sel_mock.log_tool_invocation.assert_not_called()
 
@@ -21583,7 +21591,7 @@ class TestExpandDollarSkills:
             ("leaky", f"---\nname: leaky\n---\n# Leaky\naws_key={secret}"),
         )
         slot = _ChatSlot("s1")
-        out, n = _expand_dollar_skills("use $leaky", state, slot, "sess")
+        out, n = _expand_dollar_skills("use $leaky", state, slot, "sess", slot.project or "")
         assert n == 1
         # the raw credential must not survive into the expanded message
         assert secret not in out
@@ -21602,7 +21610,9 @@ class TestExpandDollarSkills:
         sel_mock = MagicMock()
         monkeypatch.setattr(chat_runner, "sel", lambda: sel_mock)
 
-        out, n = chat_runner._expand_dollar_skills("try $whatever", state, slot, "sess")
+        out, n = chat_runner._expand_dollar_skills(
+            "try $whatever", state, slot, "sess", slot.project or ""
+        )
         # message returned unchanged, no crash
         assert (out, n) == ("try $whatever", 0)
         # the failure was audited via SEL with outcome="error"

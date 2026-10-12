@@ -25,7 +25,7 @@ import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, appendMessage, appendSlotMessage, endLocalTurn, forkSlot,
-  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, stageToMainComposer, setAgentSwitchNotice, resolveByApprovalId, selectComposerBusy, selectSendConfirmed,
+  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, stageToMainComposer, setAgentSwitchNotice, resolveByApprovalId, selectComposerBusy, selectProjectChipLocked, selectSendConfirmed,
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
   selectSubagent,
@@ -733,6 +733,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // composer's busy/queue affordance so a message sent during a sub-agent run
   // reads as "will queue".
   const composerBusy = useAppSelector(s => selectComposerBusy(s, s.chat.activeSlot))
+  // Any attached sub-agent locks the project chip (see selectProjectChipLocked).
+  const projectLocked = useAppSelector(s => selectProjectChipLocked(s, s.chat.activeSlot))
   const slotStopping = useAppSelector(s => s.chat.slotStopping)
   const slotLoading = useAppSelector(s => s.chat.slotLoading)
   // While a session-switch history fetch is still in flight for the active
@@ -6591,6 +6593,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               showContextPct={chatConfig.showContextPct}
               showContextTokens={chatConfig.showContextTokens}
               isRunning={composerBusy}
+              projectLocked={projectLocked}
               /* Composed with `interrupted`, matching the ErrorCard gate above.
                  Availability alone would put a filled primary button on the
                  composer of every idle chat that holds a conversation — an

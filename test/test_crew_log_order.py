@@ -322,7 +322,7 @@ async def test_message_received_records_entry_text_before_prompt_expansion(tmp_p
 
     state, slot = _state_and_slot(tmp_path, [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")])
 
-    async def _expand(_message, _state, _slot):
+    async def _expand(_message, _state, _slot, *, project=None):
         return "injected prompt body", "ok"
 
     with pytest.MonkeyPatch.context() as patch:

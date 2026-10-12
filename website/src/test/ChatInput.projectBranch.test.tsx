@@ -4,6 +4,7 @@ import { screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { SlotProvider } from '../providers/SlotContext'
 
 // Pins the project-chip branch contract: the active project button
 // shows "<folder> · <branch>" so the session's git context is visible without
@@ -59,7 +60,7 @@ describe('ChatInput project chip branch label', () => {
     const btn = chip()
     expect(btn).toBeEnabled()
     expect(btn).toHaveAccessibleName(/Branch: main/)
-    expect(btn).toHaveAccessibleName(/Changes apply from the next response\./)
+    expect(btn).toHaveAccessibleName(/This reply finishes in KiroCrew\./)
   })
 
   it('leaves the branch copyable while a response is running', () => {
@@ -187,7 +188,7 @@ describe('ChatInput project chip while a response is running', () => {
     expect(btn).toBeEnabled()
     const title = btn.getAttribute('title') || ''
     expect(title).toContain('Project: /home/u/work/KiroCrew')
-    expect(title).toContain('Changes apply from the next response.')
+    expect(title).toContain('Your next message runs in the project you pick. This reply finishes in KiroCrew.\nLinks in this reply will open in the project you pick.') // brand-ok: KiroCrew is the fixture folder name
     expect(btn.getAttribute('aria-label')).toBe(title)
     fireEvent.click(btn)
     expect(onProjectClick).toHaveBeenCalledTimes(1)
@@ -195,7 +196,47 @@ describe('ChatInput project chip while a response is running', () => {
 
   it('omits the next-response line when no response is running', () => {
     renderWithProviders(<ChatInput {...defaultProps} />)
-    expect(chip().getAttribute('title')).not.toContain('next response')
+    expect(chip().getAttribute('title')).not.toContain('This reply finishes')
+  })
+
+  it('stays locked when only attached sub-agents keep the composer busy', () => {
+    const onProjectClick = vi.fn()
+    renderWithProviders(<ChatInput {...defaultProps} onProjectClick={onProjectClick} isRunning projectLocked onStop={vi.fn()} />)
+    const btn = chip()
+    expect(btn).toBeDisabled()
+    expect(btn.getAttribute('title')).not.toContain('This reply finishes')
+    expect(btn.getAttribute('title')).toContain("The project can't change while sub-agents are running.")
+    expect(btn.getAttribute('aria-label')).toBe(btn.getAttribute('title'))
+    fireEvent.click(btn)
+    expect(onProjectClick).not.toHaveBeenCalled()
+  })
+
+  it('names the project the reply started in after a mid-turn pick', () => {
+    const { rerender } = renderWithProviders(<ChatInput {...defaultProps} isRunning onStop={vi.fn()} />)
+    // The pick lands while the reply runs: the chip follows the picked project,
+    // but the tooltip keeps naming the directory the running reply is in.
+    rerender(<ChatInput {...defaultProps} project="/home/u/work/OtherRepo" isRunning onStop={vi.fn()} />)
+    const title = chip().getAttribute('title') || ''
+    expect(title).toContain('Project: /home/u/work/OtherRepo')
+    expect(title).toContain('This reply finishes in KiroCrew.') // brand-ok: KiroCrew is the fixture folder name
+    // The next reply snapshots the project it starts in.
+    rerender(<ChatInput {...defaultProps} project="/home/u/work/OtherRepo" onStop={vi.fn()} />)
+    rerender(<ChatInput {...defaultProps} project="/home/u/work/OtherRepo" isRunning onStop={vi.fn()} />)
+    expect(chip().getAttribute('title')).toContain('This reply finishes in OtherRepo.')
+  })
+
+  it('re-takes the start project when the composer moves to another running chat', () => {
+    const inSlot = (slot: string, project: string) => (
+      <SlotProvider slotId={slot}>
+        <ChatInput {...defaultProps} project={project} isRunning onStop={vi.fn()} />
+      </SlotProvider>
+    )
+    const { rerender } = renderWithProviders(inSlot('chat-a', '/home/u/work/KiroCrew'))
+    expect(chip().getAttribute('title')).toContain('This reply finishes in KiroCrew.') // brand-ok: fixture folder name
+    // Both chats are running, so isRunning never flips; the slot change alone
+    // must move the snapshot to the other chat's project.
+    rerender(inSlot('chat-b', '/home/u/work/OtherRepo'))
+    expect(chip().getAttribute('title')).toContain('This reply finishes in OtherRepo.')
   })
 
   it('keeps the agent and model chips locked mid-turn', () => {

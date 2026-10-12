@@ -180,6 +180,52 @@ class TestChatSlotProject:
         state.sessions.reset.assert_not_awaited()
         assert slot._pending_reset_history_key is None
 
+    @pytest.mark.asyncio
+    async def test_pick_waits_for_a_preparing_turn(self, tmp_path):
+        """A pick that lands while a turn is preparing must not move the
+        binding that turn captured. The turn's dispatch holds
+        ``slot_switch_session_lock`` from its binding capture to its session
+        registration; the route takes the same lock, so the write waits until
+        the turn has registered instead of failing it with "conversation
+        binding changed during preparation"."""
+        import asyncio
+
+        from kiro_crew.llm_helpers import slot_switch_session_lock
+        from kiro_crew.testing.wait import until_parked
+
+        slot = _ChatSlot("test")
+        slot.project = "/start-of-turn"
+        state = _mock_state(slot)
+        dispatch_lock = slot_switch_session_lock("dashboard:test")
+        with (
+            patch("kiro_crew.dashboard.chat_handlers._save_recent_project"),
+            patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                # Stand in for a turn that has captured its binding and is
+                # still registering its session.
+                await dispatch_lock.acquire()
+                try:
+                    pick = asyncio.create_task(
+                        client.post(
+                            "/api/chat/slots/test/project",
+                            json={"project": str(tmp_path)},
+                        )
+                    )
+                    # Barrier before the absence assertions: the request is
+                    # observed parked on the session lock, so the negatives
+                    # cannot pass merely because it has not run yet.
+                    await until_parked(dispatch_lock, timeout=10)
+                    assert not pick.done()
+                    assert slot.project == "/start-of-turn"
+                    assert slot._pending_reset_history_key is None
+                finally:
+                    dispatch_lock.release()
+                resp = await asyncio.wait_for(pick, timeout=30)
+                assert resp.status == 200
+        assert slot.project == str(tmp_path)
+        assert slot._pending_reset_history_key == "dashboard:test"
+
 
 class TestFolderProjectDirOverlapPreflight:
     """The folder ``project_dir`` write path is the third
