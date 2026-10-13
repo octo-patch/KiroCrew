@@ -62,6 +62,12 @@ export interface ChatMessageListProps {
    *  path has no trust verb, so a Trust offer there overstates the grant
    *  (#5400, #5434). */
   canTrust?: boolean
+  /** Whether error notices inside the list (a failed approval decision, a
+   *  refused tool-output copy) offer the "Ask the agent" hand-off. The hand-off
+   *  navigates to the main chat, so a host holding unsaved local state the
+   *  navigation would drop (ChatEmbed's composer draft) passes `false`.
+   *  Default `true`. Renderers read it as `ctx.handOff`. */
+  handOff?: boolean
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   /** Open an artifact link in the host's side panel; see
    *  `MessageRenderContext.onArtifactOpen`. */
@@ -171,6 +177,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   onApprove,
   onApproveBatch,
   canTrust,
+  handOff = true,
   onFileOpen,
   onArtifactOpen,
   onQuote,
@@ -296,13 +303,14 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       onQuoteMessage,
       threads,
       hideCardOwnedOAuth,
+      handOff,
       autoDeniedIds,
       renderTool,
       wrapper,
       row,
     }
     return entry.render(m, ctx)
-  }, [messages, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, activeRenderers])
+  }, [messages, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, activeRenderers])
 
 
   // Render a TurnItem (single or group)
@@ -365,6 +373,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
           onApprove={handleApprove}
           onApproveBatch={handleApproveBatch}
           canTrust={canTrust}
+          askAgent={handOff}
         >
           {/* Grouped messages (thinking, permission) return null from renderMessage
               intentionally — CollapsibleToolGroup handles their display via its
@@ -373,7 +382,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
         </CollapsibleToolGroup>
       </div>
     )
-  }, [renderMessage, running, messages.length, contentWidth, onApprove, onApproveBatch, canTrust])
+  }, [renderMessage, running, messages.length, contentWidth, onApprove, onApproveBatch, canTrust, handOff])
 
   // Render a DisplayItem (single, group, or turn)
   const renderDisplayItem = useCallback((item: DisplayItem, i: number) => {

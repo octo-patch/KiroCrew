@@ -312,6 +312,7 @@ Import `defaultMessageRenderers` if you need to read what the built-ins do, and 
 | `onFileOpen` | open a path, when the host supports it |
 | `autoDeniedIds` | tool calls a policy or hook blocked |
 | `renderTool` | the host's tool row, if it passed one |
+| `handOff` | whether a row's error notice may offer "Ask the agent"; absent means yes |
 
 Two rules the registry relies on:
 
@@ -325,6 +326,15 @@ Two rules the registry relies on:
 - **Returning `null` is different from not claiming a role.** An entry that exists and draws nothing
   says "no row by design"; no entry at all says "nothing handles this". Both look identical on
   screen, so `website/src/test/messageRenderers.test.ts` pins which is which.
+
+### Error hand-off inside the list
+
+A failed approval decision and a refused tool-output copy render an `ErrorNotice` with the "Ask the
+agent" hand-off, which navigates to the main chat. A host holding unsaved local state that the
+navigation would drop passes `handOff={false}` to `ChatMessageList`: those notices then render
+without the button, and renderers see `ctx.handOff === false`. `ChatEmbed` does this because its
+composer draft lives only in the embed. `ToolCallPill` takes the same switch as `askAgent`.
+Default is `true`, so a host with nothing to lose keeps the hand-off.
 
 ### Exports
 

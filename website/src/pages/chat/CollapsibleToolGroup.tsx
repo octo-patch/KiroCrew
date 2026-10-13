@@ -58,6 +58,12 @@ interface CollapsibleToolGroupProps {
    * call prompts again (#5400 on the spawn card, #5434 on this row).
    */
   canTrust?: boolean
+  /**
+   * Offer the "Ask the agent" hand-off on the failed-decision notice. Default
+   * `true`. A host holding unsaved local state the hand-off's navigation would
+   * drop (ChatEmbed's composer draft) passes `false`.
+   */
+  askAgent?: boolean
   /** Callback to open the Activity Viewer. */
   onViewActivity?: () => void
   /** Whether the Activity Viewer is currently open. */
@@ -107,7 +113,7 @@ function derivedHeading(meta?: Record<string, unknown>): string {
 
 /** Collapsible row that wraps tool/thinking/permission messages — collapsed unless autoExpand or the
  *  "Tool calls start expanded" chat setting is on. */
-const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, permissionMetas, pendingPermCount, onApprove, onApproveBatch, canTrust, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
+const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, permissionMetas, pendingPermCount, onApprove, onApproveBatch, canTrust, askAgent = true, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // The chat setting (#18254) raises the resting state from collapsed to
   // expanded; liveness (autoExpand) can still open a row on top of it.
@@ -296,11 +302,12 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
       )}
 
       {failure !== null && (
-        // Hand-off on. The approval buttons hold no draft of their own, and the
-        // host composer's draft is persisted per slot (ChatPage saves it on slot
-        // switch) while the hand-off opens a FRESH slot rather than navigating
-        // away — so there is nothing here the navigation can destroy.
-        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent message={failure.terminal
+        // Hand-off on by default. The approval buttons hold no draft of their
+        // own, and the main chat's composer draft is persisted per slot (ChatPage
+        // saves it on slot switch) while the hand-off opens a FRESH slot.
+        // No hand-off when the host passes `askAgent={false}`: ChatEmbed's
+        // composer draft is unsaved local state the navigation would drop.
+        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent={askAgent} message={failure.terminal
           ? i18nT('components.approvalCard.approval_no_longer_pending')
           : failure.message
             ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })

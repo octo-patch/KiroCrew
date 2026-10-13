@@ -90,6 +90,7 @@ function renderRow(m: ChatMessage, ctx: Partial<Parameters<
     key: ctx.key ?? 'zzq-key',
     onFileOpen,
     hideCardOwnedOAuth: ctx.hideCardOwnedOAuth ?? false,
+    handOff: ctx.handOff,
     autoDeniedIds: ctx.autoDeniedIds ?? new Set<string>(),
     renderTool: ctx.renderTool,
     wrapper: (children, isUser) => (
@@ -687,6 +688,36 @@ describe('ToolCallPill expanded output panel', () => {
     } finally {
       sh.mockRestore(); ch.mockRestore()
     }
+  })
+
+  it('drops the hand-off from a copy failure when the host turns askAgent off', async () => {
+    // A host with an unsaved composer draft (ChatEmbed) must not be navigated
+    // away from by a copy failure's hand-off.
+    mockedCopy.mockResolvedValue(false)
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} askAgent={false} />)
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    const notice = await waitFor(() => screen.getByTestId('tool-panel-copy-error'))
+    expect(notice).toHaveTextContent('Copy failed')
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+  })
+
+  it('passes the list\'s handOff=false through the tool row to the pill', async () => {
+    mockedCopy.mockResolvedValue(false)
+    renderRow(msg({ role: 'tool_result', content: LONG }), { handOff: false })
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    const notice = await waitFor(() => screen.getByTestId('tool-panel-copy-error'))
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+  })
+
+  it('keeps the hand-off on the tool row when the list leaves handOff unset', async () => {
+    mockedCopy.mockResolvedValue(false)
+    renderRow(msg({ role: 'tool_result', content: LONG }))
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    const notice = await waitFor(() => screen.getByTestId('tool-panel-copy-error'))
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
   })
 
   it('keeps the toggle once expanded, instead of measuring it away mid-read', async () => {

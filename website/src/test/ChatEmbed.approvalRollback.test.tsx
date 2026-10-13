@@ -121,6 +121,24 @@ describe('ChatEmbed approval rollback (#5524)', () => {
     expect(screen.getByRole('button', { name: 'Reject' })).toBeEnabled()
   })
 
+  it('the failed-decision notice offers no "Ask the agent" hand-off inside the embed', async () => {
+    // The hand-off navigates to the main chat, which would drop the embed's
+    // unsaved composer draft, so the embed mounts the list with handOff off.
+    mockPost.mockRejectedValue(new Error('boom'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await mountWithPendingApproval()
+    await act(async () => {
+      screen.getByRole('button', { name: 'Approve' }).click()
+    })
+    await settleUntil(() => screen.queryByRole('alert') !== null)
+
+    expect(consoleError).toHaveBeenCalledWith('Approval failed:', expect.any(Error))
+    // Non-vacuity: the notice itself is on screen, only its hand-off is gone.
+    expect(screen.getByRole('alert')).toHaveTextContent('This decision may not have been recorded')
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+  })
+
   it('a successful approval POST keeps the resolved state (no rollback)', async () => {
     await mountWithPendingApproval()
 

@@ -338,6 +338,9 @@ function ChatEmbed({
         onApprove={approve}
         onApproveBatch={approveBatch}
         canTrust
+        // No hand-off: the embed's composer draft is unsaved local state that
+        // the hand-off's navigation to the main chat would discard.
+        handOff={false}
         transcript={{
           sessionId: `embed:${slotKey}`,
           followOutput: !!startAtBottom,

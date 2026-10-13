@@ -199,6 +199,26 @@ describe('CollapsibleToolGroup approval dispatch', () => {
     await waitFor(() => expect(screen.getByText(T('approve'))).toHaveFocus())
   })
 
+  it.each([
+    ['offers', undefined, true],
+    ['drops', false, false],
+  ] as const)('%s the "Ask the agent" hand-off on a failed decision (askAgent=%s)', async (_label, askAgent, offered) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onApprove = vi.fn().mockRejectedValue(new ApiError(500, 'zzq refused'))
+    renderWithProviders(
+      <CollapsibleToolGroup count={1} hasPermission onApprove={onApprove} askAgent={askAgent}>
+        <div>zzq-child</div>
+      </CollapsibleToolGroup>,
+    )
+
+    fireEvent.click(screen.getByText(T('approve')))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('zzq refused')
+    const handOff = screen.queryByRole('button', { name: i18nT('components.askAgent.ask_the_agent') })
+    expect(handOff !== null).toBe(offered)
+  })
+
   it('pretty-prints a structured tool_input in the preview', () => {
     const { container } = renderWithProviders(
       <CollapsibleToolGroup

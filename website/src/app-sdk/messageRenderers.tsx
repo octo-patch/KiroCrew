@@ -87,6 +87,10 @@ export interface MessageRenderContext {
   onQuoteMessage?: (role: 'user' | 'assistant', content: string, ts?: string, mid?: string) => void
   /** Drop mcp_oauth banners a Connections card already owns. */
   hideCardOwnedOAuth: boolean
+  /** Whether a row's error notice may offer the "Ask the agent" hand-off.
+   *  `false` when the host holds unsaved local state (a composer draft) that
+   *  the hand-off's navigation would drop. Absent = `true`. */
+  handOff?: boolean
   /** tool_call_ids whose call a policy or hook blocked. */
   autoDeniedIds: Set<string>
   /** Host-injected tool row, kept as a shorthand for replacing the tool entries. */
@@ -181,7 +185,7 @@ const TOOL_PANEL_COLLAPSED_CHARS = 800
 const TOOL_PANEL_EXPANDED_MAX_H = 'max-h-[500px]'
 
 /** Prop-driven tool row. The store-connected variant is a host entry. */
-export const ToolCallPill = memo(function ToolCallPill({ message, running, onFileOpen, autoDenied }: { message: ChatMessage; running: boolean; onFileOpen?: (path: string) => void; autoDenied?: boolean }) {
+export const ToolCallPill = memo(function ToolCallPill({ message, running, onFileOpen, autoDenied, askAgent = true }: { message: ChatMessage; running: boolean; onFileOpen?: (path: string) => void; autoDenied?: boolean; askAgent?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = React.useState(false)
   // Second axis, deliberately separate from `expanded`: the pill toggles whether
@@ -340,16 +344,18 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
               `ErrorNotice` rather than an icon of our own. Its own row, below the
               controls: the hand-off is a button, and `max-two-buttons-per-row`
               counts per visual group, so putting it here keeps that group at two.
-              `askAgent` is ON deliberately — this panel is a log surface holding
-              no unsaved input, so the navigation destroys nothing, and the agent
-              has a real recovery to offer (re-emit the output the copy failed to
-              take). ErrorNotice is safe in this module: it reaches no store and no
+              `askAgent` follows the host: this panel is a log surface holding no
+              unsaved input, and the agent has a real recovery to offer (re-emit
+              the output the copy failed to take), so it is on by default.
+              No hand-off when the host passes `askAgent={false}`: the navigation
+              would drop the host's own unsaved composer draft (ChatEmbed).
+              ErrorNotice is safe in this module: it reaches no store and no
               router, only lucide, `AskAgentButton` and `i18nT`. */}
           {copyOutcome === 'failed' && (
             <ErrorNotice
               message={i18nT('appSdk.chatMessageList.copy_failed')}
               variant="inline"
-              askAgent
+              askAgent={askAgent}
               onDismiss={() => setCopyOutcome('idle')}
               className="mt-1 ml-0.5"
               testId="tool-panel-copy-error"
@@ -365,7 +371,7 @@ function toolRow(m: ChatMessage, ctx: MessageRenderContext, autoDenied?: boolean
   return ctx.row(
     ctx.renderTool
       ? ctx.renderTool(m)
-      : <ToolCallPill message={m} running={ctx.running} onFileOpen={ctx.onFileOpen} autoDenied={autoDenied} />,
+      : <ToolCallPill message={m} running={ctx.running} onFileOpen={ctx.onFileOpen} autoDenied={autoDenied} askAgent={ctx.handOff !== false} />,
     true,
   )
 }
