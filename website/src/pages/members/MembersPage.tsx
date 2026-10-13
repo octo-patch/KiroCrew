@@ -132,6 +132,7 @@ import { createPortal } from 'react-dom'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewDashboardTab from './CrewDashboardTab'
 import { DASHBOARD_PREVIEW_PARAM, DASHBOARD_PREVIEW_VALUE, isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
+import { claimDashboardOnLoad } from './dashboardOnLoad'
 import { dashboardPreviewMemberFromRef, dashboardPreviewSlugFromRef } from '../../utils/dashboardPreview'
 import { mergePaneDraft } from '../../utils/chatPaneDrafts'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -2930,6 +2931,15 @@ export default function MembersPage() {
   const leaveDashboardPreview = useCallback(() => {
     setSearchParams(withoutDashboardPreview, { replace: true, state: location.state })
   }, [setSearchParams, location.state])
+  // A REFRESH opens the Dashboard tab -- the crewmate's page, or the suggestions
+  // page when none is adopted -- rather than whatever tab the persisted strip had
+  // focused. Once per crewmate and strip bucket per page load (`claimDashboardOnLoad`),
+  // so a tab the person picks afterwards, or on an in-app return, is theirs.
+  useEffect(() => {
+    if (!activeMemberName) return
+    if (!claimDashboardOnLoad(activeMemberName, activeSlot || '')) return
+    focusPanelTab(CREW_DASHBOARD_TAB_ID)
+  }, [activeMemberName, activeSlot, focusPanelTab])
   // What a schedule created from the Schedules tab must carry in its `agent` field --
   // which is the provider template only for a crewmate whose identity the server will
   // KEEP. `wakesCrew` matches a job on `member_id` when there is one, and otherwise
@@ -5167,6 +5177,7 @@ export default function MembersPage() {
                   slug={activeSlug}
                   member={activeMemberName}
                   displayName={crewDisplayName(activeView ?? active)}
+                  avatar={(activeView ?? active)?.avatar}
                   // A needs-you option lands in this crewmate's chat box; the person sends it.
                   onAct={activeSlot ? (text: string) => mergePaneDraft(activeSlot, text, []) : undefined}
                   // Badge click opens the Profile tab directly so the person can unlock.

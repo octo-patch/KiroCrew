@@ -13,6 +13,7 @@ import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { i18nT } from '../../i18n/t'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, subscribeDashboardFields } from '../../hooks/useWebSocket'
+import CrewDashboardEmpty from './CrewDashboardEmpty'
 
 /**
  * The sandbox grants for a crewmate's dynamic dashboard, and the ONE line of
@@ -241,9 +242,11 @@ export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
     : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
 }
 
-export default function CrewDynamicDashboard({ target, displayName, onAct, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '' }: {
+export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '' }: {
   target: DashboardTarget
   displayName: string
+  /** The crew record's `avatar` field, verbatim, for the suggestions page's face. */
+  avatar?: unknown
   /** Put a reply the page offered into the chat box. Absent: the page's options do nothing. */
   onAct?: (text: string) => void
   /** Render the STAGED page instead of the adopted one. Its own cache entry, so the
@@ -449,6 +452,17 @@ export default function CrewDynamicDashboard({ target, displayName, onAct, previ
   // preview link can start from a cached `no_preview` while its own read is in
   // flight, and handing over on that would skip the page staged since.
   const previewGone = staged && isError && !isFetching && apiErrorCode(error) === 'no_preview'
+  // A crewmate with no ADOPTED page gets the suggestions page, not the default
+  // template. The read answers `empty` for it and still carries the default
+  // `project-report` composed, but drawing that shows a page nobody chose as if
+  // it were the crewmate's own. Only the live member read: a staged preview is a
+  // page the crewmate offered, and a session's page has no crewmate to ask.
+  const liveMember = target.kind === 'member' && !staged
+  // Only the GENERIC default stands down. A crewmate a shipped page is named for
+  // (`kirocrew-conductor` gets its board) keeps that page, and a bound package with
+  // nothing applied keeps its own empty state.
+  const suggestions = liveMember && !isError && data?.state === 'empty'
+    && !livePackage && data?.template?.id !== memberSlug
   useEffect(() => { onPreviewGone?.(previewGone) }, [onPreviewGone, previewGone])
 
   // The person's layout lock, read off the same body the page comes from. This tab
@@ -534,6 +548,16 @@ export default function CrewDynamicDashboard({ target, displayName, onAct, previ
     // FAIL CLOSED ON EVERY READ THAT ESTABLISHES NO PAGE, in one place, with no case
     // exempted for being merely stale.
     //
+    // The suggestions page stands in for an unadopted crewmate; the default the
+    // gateway composed into that read never becomes the held page, and nothing held
+    // from before stays mounted behind it.
+    if (suggestions) {
+      setCandidate(null)
+      setGood(null)
+      setMayRunScript(false)
+      heldSurfaceRef.current = null
+      return
+    }
     // ONLY the composed page is ever mounted. `data.html` is the crewmate's STORED
     // copy, out of a writable `instance.json`; `data.rendered_html` is what the gateway
     // built from the catalog's own template, or from the package bytes a person
@@ -608,7 +632,7 @@ export default function CrewDynamicDashboard({ target, displayName, onAct, previ
     setMayRunScript(next.scripts)
     // The surface this read established, for the guard at the top of the next one.
     heldSurfaceRef.current = next.dashboard
-  }, [data, livePackage])
+  }, [data, livePackage, suggestions])
 
   // The FIRST page is shown without probation: there is no previous page to keep,
   // so withholding it would leave the tab empty to protect nothing.
@@ -632,7 +656,7 @@ export default function CrewDynamicDashboard({ target, displayName, onAct, previ
   // Keyed on `rendered_html` and not on `html` for the same reason the promotion
   // above is: a read that carries a stored copy the gateway declined to compose has
   // no page coming either, so waiting on it would show the skeleton for good.
-  const awaitingFirstPage = Boolean(data?.rendered_html) && !good && !broken
+  const awaitingFirstPage = Boolean(data?.rendered_html) && !good && !broken && !suggestions
   /**
    * THE DOCUMENT IS KEYED ON THE PAGE, NOT ON ITS VALUES.
    *
@@ -962,6 +986,20 @@ export default function CrewDynamicDashboard({ target, displayName, onAct, previ
           <RotateCw className="lucide-inline" aria-hidden />
           {i18nT('pages.membersPage.webview_retry')}
         </Btn>
+      </div>
+    )
+  }
+
+  if (suggestions) {
+    return (
+      <div className="h-full min-h-0 flex flex-col" data-testid="crew-dashboard-none">
+        {lockBadge}
+        <CrewDashboardEmpty
+          member={target.kind === 'member' ? target.member : ''}
+          displayName={displayName}
+          avatar={avatar}
+          onAct={onAct}
+        />
       </div>
     )
   }

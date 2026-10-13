@@ -1831,7 +1831,15 @@ The chat SidePanel has two standing entries on this page: the leading
 **Dashboard** tab and pinned **Files**. Dashboard renders the crewmate's dynamic
 dashboard (`CrewDashboardTab`, read from `GET /api/members/{slug}/dashboard`) for
 every reader: the page fills the tab, with no summary card, Contained bar, Expand
-control, identity row or Command Center around it. Its "Opening the
+control, identity row or Command Center around it. A crewmate with no adopted
+page (the read answers `state: "empty"` with the generic default, no bound
+package, and no shipped page named for its slug) shows the SUGGESTIONS page
+instead of the default template the read still carries (`CrewDashboardEmpty`): the
+crewmate's face under a first-person bubble and three prompts that only fill its
+chat box (`onAct`); a staged preview and a root session's Overview are not
+affected. A refresh opens the Dashboard tab rather than the strip's persisted
+focus, once per crewmate and strip bucket per page load (`dashboardOnLoad.ts`),
+so a tab picked afterwards or on an in-app return stays. Its "Opening the
 conversation" line is withheld while the main column already says it
 (`activeSlot` unset), so two live regions never say it at once. This page never
 passes the in-chat Command Center dock opener into its `ChatPane`: the permanent

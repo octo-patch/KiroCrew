@@ -283,6 +283,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 import { api } from '../../api/client'
 import NewCrewmateDialog, { CACHE_WARM_BOUND_MS, RECONCILE_BOUND_MS } from './NewCrewmateDialog'
 import { MobileRosterBarContext } from '../../components/MobileNavRailContext'
+import { resetDashboardOnLoad } from './dashboardOnLoad'
 import MembersPage, { CREW_DASHBOARD_TAB_ID, CREW_PANEL_TAB_IDS, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_UNFED_VIEWS, MEMBERS_WITHHELD_VIEWS, resolveDefaultMember, resolveMateLanding } from './MembersPage'
 import { resetFirstGreetingRequests } from './useFirstGreeting'
 import { __resetPanelTabs, VIEW_DATA_SOURCE } from '../../hooks/usePanelTabs'
@@ -609,6 +610,8 @@ beforeEach(() => {
   // The side panel's tab strip is a module-level, persisted store; a tab
   // opened in one case would otherwise be on the strip in the next.
   __resetPanelTabs()
+  // A fresh page load: no crewmate has had its strip put on the Dashboard yet.
+  resetDashboardOnLoad()
   setWindowWidth(WIDE_WINDOW)
   // Module-level "thread on screen" registration; a case that unmounted
   // mid-effect would otherwise leave its slot registered for the next one.
@@ -1328,6 +1331,38 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
     expect(stub).toHaveAttribute('data-slug', 'oncall')
     expect(screen.queryByTestId('member-identity-row')).toBeNull()
+  })
+
+  describe('a refresh opens the Dashboard tab, not the last focused one', () => {
+    const dashTab = () => screen.getByTestId(`side-panel-leading-tab-${CREW_DASHBOARD_TAB_ID}`)
+    const openOncall = async () => {
+      const utils = await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { route: '/members?member=oncall' })
+      await screen.findByTestId('side-panel-leading-tabs', undefined, PANE_READY)
+      return utils
+    }
+
+    it('reopens on Dashboard after a reload even when Files was focused', async () => {
+      const first = await openOncall()
+      fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+      first.unmount()
+      // The strip keeps its stored focus on Files, as the persisted bucket does
+      // across a reload; the reload itself is the module state starting over.
+      resetDashboardOnLoad()
+      await openOncall()
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
+      expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'false')
+    })
+
+    it('keeps the tab the person picked on an in-app return', async () => {
+      const first = await openOncall()
+      fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+      first.unmount()
+      await openOncall()
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+      expect(dashTab()).toHaveAttribute('aria-selected', 'false')
+    })
   })
 
   describe('a preview link opens the Dashboard tab on the STAGED page', () => {

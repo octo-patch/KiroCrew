@@ -18,10 +18,12 @@ const CrewDynamicDashboard = lazy(() => import('./CrewDynamicDashboard'))
  * The tab holds the dashboard alone and offers no view switch. The raw crew-log
  * record is a Developer Mode surface, reached from the chat panel's own Crew log
  * view, so the thread's slot is not part of this tab's input. */
-export default function CrewDashboardTab({ slug, member, displayName, onAct, onOpenProfileTab, preview = false, onLeavePreview }: {
+export default function CrewDashboardTab({ slug, member, displayName, avatar, onAct, onOpenProfileTab, preview = false, onLeavePreview }: {
   slug: string
   member: string
   displayName: string
+  /** The crew record's `avatar` field, verbatim: the suggestions page wears the roster row's face. */
+  avatar?: unknown
   /** Put a reply the page offered into this crewmate's chat box. */
   onAct?: (text: string) => void
   /** Called when the person clicks the "Layout locked · Profile" badge to go
@@ -65,6 +67,7 @@ export default function CrewDashboardTab({ slug, member, displayName, onAct, onO
             key={`${slug}:${showPreview ? 'preview' : 'live'}`}
             target={{ kind: 'member', slug, member }}
             displayName={name}
+            avatar={avatar}
             onAct={onAct}
             onOpenProfileTab={onOpenProfileTab}
             preview={showPreview}
