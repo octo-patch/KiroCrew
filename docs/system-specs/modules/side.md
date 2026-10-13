@@ -420,19 +420,20 @@ with `base_spec_missing` before a session exists.
 **The allowance is a harness capability, granted by positive membership.**
 Whether a side turn may execute read-only tools at all is
 `ACP_BACKENDS_SIDE_READONLY` (`agent_sdk/backends.py`, harness-parity H6):
-kiro-cli, KAS and claude. A harness has its own pre-approval surface
+kiro-cli, KAS, claude and deepseek. A harness has its own pre-approval surface
 (claude-agent-acp `permissions.allow` / `bypassPermissions`, KAS `permissions`
 rules from its own store) that the host gate cannot see: a call it pre-approves
 would run with no READ_ONLY decision and no SEL row. A member therefore starts
 the side session in a shape where that surface cannot reach a write — kiro-cli
 through the derived spec above, KAS through the same spec taken over the wire,
-claude through the session shape below. KAS receives `<agent>--readonly` as a
-projected custom agent (`acp/kas_agents` puts it in `customAgents`), and the
-derivation empties its `permissions` block with the other grants, so every KAS
-tool call raises `session/request_permission` (measured on kiro-cli 2.29.0,
-`--agent-engine v3`). A main-chat `allow_always` does not carry over: KAS keeps
-it for its own session only, so a side session on the same process asks again
-(measured the same way). On KAS the gate proves the same calls as on
+claude through the session shape below, and deepseek through Crew's verified
+gate plugin. KAS receives `<agent>--readonly` as a projected custom agent
+(`acp/kas_agents` puts it in `customAgents`), and the derivation empties its
+`permissions` block with the other grants, so every KAS tool call raises
+`session/request_permission` (measured on kiro-cli 2.29.0, `--agent-engine v3`).
+A main-chat `allow_always` does not carry over: KAS keeps it for its own session
+only, so a side session on the same process asks again (measured the same way).
+On KAS the gate proves the same calls as on
 kiro-cli. A read-only shell command is approved from the `_meta.kiro.command`
 the engine states. A file read or search is approved from the engine's own
 `_meta.kiro.toolId`: KAS's tool_call frame names no tool, so the permission
@@ -446,7 +447,14 @@ read-only allowlist: `read_file` and `list_directory` (`fs_read`),
 `read_file` is refused: KAS stamps `_meta.kiro.serverName` on its tool_call
 frame, and a call with a server is never a host built-in. The sensitive-path
 deny runs before the proof, so a `read_file` of `~/.aws/credentials` is
-refused (`test_side_readonly_kas.py`). Off the set,
+refused (`test_side_readonly_kas.py`). deepseek joins without the derived
+spec doing any work: every deepseek session runs Crew's verified gate plugin,
+which turns each stock dsh `allow` into `ask` and keeps harness denies. Its
+`tool_call` frame names the dispatched tool in `title`, and on a `READ_ONLY`
+turn only `read`, `grep` and `glob` can map to read policy names. The call must
+name an absolute target. Unknown, shadowed, MCP and command tools are refused
+(`test_side_readonly_deepseek.py`). Another harness may have a pre-approval
+surface the host gate cannot see. Off the set,
 or with the harness unknown because the config never loaded, `_run_side_turn`
 keeps the pre-allowance posture — the base agent under `REJECT_ALL`, no
 derived spec — and the prompt (`SIDE_BOUNDARY_PROMPT_NO_TOOLS`), the
