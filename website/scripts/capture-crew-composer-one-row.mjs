@@ -103,6 +103,22 @@ for (const theme of ['dark', 'light']) {
   const probeWidth = () => page.getByTestId('composer-one-row-probe').evaluate(el => el.style.width)
   const idleProbe = await probeWidth()
   check(`[${theme}] idle: bevel layer found`, idleBevel.length > 0)
+  // The caret starts close to the attach button, not a wide blank after it.
+  // The text column tucks under the attach cluster to get there, so the
+  // button's own right edge must still take the click, and the fit probe must
+  // be exactly as wide as the live one-row column it stands in for.
+  const row = await page.evaluate(() => {
+    const wrap = document.querySelector('[data-testid="input-wrapper"]')
+    const ta = wrap.querySelector('textarea')
+    const btn = wrap.querySelector('[data-testid="composer-bottom-row"] > div > div')
+    const b = btn.getBoundingClientRect()
+    const hit = document.elementFromPoint(b.right - 2, b.top + b.height / 2)
+    const textLeft = ta.getBoundingClientRect().left + parseFloat(getComputedStyle(ta).paddingLeft)
+    return { gap: Math.round(textLeft - b.right), hit: btn.contains(hit), column: Math.round(ta.getBoundingClientRect().width) }
+  })
+  check(`[${theme}] idle: text starts within 10px of the attach button (${row.gap}px)`, row.gap >= 4 && row.gap <= 10)
+  check(`[${theme}] idle: attach button's right edge is still the button`, row.hit)
+  check(`[${theme}] idle: fit probe is the live column's width (${idleProbe} vs ${row.column}px)`, Math.round(parseFloat(idleProbe)) === row.column)
   await page.screenshot({ path: resolve(OUT, `one-row-${theme}.png`), clip: await clipTo() })
 
   if (record) await page.waitForTimeout(900)

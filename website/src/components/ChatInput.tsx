@@ -108,6 +108,11 @@ const SHAPE_FLIP_WINDOW_MS = 450
 // The one-row clusters' edge padding (pl-1.5 + pr-1.5), which the text column
 // gives up besides the clusters themselves.
 const ONE_ROW_CLUSTER_PAD_PX = 12
+// How far the one-row text column tucks under the attach cluster (`-ml-2.5`).
+// The text keeps its own px-4 (the paste-highlight layer is drawn at that
+// same inset), so the column moves instead: without the pull the caret sits
+// 18px past the attach button, twice the send side's gap.
+const ONE_ROW_TEXT_PULL_PX = 10
 // The glass rim is a slice of the pane's smaller side. A one-row composer
 // would get half the rim of a two-row one, so the rim is sized from the
 // two-row height (one wrapped line of text plus the toolbar) in both shapes.
@@ -682,8 +687,10 @@ function ChatInput({
       // padding up itself. Measured the same from either side, or a draft in
       // that band would fit on two rows and not on one and the box would spring
       // between the shapes with no keystroke. `clientWidth` excludes the border.
+      // The one-row column also reaches ONE_ROW_TEXT_PULL_PX under the left
+      // cluster, so it is that much wider than the space between the clusters.
       const pad = inlineRef.current ? 0 : ONE_ROW_CLUSTER_PAD_PX
-      probe.style.width = `${Math.max(0, wrap.clientWidth - left - right - pad)}px`
+      probe.style.width = `${Math.max(0, wrap.clientWidth - left - right - pad + ONE_ROW_TEXT_PULL_PX)}px`
       probe.textContent = value
       const lineHeight = parseFloat(getComputedStyle(probe).lineHeight) || 0
       // A newline is a second line whatever the width; otherwise the probe
@@ -1204,7 +1211,7 @@ function ChatInput({
         <motion.div
           layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}
           transition={shapeAnimating ? COMPOSER_ROW_SPRING : { duration: 0 }}
-          className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : inlineToolbar ? 'flex-1 min-w-0' : ''}`}
+          className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : inlineToolbar ? 'flex-1 min-w-0 -ml-2.5' : ''}`}
         >
         {/* The one-row fit probe: the textarea's type and horizontal padding,
             no vertical padding, wrapping as the textarea wraps, measured at the
@@ -1328,7 +1335,7 @@ function ChatInput({
             is bottom-aligned, so while its height animates the buttons hold
             still and the text column opens above them. */}
         <div data-testid="composer-bottom-row" className={inlineToolbar ? 'contents' : `flex items-center justify-between px-2.5 pb-2 pt-0.5${terminal.active ? ' flex-wrap gap-y-1' : ''}`}>
-          <div ref={leftClusterRef} className={`flex items-center gap-0.5 min-w-0${inlineToolbar ? ' order-first pl-1.5 shrink-0' : ''}`}>
+          <div ref={leftClusterRef} className={`flex items-center gap-0.5 min-w-0${inlineToolbar ? ' order-first pl-1.5 shrink-0 relative z-[1]' : ''}`}>
             <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} directFilePicker={directFilePicker} collapsible={collapsible} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} isMobile={isMobile} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} />
             {directFilePicker && collapsible && (
               /* The repo's own overflow mechanism, not a second spelling of it.
