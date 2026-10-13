@@ -19358,6 +19358,10 @@
     "state_removed": "retiré",
     "driftHint": "Le fichier d'agent de {{member}} a été modifié en dehors de cette page. Cliquez sur « Examiner la modification » pour voir cette modification externe avec votre propre brouillon ; « Enregistrer » applique alors le correctif ou explique pourquoi il ne le peut pas.",
     "sourceFailed": "Impossible de valider la configuration enregistrée. Rechargez-la depuis le serveur pour réessayer.",
-    "runtime_failed": "Échec du chargement de l'exécution. La version enregistrée est conservée."
+    "runtime_failed": "Échec du chargement de l'exécution. La version enregistrée est conservée.",
+    "server_verb_count": "{{on}} sur {{total}} approuvés automatiquement",
+    "server_allow_aria": "Autoriser {{server}}",
+    "server_no_verbs": "Aucun outil approuvé automatiquement",
+    "server_glob_covered": "Approuvé automatiquement en bloc — modifiez les outils individuels dans la configuration de l’agent"
   }
 }

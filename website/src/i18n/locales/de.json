@@ -19094,6 +19094,10 @@
     "state_removed": "entfernt",
     "driftHint": "Die Agent-Datei von {{member}} wurde außerhalb dieser Seite bearbeitet. Klicke auf „Änderung prüfen“, um die externe Bearbeitung zusammen mit deinem eigenen Entwurf zu sehen; „Speichern“ schreibt dann die Korrektur oder erklärt, warum es nicht möglich ist.",
     "sourceFailed": "Die gespeicherte Konfiguration konnte nicht validiert werden. Lade sie zum erneuten Versuch vom Server neu.",
-    "runtime_failed": "Laufzeit-Laden fehlgeschlagen. Die gespeicherte Version bleibt erhalten."
+    "runtime_failed": "Laufzeit-Laden fehlgeschlagen. Die gespeicherte Version bleibt erhalten.",
+    "server_verb_count": "{{on}} von {{total}} automatisch genehmigt",
+    "server_allow_aria": "{{server}} zulassen",
+    "server_no_verbs": "Keine Tools automatisch genehmigt",
+    "server_glob_covered": "Als Ganzes automatisch genehmigt — einzelne Tools in der Agent-Konfiguration bearbeiten"
   }
 }

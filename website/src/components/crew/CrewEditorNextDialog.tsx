@@ -9,7 +9,7 @@
  * DialogContent itself.
  */
 import { Loader2, Terminal, Globe, ChevronRight, Lock } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter,
@@ -26,7 +26,7 @@ import { DisplayNameField, Field, WorkspaceField, TriggersField, WorkspaceModal,
 import ErrorNotice from '../ErrorNotice'
 import { useConfirm } from '../ConfirmDialog'
 import { effortLabel } from '../../lib/effort'
-import { crewCapabilitiesApi, crewCapabilitiesKey, type CapabilityRow } from '../../api/crewCapabilities'
+import { crewCapabilitiesApi, crewCapabilitiesKey, type CapabilityRow, type CapabilityPreview } from '../../api/crewCapabilities'
 import CrewApprovalsEditor from './CrewApprovalsEditor'
 import CrewWakeSection from '../CrewWakeSection'
 import CrewWebhookSection from '../CrewWebhookSection'
@@ -422,6 +422,19 @@ export default function CrewEditorNextDialog({
   const [behaviorTab, setBehaviorTab] = useState<BehaviorTab>('approvals')
   // Which Memory sub-tab is showing.
   const [memoryTab, setMemoryTab] = useState<MemoryTab>('profile')
+  // Approvals draft state is OWNED HERE, not inside CrewApprovalsEditor, so an
+  // unsaved approvals draft survives the pane unmounting when the user switches
+  // section/tab — matching the classic editor's always-mounted capabilities
+  // pane. Keyed by capabilityKey; `preview` is the reviewed-but-unsaved result.
+  const [approvalsPending, setApprovalsPending] = useState<Record<string, boolean>>({})
+  const [approvalsPreview, setApprovalsPreview] = useState<CapabilityPreview | null>(null)
+  // The approvals draft is per-crewmate; when the edited target changes, drop
+  // any draft from the previous one (the classic pane got this free from its
+  // `key={editing}` remount — the lifted state must reset explicitly).
+  useEffect(() => {
+    setApprovalsPending({})
+    setApprovalsPreview(null)
+  }, [ctl.editing])
   // Free-text filter for the Tools tab.
   const [toolFilter, setToolFilter] = useState('')
   // Free-text filter for the Skills tab.
@@ -480,9 +493,14 @@ export default function CrewEditorNextDialog({
   // blocked while such a draft is live (the unsaved note tells the user to
   // save or discard it in place first) and while a save is in flight — the
   // schedule draft keeps its own prompt via the controller's discardAsk.
-  const childDraftLive = dirtyPanes.has('capabilities') || schedDraft
+  // Navigation is blocked only while a draft that would be LOST on unmount is
+  // live. The approvals draft is now owned by the dialog (lifted state), so it
+  // survives navigation and no longer blocks it; the schedule draft is still
+  // pane-local, so it keeps the block until it is lifted too. The footer Save
+  // still refuses to persist either child draft (see its own guard below).
+  const navBlocked = sheetBusy || schedDraft
   const guardNav = (perform: () => void) => {
-    if (sheetBusy || childDraftLive) return
+    if (navBlocked) return
     perform()
   }
 
@@ -620,7 +638,7 @@ export default function CrewEditorNextDialog({
                     aria-selected={isActive}
                     data-testid={`next-rail-${s.key}`}
                     onClick={() => guardNav(() => setSection(s.key))}
-                    disabled={!isActive && (sheetBusy || childDraftLive)}
+                    disabled={!isActive && navBlocked}
                     className={[
                       'flex w-full rounded-md px-2.5 py-1.5 text-left text-[12.5px] focus-ring',
                       // Danger Zone sits directly below the ordinary sections,
@@ -887,7 +905,7 @@ export default function CrewEditorNextDialog({
                           aria-selected={isActive}
                           data-testid={`next-behavior-tab-${t.key}`}
                           onClick={() => guardNav(() => setBehaviorTab(t.key))}
-                          disabled={!isActive && (sheetBusy || childDraftLive)}
+                          disabled={!isActive && navBlocked}
                           className={[
                             'relative -mb-px px-3 py-2 text-[12.5px] focus-ring',
                             isActive
@@ -907,6 +925,10 @@ export default function CrewEditorNextDialog({
                       <fieldset disabled={sheetBusy} className="flex min-h-0 flex-col border-0 p-0 m-0 min-w-0" data-testid="next-behavior-approvals">
                         <CrewApprovalsEditor
                           member={editing}
+                          pending={approvalsPending}
+                          setPending={setApprovalsPending}
+                          preview={approvalsPreview}
+                          setPreview={setApprovalsPreview}
                           onDirtyChange={childDirtyHandlers.approvals}
                           onBusyChange={setCapabilityBusy}
                           onSaved={onCapabilitiesSaved}
@@ -1046,7 +1068,7 @@ export default function CrewEditorNextDialog({
                           aria-selected={isActive}
                           data-testid={`next-memory-tab-${t.key}`}
                           onClick={() => guardNav(() => setMemoryTab(t.key))}
-                          disabled={!isActive && (sheetBusy || childDraftLive)}
+                          disabled={!isActive && navBlocked}
                           className={[
                             'relative -mb-px px-3 py-2 text-[12.5px] focus-ring',
                             isActive

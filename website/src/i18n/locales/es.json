@@ -19358,6 +19358,10 @@
     "state_removed": "eliminado",
     "driftHint": "El archivo de agente de {{member}} se editó fuera de esta página. Pulsa «Revisar cambio» para ver esa edición externa junto con tu propio borrador; luego «Guardar» aplica la corrección o indica por qué no puede.",
     "sourceFailed": "No se pudo validar la configuración guardada. Vuelve a cargarla desde el servidor para reintentar.",
-    "runtime_failed": "Error al cargar el entorno de ejecución. La versión guardada permanece."
+    "runtime_failed": "Error al cargar el entorno de ejecución. La versión guardada permanece.",
+    "server_verb_count": "{{on}} de {{total}} aprobados automáticamente",
+    "server_allow_aria": "Permitir {{server}}",
+    "server_no_verbs": "No hay herramientas aprobadas automáticamente",
+    "server_glob_covered": "Aprobado automáticamente en bloque — edita herramientas concretas en la configuración del agente"
   }
 }

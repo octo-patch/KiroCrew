@@ -162,7 +162,14 @@ const CAPS_VIEW: CapabilityView = {
     },
     { section: 'skills', id: 'kirocrew-core/writing-tests', label: '', state: 'inherited', present: true, value: null, shared_reference: true },
     { section: 'allowedTools', id: 'fs_read', label: 'fs_read', state: 'inherited', present: true, value: null },
-    { section: 'autoApprove', id: '@github/create_issue', label: 'create_issue', state: 'inherited', present: false, value: null },
+    // An MCP server-allow parent (`@github`) with auto-approved verb children.
+    // The nesting + cascade regression test below drives these.
+    { section: 'allowedTools', id: '@github', label: '@github', state: 'inherited', present: true, value: null },
+    { section: 'autoApprove', id: '@github/create_issue', label: 'create_issue', state: 'inherited', present: true, value: null },
+    { section: 'autoApprove', id: '@github/list_issues', label: 'list_issues', state: 'inherited', present: true, value: null },
+    // An allowed server with NO auto-approved verbs → renders a non-expandable
+    // "No tools auto-approved" row, never "0 of 0".
+    { section: 'allowedTools', id: '@builder-mcp', label: '@builder-mcp', state: 'inherited', present: true, value: null },
   ],
   connections: [],
   skills: [],
@@ -378,23 +385,30 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     await waitFor(() => expect(mockCaps.save).toHaveBeenCalled())
   })
 
-  it('a dirty approval draft does not enable footer Save and blocks section nav', async () => {
-    // GPT #1/#2/#4: footer Save runs the roster-only save and closes, so a
-    // child draft (approvals/memory) it cannot persist must NOT enable it —
-    // otherwise saving silently drops the draft. And navigating away must not
-    // unmount-and-destroy the live draft. The unsaved note still shows.
+  it('a dirty approval draft does not enable footer Save, and survives section nav', async () => {
+    // Footer Save runs the roster-only save and closes, so a child draft
+    // (approvals) it cannot persist must NOT enable it — otherwise saving
+    // silently drops the draft. And navigation is now ALLOWED while an approvals
+    // draft is live, because the draft state is lifted to the dialog and
+    // survives the pane unmounting (matching the classic always-mounted pane).
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-behavior'))
     const approvals = await within(dialog).findByTestId('next-approvals')
     fireEvent.click(within(approvals).getByTestId('next-approval-toggle-fs_read'))
-    // The editor now reports a dirty child pane.
     expect(await within(dialog).findByTestId('next-unsaved-note')).toBeInTheDocument()
     // Footer Save is NOT enabled by the child draft alone.
     expect(within(dialog).getByRole('button', { name: 'Save changes' })).toBeDisabled()
-    // Navigating to another section is blocked while the draft is live, so the
-    // approvals panel is not unmounted and the draft survives.
+    // Navigation is NO LONGER blocked: switching to General works (the approvals
+    // pane unmounts), and the dirty note persists because the draft lives in the
+    // dialog, not the pane.
     fireEvent.click(within(dialog).getByTestId('next-rail-general'))
-    expect(within(dialog).getByTestId('next-approvals')).toBeInTheDocument()
+    expect(within(dialog).queryByTestId('next-approvals')).not.toBeInTheDocument()
+    expect(within(dialog).getByTestId('next-unsaved-note')).toBeInTheDocument()
+    // Returning to Approvals shows the draft preserved: fs_read is still toggled
+    // on-mate (its row carries the "changed" marker).
+    fireEvent.click(within(dialog).getByTestId('next-rail-behavior'))
+    const approvals2 = await within(dialog).findByTestId('next-approvals')
+    expect(within(approvals2).getByTestId('next-approval-toggle-fs_read')).toHaveAttribute('aria-checked', 'false')
   })
 
   it('keeps footer Save disabled when a roster field AND a child draft are both dirty', async () => {
@@ -428,6 +442,92 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     fireEvent.click(within(dialog).getByTestId('next-rail-behavior'))
     const approvals = await within(dialog).findByTestId('next-approvals')
     expect(await within(approvals).findByTestId('next-approvals-runtime-failed')).toBeInTheDocument()
+  })
+
+  it('cascades: turning an MCP server off removes the server AND its auto-approved verbs', async () => {
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-behavior'))
+    const approvals = await within(dialog).findByTestId('next-approvals')
+
+    // The @github server renders as a collapsible parent (not a flat verb row).
+    const serverToggle = within(approvals).getByTestId('next-approvals-server-toggle-github')
+    expect(serverToggle).toHaveAttribute('aria-checked', 'true')
+
+    // Turn the server OFF — this must cascade to its verbs so the draft is
+    // coherent (backend 409s approval_exclusion_overlaps otherwise).
+    fireEvent.click(serverToggle)
+
+    // Review → the draft handed to preview carries the server remove plus a
+    // remove for every present verb, all in one operations list.
+    const save = await within(approvals).findByTestId('next-approvals-save')
+    fireEvent.click(save)
+    await waitFor(() => expect(mockCaps.preview).toHaveBeenCalled())
+    const draft = mockCaps.preview.mock.calls.at(-1)![1] as { operations: { section: string; id: string; action: string }[] }
+    const removes = draft.operations.filter(o => o.action === 'remove')
+    expect(removes).toEqual(expect.arrayContaining([
+      { section: 'allowedTools', id: '@github', action: 'remove' },
+      { section: 'autoApprove', id: '@github/create_issue', action: 'remove' },
+      { section: 'autoApprove', id: '@github/list_issues', action: 'remove' },
+    ]))
+    // No stray set/keep of a verb whose server is being removed.
+    expect(draft.operations.some(o => o.id.startsWith('@github') && o.action !== 'remove')).toBe(false)
+  })
+
+  it('server toggle off→on is a clean round-trip (no stranded verb removes)', async () => {
+    // Regression: the on-path cascaded only the glob, leaving the off-step's
+    // verb removes stranded in pending → the next Review sent `set @github`
+    // alongside orphan verb removes → approval_exclusion_overlaps 409. Off then
+    // on must net to no change (dirty clears), so no illegal draft is built.
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-behavior'))
+    const approvals = await within(dialog).findByTestId('next-approvals')
+    const serverToggle = within(approvals).getByTestId('next-approvals-server-toggle-github')
+
+    fireEvent.click(serverToggle)   // off → remove glob + all verbs
+    await within(dialog).findByTestId('next-unsaved-note')
+    fireEvent.click(within(approvals).getByTestId('next-approvals-server-toggle-github'))  // on → restore all
+
+    // Net no-op: the dirty indicator is gone, so there is nothing to Review and
+    // no draft (illegal or otherwise) can be sent.
+    await waitFor(() =>
+      expect(within(dialog).queryByTestId('next-unsaved-note')).not.toBeInTheDocument(),
+    )
+    expect(within(approvals).queryByTestId('next-approvals-save')).not.toBeInTheDocument()
+    expect(serverToggle).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('renders glob-covered server verbs read-only (no per-verb toggle, cannot 409)', async () => {
+    // @github has an `@github` allowedTools glob AND per-verb autoApprove rows.
+    // The backend treats glob + per-verb as mutually overlapping, so carving one
+    // verb out 409s (approval_exclusion_overlaps). The editor must not offer a
+    // per-verb toggle for this shape — only the whole-server toggle is legal.
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-behavior'))
+    const approvals = await within(dialog).findByTestId('next-approvals')
+
+    // Expand the glob-covered server.
+    fireEvent.click(within(approvals).getByTestId('next-approvals-server-expand-github'))
+
+    // The verbs appear read-only: a static row, NOT an interactive toggle.
+    expect(await within(approvals).findByTestId('next-approval-readonly-@github/create_issue')).toBeInTheDocument()
+    expect(within(approvals).getByTestId('next-approval-readonly-@github/list_issues')).toBeInTheDocument()
+    // No per-verb toggle is rendered for a glob-covered verb.
+    expect(within(approvals).queryByTestId('next-approval-toggle-@github/create_issue')).not.toBeInTheDocument()
+    // The whole-server toggle is still the one legal control.
+    expect(within(approvals).getByTestId('next-approvals-server-toggle-github')).toBeEnabled()
+  })
+
+  it('renders a verb-less MCP server as a non-expandable "no tools" row', async () => {
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-behavior'))
+    const approvals = await within(dialog).findByTestId('next-approvals')
+
+    // builder-mcp is allowed but has no auto-approved verbs: its row exists and
+    // its allow-toggle works, but there is no expand control and no "0 of 0".
+    expect(within(approvals).getByTestId('next-approvals-server-builder-mcp')).toBeInTheDocument()
+    expect(within(approvals).getByTestId('next-approvals-server-toggle-builder-mcp')).toBeInTheDocument()
+    expect(within(approvals).queryByTestId('next-approvals-server-expand-builder-mcp')).not.toBeInTheDocument()
+    expect(within(approvals).getByText('No tools auto-approved')).toBeInTheDocument()
   })
 
   it('shows the ceiling-expansion warning when the preview flags it', async () => {
