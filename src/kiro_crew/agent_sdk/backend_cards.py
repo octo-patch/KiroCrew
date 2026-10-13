@@ -274,10 +274,18 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
     ),
     _LineSpec(LINE_MEMBER_THREAD_TOOLS, ("ACP_BACKENDS_MEMBER_DISPATCH",)),
     _LineSpec(LINE_SIDE_CHAT_TOOLS, ("ACP_BACKENDS_SIDE_READONLY",)),
-    # Two verbs carry a user's mid-turn message: kiro-cli's ``_session/steer`` and
-    # codex-acp's ``_session/steering``. A user asks "can I add to a running turn?",
-    # and either verb answers yes, so the line is their union.
-    _LineSpec(LINE_MID_TURN_STEER, ("ACP_BACKENDS_STEER", "ACP_BACKENDS_STEERING_REQUEST")),
+    # Three verbs carry a user's mid-turn message: kiro-cli's ``_session/steer``,
+    # codex-acp's ``_session/steering``, and opencode's second ``session/prompt``
+    # that joins the running turn. A user asks "can I add to a running turn?", and
+    # any of them answers yes, so the line is their union.
+    _LineSpec(
+        LINE_MID_TURN_STEER,
+        (
+            "ACP_BACKENDS_STEER",
+            "ACP_BACKENDS_STEERING_REQUEST",
+            "ACP_BACKENDS_STEER_CONCURRENT_PROMPT",
+        ),
+    ),
     _LineSpec(LINE_MANUAL_COMPACT, ("ACP_BACKENDS_COMPACT",)),
     # Effort travels down one of two channels, and neither set alone answers the
     # question a user asks. The config-option members advertise an ``effort``

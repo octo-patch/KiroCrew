@@ -1886,12 +1886,12 @@ Two preconditions gate the steer, and both matter:
   dormant Claude backend seam has none. On this path `provider` is the
   registry's `AcpProvider`, which reports False for a backend with
   `steer_needs_loss_recovery` (codex, claude and goose,
-  `ACP_BACKENDS_STEERING_REQUEST`) and refuses its steer, so a mid-turn channel
-  message on a codex, claude or goose session always queues; the
-  `_session/steering` of codex and claude and goose's
-  `_goose/unstable/session/steer` are spoken only for the dashboard composer,
-  which steers the inner handle or client. When false the message falls through
-  to the queue path.
+  `ACP_BACKENDS_STEERING_REQUEST`; opencode, `ACP_BACKENDS_STEER_CONCURRENT_PROMPT`)
+  and refuses its steer, so a mid-turn channel message on a codex, claude, goose
+  or opencode session always queues; the `_session/steering` of codex and claude,
+  goose's `_goose/unstable/session/steer` and opencode's second `session/prompt`
+  are spoken only for the dashboard composer, which steers the inner handle or
+  client. When false the message falls through to the queue path.
 - `provider.has_active_turn()`, **not** `sessions.is_busy()`. `is_busy` stays
   true through post-turn bookkeeping (success record, turn persist, threshold
   notice, SEL audit, all await points), so it alone cannot distinguish a live

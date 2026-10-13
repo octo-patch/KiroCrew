@@ -187,6 +187,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_CLIENT_CAPABILITIES,
@@ -1641,6 +1642,17 @@ async def _effective_prompt_timeout_async(timeout: float | None) -> float:
 
 _READ_TIMEOUT = 20.0
 _OPENCODE_PERMISSION_REFINEMENT_TIMEOUT = 2.0
+# Steers sent as a second ``session/prompt`` (``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``).
+# A steer the running loop read is answered at the same idle as the turn, so the
+# turn's clean end waits only this long for its answer.
+_CONCURRENT_STEER_GRACE_SECS = 2.0
+# How long a steer that ran a loop of its own is waited for after its cancel, so
+# none of that loop's frames reach the next turn.
+_CONCURRENT_STEER_CANCEL_SECS = 5.0
+# At most this many such steers per turn, each at most this long. A steer past
+# either bound takes the caller's queue path instead.
+_MAX_CONCURRENT_STEERS = 16
+_MAX_CONCURRENT_STEER_CHARS = 64_000
 # After a compaction `completed` status, kiro-cli emits a fresh
 # `_kiro.dev/metadata` with the real post-compaction contextUsagePercentage
 # about ~1s later (live-probe confirmed). Wait up to this long for it so the
@@ -2453,6 +2465,15 @@ class AcpClient:
         self._active_run_id: str | None = None
         self._steer_answers: dict[int, tuple[asyncio.Future[str], str]] = {}
         self._steers_awaiting_echo: dict[str, str] = {}
+        # Steers sent as a second ``session/prompt``
+        # (``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``): the running turn's, by request
+        # id, with their answers; and earlier turns' never answered, which the next
+        # prompt cancels before it is written (``_settle_orphan_steers``).
+        self._steer_turn_req_id: int | None = None
+        self._concurrent_steers: dict[int, str] = {}
+        self._concurrent_steer_answers: dict[int, tuple[JsonRpcMessage, bool]] = {}
+        self._orphan_steers: set[int] = set()
+        self._turn_permission_denied = False
         # Serializes whole read turns on this client's single stdout StreamReader.
         # An asyncio StreamReader permits exactly ONE waiting reader; the shared
         # `_bg` session is streamed by ~8 callers and the per-session Semaphore(1)
@@ -9240,11 +9261,14 @@ class AcpClient:
     def _process_message(self, msg: JsonRpcMessage, req_id: int) -> str:
         """Classify a message into an action string.
 
-        Actions: "complete", "error", "permission", "update", "metadata",
-        "server_request_unknown", "skip".
+        Actions: "complete", "error", "steer_answer", "permission", "update",
+        "metadata", "server_request_unknown", "skip".
         """
         if msg.is_response_for(req_id):
             return "error" if msg.error else "complete"
+
+        if msg.method is None and msg.id in getattr(self, "_concurrent_steers", {}):
+            return "steer_answer"
 
         if msg.is_method(METHOD_REQUEST_PERMISSION):
             return "permission"
@@ -9854,8 +9878,42 @@ class AcpClient:
         self._turn_done.clear()
         await self.ensure_ready()
         req_id = await self._send_prompt(message, allow_image=allow_image)
-        async for event in self._dispatch_events(req_id, timeout):
+        async for event in self._dispatch_prompt_events(req_id, timeout):
             yield event
+
+    async def _dispatch_prompt_events(
+        self,
+        req_id: int,
+        timeout: float,
+    ) -> AsyncIterator[AcpEvent]:
+        """:meth:`_dispatch_events` for a prompt turn, plus the steers sent into it.
+
+        The one owner of the steers sent into this turn as a second
+        ``session/prompt`` (``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``): they are
+        settled at the turn's ``EVENT_COMPLETE``, while the turn still holds the
+        read lock, and reported consumed just before it. Any exit without that
+        terminal leaves them unreported, and the caller queues their text.
+        """
+        self._concurrent_steers = {}
+        self._concurrent_steer_answers = {}
+        self._turn_permission_denied = False
+        self._steer_turn_req_id = req_id
+        try:
+            async with aclosing(self._dispatch_events(req_id, timeout)) as events:
+                async for event in events:
+                    if event.kind == EVENT_COMPLETE and self._concurrent_steers:
+                        for consumed in await self._settle_concurrent_steers(event):
+                            yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=consumed)
+                    yield event
+        finally:
+            self._steer_turn_req_id = None
+            # Never answered inside the turn: each may still be running a loop of
+            # its own, which the next prompt cancels before it is written.
+            unanswered = set(self._concurrent_steers) - set(self._concurrent_steer_answers)
+            if unanswered:
+                self._orphan_steers.update(unanswered)
+            self._concurrent_steers = {}
+            self._concurrent_steer_answers = {}
 
     async def _dispatch_events(
         self,
@@ -9863,7 +9921,7 @@ class AcpClient:
         timeout: float,
         *,
         extract_agent_from_result: bool = False,
-    ) -> AsyncIterator[AcpEvent]:
+    ) -> AsyncGenerator[AcpEvent, None]:
         """Shared event dispatch loop for prompts and commands."""
         self.last_prompt_stats = self.last_prompt_stats.carry_over()
         self._tool_call_inputs.clear()
@@ -10012,6 +10070,9 @@ class AcpClient:
                         self._parked_on_permission = False
             elif action == "server_request_unknown":
                 await self._reject_unknown_server_request(msg)
+            elif action == "steer_answer":
+                # Answered before the turn's own terminal: kept for the settle.
+                self._concurrent_steer_answers[msg.id] = (msg, False)
             elif action == "update":
                 self._track_usage_update(msg)
                 self._note_background_launch(msg)
@@ -10437,6 +10498,9 @@ class AcpClient:
         recorded = self._permission_options.pop(request_id, None)
         getattr(self, "_permission_gate_events", {}).pop(request_id, None)
         self._note_pi_gate_denied(request_id)
+        # Read by the concurrent-prompt steer settle: this denial may end the turn
+        # before a steer sent into it is read.
+        self._turn_permission_denied = True
         reject_id = recorded.get("reject") if recorded else None
         if reject_id:
             await self._send_response(
@@ -10658,6 +10722,10 @@ class AcpClient:
         A backend in ``ACP_BACKENDS_STEERING_REQUEST`` is delivered by a request
         whose answer the read loop hands over instead: goose by
         :meth:`_steer_via_request`, claude by :meth:`_steer_via_steering_request`.
+
+        A backend in ``ACP_BACKENDS_STEER_CONCURRENT_PROMPT`` takes the steer as
+        a second ``session/prompt`` instead (:meth:`_steer_via_concurrent_prompt`),
+        whose answer the turn's own read loop settles.
         """
         text = (message or "").strip()
         if not text or not self._session_id:
@@ -10668,6 +10736,8 @@ class AcpClient:
             )
         if self.backend in ACP_BACKENDS_STEERING_REQUEST:
             return await self._steer_via_steering_request(text)
+        if self.backend in ACP_BACKENDS_STEER_CONCURRENT_PROMPT:
+            return await self._steer_via_concurrent_prompt(text)
         wrapped = f"<user_message>\n{text}\n</user_message>"
         await self._send_request(
             "_session/steer", {"sessionId": self._session_id, "message": wrapped}
@@ -10948,6 +11018,55 @@ class AcpClient:
         self._last_steer_monotonic = time.monotonic()
         return True
 
+    async def _steer_via_concurrent_prompt(self, text: str) -> bool:
+        """Send a user steer as a second ``session/prompt`` into the running turn.
+
+        See ``ACP_BACKENDS_STEER_CONCURRENT_PROMPT`` for what was measured. True
+        means written into a turn of ours that is still running, not consumed.
+        The request's answer is the only delivery evidence, and it comes when the
+        turn ends, so it is read by the turn itself: :meth:`_settle_concurrent_steers`
+        reports the steer consumed at a clean end, and on any other end nothing
+        is reported and the caller's pending entry is queued.
+
+        False, so the caller queues the text, when no turn of ours is running,
+        when the steer is past ``_MAX_CONCURRENT_STEER_CHARS`` or the turn already
+        holds ``_MAX_CONCURRENT_STEERS``, and when the turn ended while the frame
+        was being written. That last steer may already run a loop of its own, so
+        it is kept for :meth:`_settle_orphan_steers` to cancel before the next
+        prompt.
+        """
+        turn = getattr(self, "_steer_turn_req_id", None)
+        if turn is None or not self.has_active_turn():
+            return False
+        steers = self._concurrent_steers
+        if len(text) > _MAX_CONCURRENT_STEER_CHARS or len(steers) >= _MAX_CONCURRENT_STEERS:
+            return False
+        wrapped = f"<user_message>\n{text}\n</user_message>"
+        sent: list[int] = []
+
+        def _register(rid: int) -> None:
+            # Before the write, so the turn can never read the answer unclaimed.
+            sent.append(rid)
+            steers[rid] = wrapped
+
+        try:
+            await self._send_request(
+                METHOD_PROMPT,
+                {"sessionId": self._session_id, "prompt": [{"type": "text", "text": text}]},
+                on_id=_register,
+            )
+        except BaseException:
+            if sent:
+                steers.pop(sent[0], None)
+            raise
+        if self._steer_turn_req_id != turn or not self.has_active_turn():
+            # The turn ended during the write: nothing will report this steer.
+            if sent and steers.pop(sent[0], None) is not None:
+                self._orphan_steers.add(sent[0])
+            return False
+        self._last_steer_monotonic = time.monotonic()
+        return True
+
     def _note_active_run(self, msg: JsonRpcMessage) -> None:
         """Track the run id goose announces for the running prompt.
 
@@ -11016,6 +11135,139 @@ class AcpClient:
             return None
         return AcpEvent(kind=EVENT_STEER_CONSUMED, text=wrapped)
 
+    async def _settle_concurrent_steers(self, terminal: AcpEvent) -> list[str]:
+        """Settle this turn's concurrent-prompt steers at its ``EVENT_COMPLETE``.
+
+        Runs while the turn still holds the read lock. Each steer's answer is read
+        within ``_CONCURRENT_STEER_GRACE_SECS``: the running loop answers a steer
+        it read at the same idle as the turn. A steer still unanswered then ran a
+        loop of its own; that loop is cancelled and its answer read, so none of its
+        frames reach the next turn.
+
+        Returns the wrapped text of each steer the turn consumed. That needs a
+        clean turn -- no cancel, no denied approval, no refusal, a stop reason of
+        exactly ``end_turn`` -- and the steer's own clean ``end_turn`` answer,
+        with no output of another loop read before it. A denied approval ends
+        opencode's loop without reading what came after it, so a turn with one
+        reports nothing. Every steer not returned stays pending with the caller,
+        which queues it.
+        """
+        steers, self._concurrent_steers = self._concurrent_steers, {}
+        answers, self._concurrent_steer_answers = self._concurrent_steer_answers, {}
+        waiting = set(steers) - set(answers)
+        if waiting:
+            answers.update(await self._read_steer_answers(waiting, _CONCURRENT_STEER_GRACE_SECS))
+        unanswered = set(steers) - set(answers)
+        if unanswered:
+            logger.info(
+                "%d steer(s) on %s ran a turn of their own; cancelling and queueing",
+                len(unanswered),
+                self._session_id,
+            )
+            await self._write_steer_cancel()
+            answers.update(
+                await self._read_steer_answers(unanswered, _CONCURRENT_STEER_CANCEL_SECS)
+            )
+            missing = set(steers) - set(answers)
+            if missing:
+                self._orphan_steers.update(missing)
+        clean = (
+            not self._cancelled
+            and not self._turn_permission_denied
+            and terminal.refusal is None
+            and terminal.stop_reason == STOP_REASON_END_TURN
+        )
+        if not clean:
+            return []
+        consumed = []
+        for rid, wrapped in steers.items():
+            if rid in unanswered:
+                continue
+            answer, after_other_output = answers[rid]
+            result = answer.result if isinstance(answer.result, dict) else {}
+            if answer.error or after_other_output:
+                continue
+            if result.get("stopReason") == STOP_REASON_END_TURN:
+                consumed.append(wrapped)
+        return consumed
+
+    async def _read_steer_answers(
+        self, ids: set[int], bound: float
+    ) -> dict[int, tuple[JsonRpcMessage, bool]]:
+        """Read frames until each of *ids* is answered or *bound* seconds pass.
+
+        Called with the read lock held, after the turn's own terminal, so every
+        other frame belongs to a loop a steer started: it is dropped, and an
+        approval it asks for is answered ``cancelled``. Each answer is returned
+        with whether such a frame came before it.
+        """
+        answers: dict[int, tuple[JsonRpcMessage, bool]] = {}
+        other_output = False
+        deadline = time.monotonic() + bound
+        while ids - set(answers):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                msg = await self._read_message(timeout=min(remaining, _READ_TIMEOUT))
+            except AcpError:
+                break
+            if msg is None:
+                if not self._is_process_alive():
+                    break
+                continue
+            if msg.method is None and msg.id in ids:
+                answers[msg.id] = (msg, other_output)
+            elif msg.is_method(METHOD_REQUEST_PERMISSION) and msg.id is not None:
+                other_output = True
+                await self._send_response(msg.id, {"outcome": {"outcome": OUTCOME_CANCELLED}})
+            elif msg.method is not None and msg.id is not None:
+                other_output = True
+                await self._reject_unknown_server_request(msg)
+            elif msg.is_method(METHOD_SESSION_UPDATE):
+                other_output = True
+        return answers
+
+    async def _write_steer_cancel(self) -> None:
+        """Send ``session/cancel`` for a loop a steer started; best effort."""
+        if not self._process or not self._process.stdin:
+            return
+        data = json.dumps(
+            {"jsonrpc": "2.0", "method": METHOD_CANCEL, "params": {"sessionId": self._session_id}}
+        )
+        try:
+            await write_notification_best_effort(
+                self._process.stdin,
+                self._stdin_write_lock(),
+                (data + "\n").encode(),
+                bound_secs=transport_framing._RESPONSE_WRITE_BOUND_SECS,
+            )
+        except Exception as exc:
+            logger.warning("steer cancel on %s failed: %s", self._session_id, type(exc).__name__)
+
+    async def _settle_orphan_steers(self) -> None:
+        """Cancel loops that earlier steers may still run, before a prompt is written.
+
+        A steer whose turn ended before its answer came may have started a loop
+        that no prompt of ours reads. Its frames would otherwise be read by the
+        next turn as that turn's own. Takes the read lock, so it never reads
+        beside a turn.
+        """
+        orphans = getattr(self, "_orphan_steers", None)
+        if not orphans:
+            return
+        async with self._turn_lock:
+            ids = set(orphans)
+            orphans.clear()
+            await self._write_steer_cancel()
+            answers = await self._read_steer_answers(ids, _CONCURRENT_STEER_CANCEL_SECS)
+        if len(answers) < len(ids):
+            logger.warning(
+                "%d steer answer(s) on %s never arrived before the next prompt",
+                len(ids) - len(answers),
+                self._session_id,
+            )
+
     # Monotonic stamp of the last steer handed to the backend, 0.0 when never
     # steered. Mirrors AcpSessionHandle.last_steer_monotonic — the dashboard's
     # keepalive route reads whichever of the two backs the live session.
@@ -11030,15 +11282,20 @@ class AcpClient:
     def supports_steer(self) -> bool:
         """True when the backend takes a user's mid-turn message.
 
-        Membership in ``ACP_BACKENDS_STEER`` (kiro-cli's ``_session/steer``) or in
-        ``ACP_BACKENDS_STEERING_REQUEST`` (harness-parity H6), so a harness added
-        later does not inherit either from ``not _is_claude``. A member of the
-        second takes its own request where this client speaks one
-        (``_CLIENT_STEERING_REQUEST_METHODS``: goose); otherwise it also needs its
-        adapter to have advertised ``_session/steering`` at the handshake and to be
-        at or above its floor, and before the handshake it reads False.
+        Membership in ``ACP_BACKENDS_STEER`` (kiro-cli's ``_session/steer``), in
+        ``ACP_BACKENDS_STEERING_REQUEST``, or in ``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``
+        (a second ``session/prompt``), harness-parity H6, so a harness added later
+        does not inherit any of them from ``not _is_claude``. A member of
+        ``ACP_BACKENDS_STEERING_REQUEST`` takes its own request where this client
+        speaks one (``_CLIENT_STEERING_REQUEST_METHODS``: goose); otherwise it also
+        needs its adapter to have advertised ``_session/steering`` at the handshake
+        and to be at or above its floor, and before the handshake it reads False.
         """
-        if self.backend in ACP_BACKENDS_STEER or self._speaks_steering_request:
+        if (
+            self.backend in ACP_BACKENDS_STEER
+            or self.backend in ACP_BACKENDS_STEER_CONCURRENT_PROMPT
+            or self._speaks_steering_request
+        ):
             return True
         return self.backend in ACP_BACKENDS_STEERING_REQUEST and self._steering_request_ready()
 
@@ -11048,7 +11305,9 @@ class AcpClient:
 
         Only ``ACP_BACKENDS_STEER``: a steering-request member's steer is reported
         consumed only at a clean end (``_session/steering``) or on its echo
-        (goose), so it is not a deny-notice channel.
+        (goose), so it is not a deny-notice channel, and a harness that takes a
+        steer as a second ``session/prompt`` ends its turn on the denial the
+        notice is about.
         """
         return self.backend in ACP_BACKENDS_STEER
 
@@ -11056,15 +11315,19 @@ class AcpClient:
     def steer_needs_loss_recovery(self) -> bool:
         """True when an accepted steer can still be dropped with its turn.
 
-        A ``_session/steering`` steer (``ACP_BACKENDS_STEERING_REQUEST``) is
-        reported consumed only when its turn ends cleanly, so a cancelled or
-        failed turn leaves it for the caller to queue. goose discards a steer
+        A ``_session/steering`` steer (``ACP_BACKENDS_STEERING_REQUEST``) and a
+        concurrent-prompt steer (``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``) are
+        reported consumed only when their turn ends cleanly, so a cancelled or
+        failed turn leaves them for the caller to queue. goose discards a steer
         still queued when its run ends, so its accepted steer is reported
         consumed only on goose's echo, and the caller requeues it otherwise.
         Only the dashboard composer keeps such an entry; kiro-cli's
         ``_session/steer`` keeps every steer delivered into the turn.
         """
-        return self.backend in ACP_BACKENDS_STEERING_REQUEST
+        return (
+            self.backend in ACP_BACKENDS_STEERING_REQUEST
+            or self.backend in ACP_BACKENDS_STEER_CONCURRENT_PROMPT
+        )
 
     @property
     def _speaks_steering_request(self) -> bool:
@@ -11158,6 +11421,7 @@ class AcpClient:
     # ── Private Helpers ──
 
     async def _send_prompt(self, message: str, *, allow_image: bool = True) -> int:
+        await self._settle_orphan_steers()
         # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
         # cannot drift.
         return await self._send_request(

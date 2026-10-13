@@ -46,6 +46,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_CLIENT_CAPABILITIES,
@@ -285,9 +286,11 @@ def test_member_capabilities_are_opt_in() -> None:
 def test_steer_is_opt_in() -> None:
     """H6: the ``_session/steer`` extension is claimed by membership."""
     source = inspect.getsource(acp_client.AcpClient.supports_steer.fget)
-    assert "ACP_BACKENDS_STEER" in source
+    assert "in ACP_BACKENDS_STEER\n" in source
+    assert "in ACP_BACKENDS_STEER_CONCURRENT_PROMPT" in source
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_STEER
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STEER
+    assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STEER_CONCURRENT_PROMPT
 
 
 def test_mcp_config_hot_reload_is_opt_in() -> None:
@@ -419,6 +422,7 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
         ("ACP_BACKENDS_MEMBER_TOOL_LIMITS", ACP_BACKENDS_MEMBER_TOOL_LIMITS),
         ("ACP_BACKENDS_SESSION_SHARING", ACP_BACKENDS_SESSION_SHARING),
         ("ACP_BACKENDS_STEER", ACP_BACKENDS_STEER),
+        ("ACP_BACKENDS_STEER_CONCURRENT_PROMPT", ACP_BACKENDS_STEER_CONCURRENT_PROMPT),
         ("ACP_BACKENDS_INTERNAL_SANDBOX", ACP_BACKENDS_INTERNAL_SANDBOX),
         ("ACP_BACKENDS_ACP_RUNTIME", ACP_BACKENDS_ACP_RUNTIME),
         ("ACP_BACKENDS_COMPACT", ACP_BACKENDS_COMPACT),
