@@ -135,6 +135,16 @@ pixels) to lower that cap, so a long draft cannot take most of the box from the
 transcript. The resting (empty) size of the composer is unchanged; only the cap
 moves. Omitted, the 240-pixel default applies.
 
+While the agent is working and the draft is empty, a Stop button takes the send
+button's place. The first press asks the agent to stop. A second press made
+while that stop is still pending forces the stop: it ends the turn at once and
+drops any queued messages, and a hint above the composer says so before the
+press. A failed stop shows an error above the composer. Stop calls
+`POST /api/chat/slots/{slot}/stop` (`?force=true` for the second press), which
+the `/api/chat` entry the embed already needs in `allowedApiPaths` covers. The
+embed reads the stop phase from the `stop_state` field of
+`GET /api/chat/slots/{slot}` (`idle`, `soft_pending` or `killing`).
+
 ```tsx
 <div style={{ height: 420 }}>
   <ChatEmbed slotKey="coder-abc123" composerMaxHeight={160} />
