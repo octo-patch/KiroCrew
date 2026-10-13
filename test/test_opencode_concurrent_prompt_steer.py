@@ -38,6 +38,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
 )
 from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.testing.wait import await_until, until_parked
 
 _SID = "ses_probe"
 _STEER = "end your answer with PINEAPPLE"
@@ -89,6 +90,9 @@ class _Harness:
         self.prompts: list[tuple[int, dict]] = []
         self.cancels = 0
         self.on_prompt: Callable[[int], list[bytes]] = lambda rid: []
+        # When set, a steer's write (any prompt after the first) parks on it after
+        # its frames are fed, the way a real write parks on ``drain()``.
+        self.write_gate: asyncio.Event | None = None
 
         async def _write(data: bytes, request_id: int, method: str) -> None:
             frame = json.loads(data)
@@ -96,6 +100,8 @@ class _Harness:
                 self.prompts.append((request_id, frame["params"]))
                 for raw in self.on_prompt(request_id):
                     self.reader.feed_data(raw)
+                if self.write_gate is not None and len(self.prompts) > 1:
+                    await await_until(self.write_gate, what="the parked steer write's release")
 
         async def _cancel() -> None:
             self.cancels += 1
@@ -374,48 +380,110 @@ async def test_a_steer_past_the_bound_is_not_sent(
 
 
 @pytest.mark.asyncio
-async def test_a_steer_written_as_its_turn_ends_is_cancelled_before_the_next_prompt(
+async def test_a_steer_settled_while_its_write_was_parked_is_owed_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The turn ended during the write: False now, and its loop is stopped later.
+    """The turn ends and is settled while the steer's write still waits on drain.
 
-    Its frames are read and dropped before the next prompt goes out, so the next
-    turn never shows the steer's own loop as its answer.
+    The settle read the steer's answer, so nothing is owed for it: no orphan, and
+    the next prompt neither cancels nor kills the process. The steer is not
+    reported consumed either, because its ``steer()`` had not returned True yet,
+    and that call now returns False, so the caller queues it.
     """
     h = _Harness(tmp_path, monkeypatch)
+    h.write_gate = asyncio.Event()
+    h.client._kill_process = AsyncMock()  # type: ignore[method-assign]
     turn_id: list[int] = []
-    steer_id: list[int] = []
-    results: list[bool] = []
 
     def _on_prompt(rid: int) -> list[bytes]:
         if not turn_id:
             turn_id.append(rid)
             return [_tool_call()]
-        if not steer_id:
-            steer_id.append(rid)
-            # The turn ends while the steer frame is being written.
-            h.client._turn_done.set()
-            return []
+        if len(turn_id) == 1:
+            turn_id.append(rid)
+            return [_chunk("ok"), _answer(turn_id[0]), _answer(rid)]
         return [_chunk("second answer"), _answer(rid)]
 
     h.on_prompt = _on_prompt
-    h.on_cancel = lambda: [_answer(steer_id[0], "cancelled")]
+    steers: list[asyncio.Task] = []
+
+    async def _steer_from_another_task(event: Any) -> None:
+        if event.kind == EVENT_TOOL_CALL:
+            steers.append(asyncio.ensure_future(h.client.steer(_STEER)))
+            await until_parked(h.write_gate)
+
+    try:
+        events = await h.run_turn(_steer_from_another_task)
+    finally:
+        h.write_gate.set()
+    assert EVENT_STEER_CONSUMED not in _kinds(events)
+    assert await await_until(steers[0], what="the parked steer call") is False
+    assert h.client._orphan_steers == set()
+
+    second = await h.run_turn()
+    assert [e.text for e in second if e.kind == EVENT_TEXT_CHUNK] == ["second answer"]
+    assert h.cancels == 0
+    h.client._kill_process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_settle_cut_short_still_owes_the_unanswered_steer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop or the turn ceiling landing in the grace window keeps the steer owed."""
+    h = _Harness(tmp_path, monkeypatch)
+    monkeypatch.setattr(acp_client, "_CONCURRENT_STEER_GRACE_SECS", 30.0)
+    turn_id: list[int] = []
+    steer_id: list[int] = []
+
+    def _on_prompt(rid: int) -> list[bytes]:
+        if not turn_id:
+            turn_id.append(rid)
+            return [_tool_call()]
+        steer_id.append(rid)
+        return [_answer(turn_id[0])]
+
+    h.on_prompt = _on_prompt
 
     async def _steer(event: Any) -> None:
-        if event.kind == EVENT_TOOL_CALL and not results:
-            results.append(await h.client.steer(_STEER))
-            h.reader.feed_data(_answer(turn_id[0]))
+        if event.kind == EVENT_TOOL_CALL:
+            await h.client.steer(_STEER)
 
-    await h.run_turn(_steer)
-    assert results == [False]
+    in_grace = asyncio.Event()
+    read_answers = h.client._read_steer_answers
+
+    async def _read_and_signal(*args: Any, **kwargs: Any) -> None:
+        in_grace.set()
+        await read_answers(*args, **kwargs)
+
+    h.client._read_steer_answers = _read_and_signal  # type: ignore[method-assign]
+    task = asyncio.ensure_future(h.run_turn(_steer))
+    await await_until(in_grace, what="the settle's grace read")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await await_until(task, what="the cancelled turn")
     assert h.client._orphan_steers == {steer_id[0]}
 
-    # The steer's own loop streams after the turn is over, with no reader.
-    h.reader.feed_data(_chunk("its own loop"))
-    second = await h.run_turn()
-    assert h.cancels == 1
-    texts = [e.text for e in second if e.kind == EVENT_TEXT_CHUNK]
-    assert texts == ["second answer"]
+
+@pytest.mark.asyncio
+async def test_orphans_owed_by_a_retired_process_are_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh process never answers the old one's ids, so it is not killed for them."""
+    h = _Harness(tmp_path, monkeypatch)
+    h.client._add_orphan_steers({41})
+    fresh = MagicMock()
+    fresh.stdout = h.reader
+    fresh.stdin = MagicMock()
+    fresh.returncode = None
+    h.client._process = fresh
+    h.client._kill_process = AsyncMock()  # type: ignore[method-assign]
+    h.on_prompt = lambda rid: [_answer(rid)]
+
+    await h.run_turn()
+
+    assert h.cancels == 0
+    h.client._kill_process.assert_not_awaited()
     assert h.client._orphan_steers == set()
 
 
@@ -438,3 +506,63 @@ async def test_the_steer_cancel_is_a_session_cancel_notification(tmp_path: Path)
         "method": METHOD_CANCEL,
         "params": {"sessionId": _SID},
     }
+
+
+@pytest.mark.asyncio
+async def test_a_steer_loop_that_ignores_cancel_retires_the_process_before_the_next_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its late frames would read as the next turn's own, so no prompt is written."""
+    h = _Harness(tmp_path, monkeypatch)
+    h.client._add_orphan_steers({41})
+    h.reader.feed_data(_chunk("its own loop, still running"))
+    h.client._kill_process = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(acp_client.AcpProcessDied):
+        await h.run_turn()
+
+    assert h.cancels == 1
+    h.client._kill_process.assert_awaited_once_with(force=True)
+    assert h.prompts == []
+    assert h.client._orphan_steers == set()
+
+
+@pytest.mark.asyncio
+async def test_an_approval_a_steer_loop_asks_for_is_audited_then_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled approval is a denial Crew made, so it gets its SEL record first."""
+    h = _Harness(tmp_path, monkeypatch)
+    order: list[str] = []
+    records: list[dict[str, Any]] = []
+
+    class _Log:
+        def log_tool_invocation(self, **kwargs: Any) -> None:
+            order.append("audit")
+            records.append(kwargs)
+
+    monkeypatch.setattr(acp_client.sel_module, "sel", lambda: _Log())
+
+    async def _respond(request_id: Any, result: Any) -> None:
+        order.append("answer")
+        assert result == {"outcome": {"outcome": "cancelled"}}
+
+    h.client._send_response = _respond  # type: ignore[method-assign]
+    h.client._add_orphan_steers({41})
+    permission = _frame(
+        {
+            "id": "perm-9",
+            "method": "session/request_permission",
+            "params": {"sessionId": _SID, "toolCall": {"toolCallId": "t9"}, "options": []},
+        }
+    )
+    h.reader.feed_data(permission)
+    h.on_cancel = lambda: [_answer(41, "cancelled")]
+    h.on_prompt = lambda rid: [_answer(rid)]
+
+    await h.run_turn()
+
+    assert order == ["audit", "answer"]
+    assert records[0]["outcome"] == "rejected_on_cancel"
+    assert records[0]["request_id"] == "perm-9"
+    assert records[0]["metadata"] == {"backend": ACP_BACKEND_OPENCODE, "cause": "steer_loop"}
