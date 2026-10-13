@@ -950,7 +950,7 @@ class SessionTreeProjection:
         if not sid or not slot:
             return
         from kiro_crew.crew_log.session_tree import edge_record
-        from kiro_crew.crew_log.store import _checked_crew_log_root, find_last_tree_edge
+        from kiro_crew.crew_log.store import checked_crew_log_root, find_last_tree_edge
 
         # The unit's spawns live in whichever segments recorded them, so the same
         # removal can strand them. Re-read on the same terms as the decision below.
@@ -964,7 +964,7 @@ class SessionTreeProjection:
                 # removal -- a unit that never recorded a decision -- costs no file IO.
                 return
         try:
-            root = _checked_crew_log_root(KIND_SESSION)
+            root = checked_crew_log_root(KIND_SESSION)
             found = edge_record(slot, sid, find_last_tree_edge(root / _store_name(sid)))
         except (OSError, ValueError):
             with self._lock:
@@ -997,7 +997,7 @@ class SessionTreeProjection:
         decides: a complete read replaces what is held, a read that raises leaves it
         and marks the reading incomplete. No I/O when nothing is held for the unit."""
         from kiro_crew.crew_log.session_tree import SPAWNED_PER_UNIT_CAP, spawned_record
-        from kiro_crew.crew_log.store import _checked_crew_log_root, find_spawned_entries
+        from kiro_crew.crew_log.store import checked_crew_log_root, find_spawned_entries
 
         with self._lock:
             if not any(spawn.sid == sid for spawn in self._spawned.values()):
@@ -1009,7 +1009,7 @@ class SessionTreeProjection:
                 rec.slot for rec in self._records.values() if rec.slot and rec.parent_slot
             }
         try:
-            root = _checked_crew_log_root(KIND_SESSION)
+            root = checked_crew_log_root(KIND_SESSION)
             entries, cut, _hit_cap = find_spawned_entries(
                 root / _store_name(sid), SPAWNED_PER_UNIT_CAP, self_parented
             )
@@ -1454,7 +1454,7 @@ class SessionTreeProjection:
         """
         from kiro_crew.crew_log.session_tree import TREE_UNIT_CAP, edge_record, opened_record
         from kiro_crew.crew_log.store import (
-            _checked_crew_log_root,
+            checked_crew_log_root,
             find_last_tree_edge,
             oldest_segment,
             read_head,
@@ -1466,7 +1466,7 @@ class SessionTreeProjection:
         scans = dict(loaded_scans or {})
         incomplete = False
         try:
-            root = _checked_crew_log_root(KIND_SESSION)
+            root = checked_crew_log_root(KIND_SESSION)
             # NAMES only. ``is_dir()`` here would be one stat per unit, which is the
             # per-read cost being removed -- so the checkpoint directory is excluded by
             # NAME instead, and anything else that is not a unit simply answers no
@@ -1612,7 +1612,7 @@ class SessionTreeProjection:
             spawned_record,
         )
         from kiro_crew.crew_log.store import (
-            _checked_crew_log_root,
+            checked_crew_log_root,
             find_spawned_entries,
             tree_edge_scan_identity,
         )
@@ -1625,7 +1625,7 @@ class SessionTreeProjection:
         # must not report the creator cut.
         self_parented = {rec.slot for rec in records.values() if rec.slot and rec.parent_slot}
         try:
-            root = _checked_crew_log_root(KIND_SESSION)
+            root = checked_crew_log_root(KIND_SESSION)
         except OSError:
             # Already reported by the record replay, which lists the same root.
             return spawned, scans, True

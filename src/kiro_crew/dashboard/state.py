@@ -2934,6 +2934,11 @@ class _ChatSlot:
         "_last_stop_reason",
         "_created_by",
         "_created_by_sid",
+        "_manager",
+        "_manager_unresolved",
+        "_manager_grant_inadmissible",
+        "_manager_tab",
+        "_manager_revision",
         "_lineage_minted",
         "_revived_by",
         "_artifact",
@@ -3496,6 +3501,90 @@ class _ChatSlot:
         #: is fenced from them precisely so nothing there can be forged as
         #: gateway-authored.
         self._created_by_sid: str = ""
+        #: The slot key of the session that holds this one NOW, or "" for a slot
+        #: nobody has handed over. One value: a session has one direct manager at a
+        #: time. Empty means the manager is ``_created_by``, which is why a gateway
+        #: with no handoff behaves exactly as it did before the field existed -- the
+        #: reach a creator has is unchanged until something writes here. Written only
+        #: by the session-control handoff verb, read for send / read / summary / stop /
+        #: close / adopt / release / handoff reach; ``_created_by`` records who CREATED
+        #: the session and is never overwritten, so memory delegation and the
+        #: per-creator slot cap keep their own answer.
+        #:
+        #: NOT persisted on the slot's metadata line, unlike ``_created_by``. This is
+        #: this process's copy of the crew log, which is the only store: a start
+        #: rebuilds it from the newest ``session/manager_set`` entry per slot. A copy on
+        #: the line would be written on every save and read on every restore with
+        #: nothing trusting it, and its only possible effect is to disagree with the log
+        #: it came from -- which is how a revoked manager came back.
+        self._manager: str = ""
+        #: True while :attr:`_manager` has NOT been established from the crew log, which
+        #: is the only store for it. Distinct from an empty ``_manager``, and that is the
+        #: whole point: empty is a decided answer ("the creator holds it") and this says
+        #: no decided answer exists yet, so the two must not collapse into each other.
+        #:
+        #: DEFAULT-DENY for a slot the crew log's handed-over index names. Every
+        #: hydrating purpose sets it for such a slot in
+        #: ``slot_persistence.metadata_codec.apply``, and for every slot while that
+        #: index cannot be read; a slot the index does not name was never handed over
+        #: and hydrates decided. Only
+        #: ``session_control.resolve_slot_manager`` clears it, and only on an
+        #: authoritative read. So a path that builds a slot from history and publishes it
+        #: without consulting the log leaves this standing, and session control refuses
+        #: the verbs whose authorization reads the manager rather than answering them
+        #: from the creator -- which would hand a revoked giver its reach back. A path
+        #: that forgets the read fails CLOSED and loudly instead of silently reverting.
+        #:
+        #: False on a freshly minted slot: nothing was handed over before it existed, so
+        #: its creator is its manager by construction and there is nothing to read.
+        self._manager_unresolved: bool = False
+        #: True when the crew log WAS read authoritatively and the manager it records
+        #: cannot be published -- that session is closed, or rebound to another
+        #: principal's memory store.
+        #:
+        #: It rides beside :attr:`_manager_unresolved` because the two answer different
+        #: questions. That one says the value is not usable, which is what every reader
+        #: that authorizes against it needs. This one says a re-read cannot change
+        #: that, which only the re-read arming needs: the read already succeeded, so
+        #: polling the store would return the same answer for the life of the process.
+        #:
+        #: Both leave manager-dependent access DENIED, and that is the point. "The
+        #: recipient is not admissible" and "no handoff happened" are different facts,
+        #: and only the second means the creator still holds the session. Falling back
+        #: to the creator here would hand a revoked grant back to the session that gave
+        #: it away. Nobody is stranded by the denial: an unfenced owner's reach never
+        #: came from this field, so a person can still adopt, release or close the
+        #: session, and the only caller that loses anything is the agent that chose to
+        #: give its reach away.
+        self._manager_grant_inadmissible: bool = False
+        #: The OCCUPANCY of :attr:`_manager`: the ``_tab_id`` of the session that was
+        #: handed this one. A slot key is a name a later session can retake, and the
+        #: authorization compare is key to key -- so without this a new occupant of the
+        #: manager's key reads as the session that was given the worker.
+        #:
+        #: Same mechanism the send-origin stamp already uses for the same reason, and
+        #: ``_tab_id`` is the right identity because it is persisted and survives a
+        #: restart, unlike ``_created_by_sid``, which is process-local by design.
+        #:
+        #: Empty means the occupancy is UNKNOWN, not "any occupant will do": a retaken
+        #: or unverifiable key refuses the manager-dependent verbs rather than resolving
+        #: to whoever answers to the name now.
+        self._manager_tab: str = ""
+        #: How many times who manages this slot has been STATED, counting up, process
+        #: local. It is the fifth field of the one statement and
+        #: ``session_control.publish_manager`` bumps it with the other four.
+        #:
+        #: It exists because atomic is not ordered. A resolve reads the crew log off
+        #: the loop and then publishes; a handoff can commit inside that window, so
+        #: the resolve's answer is already old when it lands and publishing it hands a
+        #: revoked manager its reach back. The resolve reads this before its first read
+        #: and gives it back at the publish, which is refused if anything else has
+        #: stated the fact meanwhile -- a lost update made visible instead of silent.
+        #:
+        #: NOT persisted. The crew log is the authority across restarts, and a counter
+        #: carried on a line would claim an order between two processes that never
+        #: compared their reads.
+        self._manager_revision: int = 0
         #: True only on a slot THIS gateway process minted through the
         #: session-control create verb. Never persisted or restored: it is the
         #: witness that ``_created_by`` / ``_created_by_sid`` were stamped by the

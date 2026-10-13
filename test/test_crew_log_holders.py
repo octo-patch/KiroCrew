@@ -1432,7 +1432,7 @@ class TestScannerFaults:
 
         # Patched where the LISTING resolves it. The refusal happens inside the
         # same call that lists, so it comes back as that call's own fault.
-        monkeypatch.setattr(crew_store, "_checked_crew_log_root", refuse)
+        monkeypatch.setattr(crew_store, "checked_crew_log_root", refuse)
         assert SessionTree().reading().incomplete is True
         assert ReferenceScanner().references().incomplete is True
 

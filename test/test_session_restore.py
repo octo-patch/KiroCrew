@@ -1259,8 +1259,10 @@ class TestPartialRehydrateRollsBack:
         real = metadata_codec.apply
         marked_when_raised: list[bool] = []
 
-        def _apply_then_fail(state_, slot, meta, purpose):
-            applied = real(state_, slot, meta, purpose)
+        def _apply_then_fail(state_, slot, meta, purpose, **kwargs):
+            # ``**kwargs`` carries the handed-over index the driver read once for its
+            # whole pass and hands to every build; this stub only needs to pass it on.
+            applied = real(state_, slot, meta, purpose, **kwargs)
             if slot.key == "doomed":
                 marked_when_raised.append("dashboard:doomed" in state_._restricted_keys)
                 raise RuntimeError("malformed persisted content")

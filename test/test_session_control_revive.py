@@ -2357,3 +2357,88 @@ def test_the_archived_link_probe_reads_getters_the_session_manager_actually_has(
     assert names >= {"get_origin_link", "get_slack_link", "get_mirror_link"}
     missing = {n for n in names if not callable(getattr(SessionManager, n, None))}
     assert not missing, f"probe reads getters SessionManager lacks: {sorted(missing)}"
+
+
+# ── a revived slot is built after boot, so its manager has to be read ────────
+
+
+def test_revive_resolves_the_manager_of_the_slot_it_builds(tmp_path, monkeypatch):
+    """A revive BUILDS a slot, long after the boot reconstruction has finished.
+
+    The slot's metadata line carries no manager -- the crew log is the only store -- so a
+    slot published without reading that log comes up with the field empty, which reads as
+    "the creator holds it". The handoff then silently reverts: the giver gets send, read,
+    stop and close back on a session the log records as driven by someone else, and the recorded
+    manager is refused ``not_creator``. A grant handed back to someone recorded as not
+    having it.
+
+    Pinned on the CALL rather than on a staged log, because what went wrong four times on
+    this line is a build path that forgot to ask. The resolver is one helper precisely so
+    this assertion is the same one for every path that builds a slot.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    key = _archive(state, caller, peer)
+
+    resolved: list[str] = []
+    real = sc.resolve_slot_manager
+
+    async def _traced(state_, slot, **kwargs):
+        resolved.append(slot.key)
+        return await real(state_, slot, **kwargs)
+
+    monkeypatch.setattr(sc, "resolve_slot_manager", _traced)
+
+    _revive(state, caller, key)
+
+    assert key in state._slots, "the revive published the slot"
+    assert resolved == [key], "and the slot it built went through the manager resolver"
+
+
+def test_revive_publishes_the_recorded_manager_not_the_creator(tmp_path, monkeypatch):
+    """The outcome the call buys: the revived slot comes up under the manager the log
+    records, and the giver is refused on the verbs a handoff moves."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    conductor = _slot(state, "chat-conductor")
+    # The GIVER is a separate, fenced session: an agent-created lead that made this
+    # worker and then handed it on. The fence is what a silent revert hands back, and it
+    # only applies to a fenced caller -- so the refusal below has to be asked of the
+    # lead, not of the unfenced tab doing the reviving.
+    lead = _slot(state, "chat-lead")
+    lead._created_by = "chat-owner-tab"
+    peer._created_by = lead.key
+    key = _archive(state, caller, peer)
+    # The session was handed over before it was closed, so the crew log's handed-over
+    # index names it and the log is authoritative for it. Recorded the way the handoff
+    # records it -- and NOT on the slot's own line, which the revoked giver can write.
+    from kiro_crew.crew_log import handed_over
+
+    handed_over.reset_caches()
+    assert handed_over.record_handed_over(key)
+
+    monkeypatch.setattr(sc, "_manager_still_admissible", lambda *_a, **_k: None)
+    real = sc.resolve_slot_manager
+
+    async def _with_a_recorded_handoff(state_, slot, **kwargs):
+        return await real(
+            state_,
+            slot,
+            slot_manager=lambda k, _t: ((conductor.key, True) if k == key else ("", True)),
+            # The occupancy rides the same seam, so an injected reader cannot
+            # leave the key and its identity disagreeing about the same log.
+            slot_manager_tab=lambda k, _tab: (conductor._tab_id if k == key else ""),
+        )
+
+    monkeypatch.setattr(sc, "resolve_slot_manager", _with_a_recorded_handoff)
+
+    _revive(state, caller, key)
+
+    revived = state._slots[key]
+    assert revived._manager == conductor.key, "the recorded manager is in control"
+    assert sc.manager_of(revived) == conductor.key
+    with pytest.raises(sc.SessionControlError) as exc:
+        sc.authorize_target(state, caller_session_key=_key(lead), target=key, operation="send")
+    assert exc.value.code == "not_creator", "the giver does not get the reach back"

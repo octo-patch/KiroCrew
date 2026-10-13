@@ -132,6 +132,7 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _load_restore_cfg,
     _local_turn_generation,
     _local_turn_prompt,
+    _read_handoff_index,
     _rebase_rehydrated_refresh_mark,
     _reconcile_local_turn_marker,
     _rehydrate_slot_title,

@@ -116,6 +116,7 @@ from kiro_crew.dashboard.arrival_folders import (
 )
 from kiro_crew.dashboard.chat_persistence import (
     _build_message_entry_uncached,
+    _read_handoff_index,
     save_slot_off_loop,
     session_transcript_remains,
     session_was_deleted,
@@ -2448,6 +2449,12 @@ async def _install_arrived_bundle(
         "agent": resolved_agent,
     }
 
+    # The handed-over index, read OFF THE LOOP and handed to the materialiser as a
+    # value: its hydrate is loop-affine, and the codec takes this answer rather than
+    # reading the file per slot. Taken HERE, before the cap re-check below, because that
+    # check must have no await between it and the creation it guards.
+    handoff_index = await asyncio.to_thread(_read_handoff_index)
+
     # Re-check the cap HERE, with no await between this test and the creation
     # inside the shared materialiser below. The check at the top of the handler
     # is necessary but not sufficient: body parsing and agent resolution await,
@@ -2506,6 +2513,8 @@ async def _install_arrived_bundle(
         # Rows arrive with the id _build_redacted_rows minted; minting stays on
         # for any row that somehow lacks one, so none lands id-less.
         mint_missing_mids=True,
+        # Read in this handler's own worker-thread hop above.
+        handoff_index=handoff_index,
     )
     sm_key = effective_session_key(slot)
     sessions = getattr(state, "sessions", None)

@@ -1734,7 +1734,7 @@ class TestRestoredEntriesCarryNoSenderStamp:
 
         state = _make_state(tmp_path)
         sender = state.get_or_create_slot("sender-slot")
-        stamp = send_origin_meta(state, "sender-slot")
+        stamp = send_origin_meta(state, "sender-slot", manager_fenced=False)
 
         assert send_origin_slot(stamp) == "sender-slot"
         assert send_origin_tab(stamp) == sender._tab_id

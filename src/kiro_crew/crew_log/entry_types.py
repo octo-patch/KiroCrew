@@ -893,6 +893,113 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
         ),
     ),
     EntryType(
+        "session/manager_set",
+        "Who drives this session from now on: another session, or nobody but its creator.",
+        (
+            Field(
+                "slot",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The session this entry is about, repeated from the unit header so "
+                    "a reader holding the entry alone can act on it. Required: the "
+                    "manager is keyed by slot, and an entry that names no slot states "
+                    "nothing a rebuild could apply."
+                ),
+            ),
+            Field(
+                "manager",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The slot key of the session that manages this one from now on, "
+                    "resolved by the gateway from the calling connection's own "
+                    "authorization rather than taken from a caller's argument. "
+                    "Required and non-empty on a handoff: this entry IS the statement "
+                    "that the manager changed. Empty ONLY alongside to_creator, which "
+                    "is the statement that there is no manager to name."
+                ),
+            ),
+            Field(
+                "to_creator",
+                JSON_BOOL,
+                note=(
+                    "True when this entry REVERTS the session to its creator, which "
+                    "leaves it with no manager at all. Present only on that statement, "
+                    "and the flag rather than the empty manager is what carries it: an "
+                    "entry whose manager is empty for any other reason is unprovable "
+                    "and a reader decides nothing from it.\\n\\n"
+                    "The fold needs this because the two statements a rebuild may have "
+                    "to apply are not symmetrical. One names a successor, and an entry "
+                    "that can only do that cannot CLEAR a manager -- so a metadata line "
+                    "naming a manager the log took away would survive every restart, "
+                    "re-granting a reach the revert removed."
+                ),
+            ),
+            Field(
+                "previous",
+                JSON_STRING,
+                note=(
+                    "The manager this one replaced, for a reader of the log. Absent "
+                    "when the gateway could not name it. No fold reads it: a rebuild "
+                    "takes the current answer from manager and to_creator alone, so "
+                    "the history and the current answer are stated once each."
+                ),
+            ),
+            Field(
+                "slot_tab",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "WHICH SESSION under that slot name this entry is about: the tab "
+                    "identity of the target. Required, because ``slot`` is a name and a "
+                    "closed session's name can be taken by a new one -- and both "
+                    "sessions' units then sit in the same slot's store, the newer one "
+                    "holding no manager entry at all. A read qualified by name alone "
+                    "falls through the newer unit to the older one's grant, and the "
+                    "replacement inherits a reach nobody gave it.\n\n"
+                    "Checking the identity when the value is COMPARED cannot reach "
+                    "that: the grant was written for a different session and nothing "
+                    "recorded which. So the identity is on the record. A read matches "
+                    "entries against the asking session's own identity, passes over "
+                    "every other incarnation's, and answers 'no handoff was recorded' "
+                    "for a session with no entry of its own."
+                ),
+            ),
+            Field(
+                "manager_tab",
+                JSON_STRING,
+                note=(
+                    "The OCCUPANCY of the manager key: the tab identity of the session "
+                    "this was handed to. A slot key is a name a later session can "
+                    "retake, and the authorization compare is key to key -- so without "
+                    "this a new occupant of the manager's key reads as the session that "
+                    "was handed the worker, and inherits a reach nobody gave it.\n\n"
+                    "A rebuild REFUSES rather than resolves when the key is occupied by "
+                    "a different tab: the recorded manager is gone, the occupant is not "
+                    "it, and no entry says who holds the session now. Absent on an entry "
+                    "written before the field existed, which a reader treats as "
+                    "unverifiable occupancy and refuses the same way -- the key may have "
+                    "been retaken and the entry cannot say it was not."
+                ),
+            ),
+        ),
+        note=(
+            "Recorded on the session that MOVED, which is where session/opened.parent "
+            "and session/adopted already put an edge about it -- one axis, one place to "
+            "read it.\\n\\n"
+            "It is a separate type from session/adopted on purpose. An adoption moves "
+            "where the sidebar PUTS a session; this moves who may DRIVE it, and the two "
+            "are different powers: a conductor may adopt a session it already reaches "
+            "without being handed anything, and a rebuild that read the manager off an "
+            "adoption would hand every adopter the authorization as well.\\n\\n"
+            "This entry is what makes a handoff durable. The gateway publishes the new "
+            "manager only once this entry is on disk, and a start with no entry for a "
+            "slot -- or a log it cannot read -- falls back to the session that CREATED "
+            "it, which is the reach that gateway had before any handoff."
+        ),
+    ),
+    EntryType(
         "session/released",
         "This session's parent let it go, so it stands on its own again.",
         (

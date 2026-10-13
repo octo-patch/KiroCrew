@@ -8,6 +8,11 @@ wrong caller and a record that says the tree moved when it did not.
 Every refusal is asserted against the REAL slot objects, the same rule the rest of the
 session-control suite follows: the guards read ``memory_mode`` / ``workspace`` / ``_app``
 off the production class, and a permissive double would let a dead guard look alive.
+
+The STRUCTURAL tests here name ``_reparent_target``, which is where the ordering they
+pin lives: it is the body ``adopt_target`` and ``session_handoff`` share, and an
+ordering asserted on a two-line wrapper would assert nothing. The handoff's own rules
+are in ``test_session_handoff.py``.
 """
 
 from __future__ import annotations
@@ -135,6 +140,12 @@ def _emitted(monkeypatch, *, landed: bool = True) -> list[dict]:
     the durable outcome through ``on_settled`` and a stub that recorded the call and
     stayed silent would leave every success path sitting on the wait until it timed out.
     Pass ``landed=False`` to stand in for a write the writer gave up on.
+
+    ``session/manager_set`` is captured beside the two tree edges because the handoff
+    waits on it the same way -- it is that verb's commit point, so an unstubbed one
+    leaves every handoff here waiting out the commit bound and then refusing
+    ``handoff_not_recorded``. The adopt and release verbs never emit it, so their own
+    recorded lists are unchanged by its presence.
     """
     calls: list[dict] = []
 
@@ -156,6 +167,11 @@ def _emitted(monkeypatch, *, landed: bool = True) -> list[dict]:
         emit,
         "on_session_released",
         lambda sid, **kw: _record("release", sid, kw),
+    )
+    monkeypatch.setattr(
+        emit,
+        "on_manager_set",
+        lambda sid, **kw: _record("manager", sid, kw),
     )
     return calls
 
@@ -1219,7 +1235,7 @@ def test_a_slot_appearing_during_the_hop_does_not_supply_the_id(tmp_path, monkey
 
 @pytest.mark.parametrize(
     ("verb", "emitter"),
-    [("adopt_target", "on_session_adopted"), ("release_target", "on_session_released")],
+    [("_reparent_target", "on_session_adopted"), ("release_target", "on_session_released")],
 )
 def test_the_sid_refresh_sits_after_the_final_authorization(verb: str, emitter: str):
     """Structural, because placing this refresh EARLIER leaves the window it closes open.
@@ -1260,7 +1276,7 @@ def test_the_sid_refresh_sits_after_the_final_authorization(verb: str, emitter: 
 
 @pytest.mark.parametrize(
     ("verb", "resolver"),
-    [("adopt_target", "_recorded_sid_of"), ("release_target", "_recorded_sid_of")],
+    [("_reparent_target", "_recorded_sid_of"), ("release_target", "_recorded_sid_of")],
 )
 def test_the_slot_capture_precedes_the_resolutions_own_suspension(verb: str, resolver: str):
     """The identity capture has to be older than every suspension the id crosses.
@@ -1467,7 +1483,7 @@ def _boom(_key: str) -> bool:
 
 @pytest.mark.parametrize(
     ("verb", "emitter"),
-    [("adopt_target", "on_session_adopted"), ("release_target", "on_session_released")],
+    [("_reparent_target", "on_session_adopted"), ("release_target", "on_session_released")],
 )
 def test_no_suspension_between_the_final_authorization_and_the_append(verb: str, emitter: str):
     """Structural, because the hazard is an ORDERING no behaviour test fully covers.

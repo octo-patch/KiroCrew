@@ -312,13 +312,13 @@ def test_discard_notifier_writes_nothing_without_a_live_matching_sender(tmp_path
 
     assert _notify(None) is False
     assert _notify({}) is False
-    assert _notify(sc.send_origin_meta(state, target.key)) is False
+    assert _notify(sc.send_origin_meta(state, target.key, manager_fenced=False)) is False
     assert _notify({sc.SEND_ORIGIN_META_KEY: {"slot": "chat-gone", "tab": sender._tab_id}}) is False
     assert _notify({sc.SEND_ORIGIN_META_KEY: {"slot": sender.key, "tab": "another-tab"}}) is False
     assert _notify({sc.SEND_ORIGIN_META_KEY: {"slot": sender.key}}) is False
     assert _notices(sender) == []
 
-    assert _notify(sc.send_origin_meta(state, sender.key)) is True
+    assert _notify(sc.send_origin_meta(state, sender.key, manager_fenced=False)) is True
     assert len(_notices(sender)) == 1
 
 
@@ -332,7 +332,7 @@ def test_an_unknown_discard_cause_writes_nothing_and_does_not_raise(tmp_path):
     assert (
         sc.notify_send_origin_discarded(
             state,
-            entry_meta=sc.send_origin_meta(state, sender.key),
+            entry_meta=sc.send_origin_meta(state, sender.key, manager_fenced=False),
             target_slot=target,
             text="t",
             cause="not-a-cause",

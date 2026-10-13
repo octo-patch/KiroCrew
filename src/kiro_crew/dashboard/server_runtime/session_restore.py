@@ -40,6 +40,21 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
     # Session restores spawn a kiro-cli process per restored tab — the last
     # large group of the startup battery, so it too gets a cautious-boot window.
     await cautious_boot.pause_before("session restore")
+
+    async def _rebuild_managers() -> None:
+        """The manager rebuild, with its import inside the task that needs it.
+
+        The import is HERE and not in the enclosing function because the enclosing
+        function runs on the boot path, before readiness, and this one does not: it is
+        scheduled as a task below and runs after the restore returns. Session control is
+        an optional subsystem and importing it pulls its whole dependency set in, so at
+        module or boot scope that cost is paid by every start -- including starts with
+        session control switched off, which never reach this task at all.
+        """
+        from kiro_crew.dashboard import session_control as _session_control
+
+        await _session_control.rebuild_managers_from_log(state)
+
     with state.suspend_slots_push():
         await chat.restore_open_slots_async(state)
         restored = await chat.restore_recent_sessions_async(
@@ -55,6 +70,24 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
         # Reseed it past the highest restored index so the next new chat can't
         # re-mint a colliding low index (which scrambles the tab -> session map).
         state.reseed_slot_counter()
+
+        # A session handed to another session records its manager in its own crew log,
+        # and the gateway publishes that manager only once the entry is on disk — so
+        # the log is what survives a restart and a read has to bring it back.
+        #
+        # Only a slot the crew log's handed-over index names has anything to read: an
+        # unmarked slot was decided at hydrate as held by its creator. A MARKED slot came
+        # up unresolved, so session control already refuses its manager-dependent verbs
+        # on its own -- no process-wide window is needed, because no slot that could be
+        # guessed wrong is servable before its read lands.
+        #
+        # NOT AWAITED HERE. A marked slot's read is proportional to its surviving history
+        # -- a unit is only PROVED to record no handoff by reading all of it -- so it runs
+        # as its own task rather than in front of READY. A refusal also arms the read for
+        # its own slot, so a caller that arrives first does not wait on this pass.
+        _restore_managers = asyncio.create_task(_rebuild_managers())
+        state._background_tasks.add(_restore_managers)
+        _restore_managers.add_done_callback(state._background_tasks.discard)
 
     if state._dynamic_cards is not None:
         state._dynamic_cards.seed_open_sessions()

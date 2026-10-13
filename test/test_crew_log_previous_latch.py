@@ -1268,7 +1268,7 @@ class TestTheStoreReader:
         _store(NEWEST, previous=PREDECESSOR)
 
         with unittest.mock.patch.object(
-            store, "_checked_crew_log_root", side_effect=OSError("networked data home")
+            store, "checked_crew_log_root", side_effect=OSError("networked data home")
         ):
             assert slot_chain_head(SLOT) == UNDECIDED
 

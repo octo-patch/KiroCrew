@@ -70,6 +70,12 @@ CANONICAL: dict[str, dict] = {
     },
     "session/released": {"previous_parent": {"slot": "chat-9", "sid": "acp-sess-adopter"}},
     "session/spawned": {"child": {"slot": "chat-12"}},
+    "session/manager_set": {
+        "slot": "chat-9",
+        "slot_tab": "a1b2c3d4e5f6",
+        "manager": "chat-12",
+        "previous": "chat-3",
+    },
     "turn/started": {"turn": 3, "actor": "user", "depth": 0, "message_seq": 11, "attempt": 2},
     "turn/refused": {"turn": 4, "actor": "cron", "reason": "gateway_closing", "depth": 1},
     "turn/completed": {
@@ -303,9 +309,18 @@ CANONICAL: dict[str, dict] = {
 
 
 @pytest.fixture(autouse=True)
-def _isolated_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+def _isolated_home(tmp_path, _floor_monkeypatch):
+    """Own data home per test, with the crew log armed.
+
+    Patched through ``_floor_monkeypatch`` because this fixture is AUTOUSE. The shared
+    ``monkeypatch`` is undone as a whole by any ``monkeypatch.undo()`` a test makes to
+    drop one of its own patches, which would lift this ``KIROCREW_HOME`` pin mid-test and
+    point the writes below at the operator's real data home. The floor instance is undone
+    independently, and a test that pins something itself still wins: its own
+    ``monkeypatch`` is set up after this and torn down before it.
+    """
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
     emit.reset_caches()
     yield
     emit.drain_for_shutdown(timeout=2.0)
@@ -379,7 +394,14 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # show has nothing to show anywhere else. No ``session/closed``, because the
     # gateway did not stop serving the session; no delete, because nothing was
     # deleted; and the restore's own warning goes to a gateway log that rotates away.
-    assert len(SESSION_ENTRY_TYPES) == 45
+    #
+    # The one past THAT is ``session/manager_set``, which joins its tree siblings above
+    # and goes further than they do: it is not merely declared so folds of a log carrying
+    # it keep working, it is the AUTHORITY for who drives a session, and the only store
+    # for it. The handoff verb publishes a manager only once this entry is on disk and a
+    # start rebuilds the field from the newest one per slot -- the slot's own metadata
+    # line carries no manager at all, so there is no second copy to disagree with it.
+    assert len(SESSION_ENTRY_TYPES) == 46
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

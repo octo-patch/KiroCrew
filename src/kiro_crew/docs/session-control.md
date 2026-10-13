@@ -5,14 +5,15 @@ another one, change its model, reload its agent process, and take another one un
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 34 of its tools, written for the agent that is about to use them.
+for all 35 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`, `session_retry`,
   `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_close`, `session_revive`,
-  `session_broadcast`, `session_status`, `session_adopt`, `session_release`. These reach another
+  `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`,
+  `session_release`. These reach another
   session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
@@ -349,6 +350,61 @@ Each goal carries the panel's state word (`in-progress`, `needs-you`, `done`,
 failed (`verified=false`); a completed goal never checked either way reads
 `done`.
 
+### `session_handoff`
+
+Takes `target` and `to`. It gives a session to ANOTHER session, which manages it from
+then on -- the one verb that moves who may drive a session rather than what that
+session is doing.
+
+Use it when the session that should be running a worker is not the one that opened it.
+Open a conductor, hand each worker to that conductor, and from then on the conductor
+can send to them, read them, stop them, close them, adopt or release them, and hand
+them on again. You cannot, unless it hands one back: a session has one direct manager
+at a time, so the reach moves rather than being shared.
+
+Only the session that manages the target right now may hand it over -- its creator
+until a handoff says otherwise -- and the recipient has to be a session you also
+manage, in your own workspace, bound to the same memory store as you, and not a crew
+member's own DM. The person driving the dashboard is not fenced and may hand over any
+session in the workspace.
+
+What does NOT move is who CREATED the session. That stays on the record, and it is
+what `session_create` and `session_fork` read, so a manager that was handed a worker
+cannot open new sessions or forks against the giver's memory.
+
+| Refusal | Why |
+|---|---|
+| `not_creator` | You do not manage the target, or you do not manage the session you named as the recipient. A report cannot hand itself over, and a bystander cannot hand over somebody else's session. |
+| `already_manager` | The recipient already manages the target, or the recipient IS the target. There is no change to record. |
+| `member_recipient` | The recipient is a crew member's own DM session. That is the member's own operating surface, not a session work runs in. |
+| `recipient_other_store` | The recipient is bound to a different memory store than you are, or than the session you are handing over is. A store is a separate memory silo, so a session over there runs under another principal. Both comparisons are made, and the second is the one a restart re-applies — a handoff admitted on yours alone would be accepted now and dropped at the next start. A session you created inherits your own binding, so the sessions this verb is for pass this by construction. |
+| `handoff_unresolved` | The handoff could not be recorded AND the correction that would have taken it back could not be recorded either, so which session manages the target is now unknown. Nothing was published and nothing is being claimed: the session answers no one until the gateway reads the log again, which it retries on its own. Not retryable by you right away — the writer that refused both entries has to recover first. |
+| `manager_grant_inadmissible` | The crew log records a session managing this one that cannot hold it now — it closed, or it was rebound to another principal's memory store — and no transfer back was ever recorded. So nobody drives this session until a fresh handoff says who does: not the recorded manager, and not the session that gave it away. Your own reach is unaffected; hand it over again to resolve it. |
+| `manager_unresolved` | This session was handed over at some point, and which session manages it now has not been read from the crew log yet — it was rebuilt from history after startup, or its log could not be read. Sessions that were never handed over never see this. An empty answer is not the same as no answer: the gateway refuses rather than assume the creator still holds it, because that is what would hand a revoked giver its reach back. Retryable, and the gateway schedules that read itself when it refuses you, so it clears without a restart. |
+| `deputy_refused` | The recipient reaches only the sessions it created, and the one you are handing over is not one of them. Handing it over would let the recipient drive a session that reaches further than it does, which is the deputy the containment boundary exists to prevent. A lead handing its own workers to its own conductor, and a person moving their own tabs between each other, both pass. |
+| `recipient_replaced` | The session you named stopped being the one that was admitted while the handoff was being written -- closed and reopened under the same key, rebound to another memory store, or newly linked to a channel. Retryable: a fresh call judges the session open now. |
+| `tree_write_failed` | HTTP 500: the record of the handoff could not be written, so nothing was handed over -- that record IS the handoff. The manager it had still manages it. |
+| `handoff_not_recorded` | The handoff's own manager record did not reach disk, so nothing was handed over and the manager it had still manages it. Retryable. A record still queued when the wait ended is taken back on the log, so a later retry is judged fresh rather than against a half-written move. |
+| `tree_write_pending` | An earlier tree write for one of the two sessions has not settled, so this move cannot be decided against the tree yet -- or your own move was handed to the writer and has not landed. Retryable: read the session tree, then call again. Both endpoints of a handoff are fenced this way while a write is in flight, which is what stops two opposite handoffs from being admitted against the same stale tree. |
+
+A handoff also nests the target under its new manager in the sidebar, through the same
+record `session_adopt` writes, so it carries the same tree refusals as the row below.
+That record is what makes the handoff durable: it is written and waited for first, and
+only then does the new manager take effect. The crew log is the ONLY place the manager
+lives -- the session's own metadata line does not carry it -- so there is no second copy
+to report on and a handoff that returns at all is one the log carries.
+
+The next gateway start reads the manager from that record, and RE-CHECKS the recipient
+before it publishes one: a handoff whose recipient has since been rebound to another
+principal's store, linked to a channel or closed does not take effect — and the session
+is then driven by NOBODY until a fresh handoff says who holds it. Not by the recipient,
+which cannot hold it, and not by the giver either: the log recorded the session going
+away and never recorded it coming back, so handing it to the giver would be the gateway
+inventing a transfer nobody made. Your own sessions are unaffected, because what you can
+reach was never decided by this field — you can still adopt, release or close such a
+session. The log says what was recorded; whether that record is still allowed is asked
+again every time it is applied.
+
 ### `session_adopt` and `session_release`
 
 Both take only `target`. They change where a session sits in the sidebar and
@@ -367,11 +423,11 @@ it had is kept in the record.
 
 | Refusal | Why |
 |---|---|
-| `would_cycle` | The target is already above you, so the tree would hold a loop. A loop is a shape the tree cannot show — it marks every session on it and nests none of them — so this would flatten a branch rather than move it. |
+| `would_cycle` | The target is already above you, so the tree would hold a loop. A loop is a shape the tree cannot show — it marks every session on it and nests none of them — so this would flatten a branch rather than move it. Checked against the settled tree PLUS any move already handed to the writer, so a loop closed by two moves in flight at once is refused too. |
 | `already_root` | On release only: the target has no parent, so there is nothing to let go. |
 | `not_parent` | On release only: the target hangs under a third session. Only that session, or the target itself, can release it. |
 | `tree_unavailable` | The session tree is not being recorded on this gateway, so there is nowhere to write the edge. Nothing moved, and the tool says so rather than reporting a success the sidebar will not show. |
-| `tree_not_ready` | The tree cannot be read whole right now — the gateway has not seeded it yet, or a unit's log could not be read. Retryable: a decision taken on a partial tree could admit the loop `would_cycle` exists to refuse, so it is refused instead of guessed. |
+| `tree_not_ready` | The tree cannot be read whole right now — the gateway has not seeded it yet, a unit's log could not be read, or the moves already in flight could not be folded in. Retryable: a decision taken on a partial tree could admit the loop `would_cycle` exists to refuse, so it is refused instead of guessed. |
 | `tree_write_pending` | An earlier move of this same session is still being written. Retryable: read the tree first, because the earlier write may have landed. |
 | `tree_write_failed` | HTTP 500: the move could not be written to the crew log and the writer gave up, so the session tree is unchanged. Unlike `tree_write_pending`, nothing is still in flight. |
 

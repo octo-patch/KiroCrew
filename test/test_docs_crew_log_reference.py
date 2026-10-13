@@ -56,15 +56,22 @@ SESSION_TYPES_DOC = _DOCS / "session-types.md"
 #: A live type's subsection heading: ``### `domain/action` ``.
 _SUBSECTION_RE = re.compile(r"^### `([a-z]+/[a-z_]+)`\s*$", re.MULTILINE)
 
-#: A summary-table row's first cell, which links to the subsection anchor.
-_SUMMARY_ROW_RE = re.compile(r"^\| \[`([a-z]+/[a-z_]+)`\]\(#[a-z]+\) \|", re.MULTILINE)
+#: A summary-table row's first cell, which links to the subsection anchor. The anchor
+#: half allows an underscore for the same reason the type half does: the generated
+#: anchor drops the slash and the backticks and KEEPS the underscore, so
+#: ``session/manager_set`` links to ``#sessionmanager_set``. Without it such a row
+#: simply did not match, and the row-count and table-matches-subsections checks both
+#: reported the type as undocumented while it was sitting in the table.
+_SUMMARY_ROW_RE = re.compile(r"^\| \[`([a-z]+/[a-z_]+)`\]\(#[a-z_]+\) \|", re.MULTILINE)
 
 #: A fenced ``json`` block. Every one on this page is a single entry line.
 _JSON_BLOCK_RE = re.compile(r"^```json\n(.*?)\n```$", re.MULTILINE | re.DOTALL)
 
 #: The count the page's own prose claims. Pinned so adding a subsection without
 #: updating the page's opening line fails here rather than misleading a reader.
-EXPECTED_LIVE_TYPES = 41
+#: Counts ``session/manager_set`` too, the entry a handoff IS: the gateway publishes a
+#: new manager only once it is on disk, so it is documented beside the tree edges.
+EXPECTED_LIVE_TYPES = 42
 
 #: The only two emitters that write a session entry. Kept as a literal rather than
 #: read from ``FIXED_SOURCES``, which holds the crew-side values too.
@@ -181,9 +188,10 @@ def test_session_examples_name_only_a_session_emitter(block: str) -> None:
     assert json.loads(block)["src"] in SESSION_SOURCES
 
 
-#: A summary row's type together with its ``Emitter`` cell (the third column).
+#: A summary row's type together with its ``Emitter`` cell (the third column). The
+#: anchor half allows an underscore for the reason :data:`_SUMMARY_ROW_RE` does.
 _EMITTER_CELL_RE = re.compile(
-    r"^\| \[`([a-z]+/[a-z_]+)`\]\(#[a-z]+\) \| [^|]*\| ([^|]*)\|", re.MULTILINE
+    r"^\| \[`([a-z]+/[a-z_]+)`\]\(#[a-z_]+\) \| [^|]*\| ([^|]*)\|", re.MULTILINE
 )
 
 

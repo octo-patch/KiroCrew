@@ -100,7 +100,18 @@ def test_session_send_stamps_the_sending_slot(tmp_path):
 
     assert out["started"] is False
     entry_meta = target._queue[0]["meta"]
+    # ROUTING names where a drop notice may be addressed; PROVENANCE records who sent it
+    # and whether the ownership fence applied, which is what the drain re-checks. Two
+    # keys because the restore path strips the first and must keep the second.
     assert entry_meta[sc.SEND_ORIGIN_META_KEY] == {"slot": caller.key, "tab": caller._tab_id}
+    assert entry_meta[sc.ADMISSION_PROVENANCE_META_KEY] == {
+        "sender": caller.key,
+        "fenced": False,
+        # The sender's IDENTITY rides in the provenance, because this record outlives
+        # the session that made it and a key alone names whoever holds that key at the
+        # drain -- including a replacement the sender's grant was taken from.
+        "tab": caller._tab_id,
+    }
     # The stamp rides ALONGSIDE the containment snapshot; it never displaces it,
     # because that snapshot is the drain's authorization input.
     assert entry_meta[sc.QUEUED_CONTAINMENT_META_KEY]
@@ -203,14 +214,17 @@ def test_requeued_steer_notifies_its_sender(tmp_path):
     target._pending_steers = ["stop and reread the spec"]
     target._steer_admissions["stop and reread the spec"] = {
         **sc.containment_meta(state, target),
-        **sc.send_origin_meta(state, caller.key),
+        **sc.send_origin_meta(state, caller.key, manager_fenced=False),
     }
 
     cr._requeue_unconsumed_steers(state, target)
-    assert target._queue[0]["meta"][sc.SEND_ORIGIN_META_KEY] == {
-        "slot": caller.key,
+    requeued = target._queue[0]["meta"]
+    assert requeued[sc.SEND_ORIGIN_META_KEY] == {"slot": caller.key, "tab": caller._tab_id}
+    assert requeued[sc.ADMISSION_PROVENANCE_META_KEY] == {
+        "sender": caller.key,
+        "fenced": False,
         "tab": caller._tab_id,
-    }
+    }, "the requeue keeps what the drain re-checks, not only where to report"
 
     _link(target)
     cr._drop_stale_admissions(state, target)
@@ -275,7 +289,7 @@ def test_self_send_gets_one_notice_not_two(tmp_path):
         "my own follow-up",
         _never_runs,
         state,
-        extra_meta=sc.send_origin_meta(state, slot.key),
+        extra_meta=sc.send_origin_meta(state, slot.key, manager_fenced=False),
     )
 
     _link(slot)
@@ -307,7 +321,7 @@ def test_exempt_entries_are_not_dropped_so_nobody_is_told(tmp_path):
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-1")
     slot = _busy(_link(state.get_or_create_slot("chat-2")))
-    origin = sc.send_origin_meta(state, caller.key)
+    origin = sc.send_origin_meta(state, caller.key, manager_fenced=False)
     slot.queue_append("cron fired", CRON_NOTIFICATION_KIND, dict(origin))
     slot.queue_append("subagent finished", SUBAGENT_COMPLETION_KIND, dict(origin))
 
@@ -326,25 +340,45 @@ def test_send_origin_meta_omits_an_empty_key(tmp_path):
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-7")
 
-    assert sc.send_origin_meta(state, "") == {}
-    assert sc.send_origin_meta(state, "chat-7") == {
-        sc.SEND_ORIGIN_META_KEY: {"slot": "chat-7", "tab": caller._tab_id}
-    }
+    assert sc.send_origin_meta(state, "", manager_fenced=False) == {}
+    for fenced in (False, True):
+        assert sc.send_origin_meta(state, "chat-7", manager_fenced=fenced) == {
+            sc.SEND_ORIGIN_META_KEY: {"slot": "chat-7", "tab": caller._tab_id},
+            sc.ADMISSION_PROVENANCE_META_KEY: {
+                "sender": "chat-7",
+                "fenced": fenced,
+                "tab": caller._tab_id,
+            },
+        }
 
 
 def test_send_origin_meta_omits_a_key_with_no_tab_identity(tmp_path):
-    """A stamp whose identity cannot be checked later must not exist.
+    """A ROUTING stamp whose identity cannot be checked later must not exist.
 
     Two shapes reach here: a key naming no live slot, and a live slot carrying no
-    ``_tab_id``. Stamping either would leave the drop resolving a recipient it
-    cannot verify, which is the whole hazard, so both omit the key instead.
+    ``_tab_id``. Stamping routing for either would leave the drop resolving a
+    recipient it cannot verify, which is the whole hazard, so both omit it.
+
+    PROVENANCE is still written, because nothing is ever written THROUGH it -- it is
+    only compared. Omitting it with the routing stamp is what let a tab-less sender's
+    queued message skip the drain's sender re-check.
+
+    Its identity field is then BLANK rather than absent, and the drain reads a blank one
+    key-only: an identity nobody has cannot be compared, and refusing instead would drop
+    text whose sender was authorized to send it.
     """
     state = _make_state(tmp_path)
     tabless = state.get_or_create_slot("chat-9")
     tabless._tab_id = ""
 
-    assert sc.send_origin_meta(state, "chat-never-existed") == {}
-    assert sc.send_origin_meta(state, "chat-9") == {}
+    for key in ("chat-never-existed", "chat-9"):
+        meta = sc.send_origin_meta(state, key, manager_fenced=True)
+        assert sc.SEND_ORIGIN_META_KEY not in meta, key
+        assert meta[sc.ADMISSION_PROVENANCE_META_KEY] == {
+            "sender": key,
+            "fenced": True,
+            "tab": "",
+        }
 
 
 def test_the_stamp_carries_both_fields_or_neither(tmp_path):
@@ -356,7 +390,7 @@ def test_the_stamp_carries_both_fields_or_neither(tmp_path):
     """
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-1")
-    meta = sc.send_origin_meta(state, caller.key)
+    meta = sc.send_origin_meta(state, caller.key, manager_fenced=False)
 
     assert sc.send_origin_slot(meta) == caller.key
     assert sc.send_origin_tab(meta) == caller._tab_id
@@ -534,3 +568,118 @@ def test_unverified_mirror_wording_reaches_the_sender_too(tmp_path):
     sent = _notices(caller)[-1]
     assert "could not be verified" in sent
     assert "gained an outbound channel mirror" not in sent
+
+
+# ── Provenance describes who authorised THIS TEXT ────────────────────────────
+
+
+def test_editing_a_queued_entry_drops_the_admission_that_described_the_old_text(tmp_path):
+    """The invariant, at the one place a queued entry's text is replaced.
+
+    The stamp says who authorised the words that were admitted. Replace the words and
+    it describes nothing in the entry: the sender did not write what is there now, so
+    its reach is not the authorization the entry would run under.
+    """
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    target = _busy(state.get_or_create_slot("chat-2"))
+    _send(state, caller, "chat-2", "please summarize the log")
+
+    entry = target._queue[0]
+    assert sc.send_origin_sender(entry.get("meta")) == caller.key, "premise: it is stamped"
+
+    assert target.queue_edit_by_id(
+        entry["id"], "actually, leave the log alone", directive_user_origin=True
+    )
+
+    assert entry["content"] == "actually, leave the log alone"
+    assert sc.send_origin_sender(entry.get("meta")) == "", "the stamp went with the old text"
+    assert sc.send_origin_manager_fenced(entry.get("meta")) is False
+    assert entry.get("_directive_user_origin") is True, "and the editor is recorded"
+
+
+def test_an_edit_from_anything_else_drops_it_too(tmp_path):
+    """Unconditional on a replacement, not special-cased to the authenticated person.
+
+    An edit from a third session leaves a stamp that names neither the author of the
+    text nor the editor, which is the same defect wearing a different hat. A rule that
+    holds for every replacement cannot be forgotten by the next path that adds one.
+    """
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    target = _busy(state.get_or_create_slot("chat-2"))
+    _send(state, caller, "chat-2", "please summarize the log")
+    entry = target._queue[0]
+
+    assert target.queue_edit_by_id(
+        entry["id"], "a third party rewrote this", directive_user_origin=False
+    )
+
+    assert sc.send_origin_sender(entry.get("meta")) == ""
+    assert entry.get("_directive_user_origin") is None
+
+
+def test_a_handoff_does_not_delete_the_persons_edit_of_a_queued_prompt(tmp_path):
+    """The finding, end to end, and the worst version of the data-loss boundary.
+
+    A lead queues a prompt on a busy worker. The person at the dashboard edits the
+    queued row -- their words now, and the only copy of them until a save carries the
+    queue. The worker is then handed to another session, which revokes the lead's
+    reach. With the entry still carrying the lead's stamp, the sweep reads the grant as
+    demonstrably lapsed and deletes the row: fail-closed spending a human's work to
+    protect a reach nobody was exercising.
+    """
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    # FENCED, which is what makes the drain re-check the manager for this
+    # admission at all: an unfenced sender's gate never reads the manager, so
+    # without this the entry survives for a reason that has nothing to do with
+    # the edit and the test would pass while proving nothing.
+    lead._created_by = "chat-owner"
+    conductor = state.get_or_create_slot("chat-conductor")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+    _send(state, lead, "chat-worker", "run the full suite")
+    entry = worker._queue[0]
+    assert sc.send_origin_manager_fenced(entry.get("meta")) is True, "premise: fenced"
+
+    # The person edits it.
+    assert worker.queue_edit_by_id(
+        entry["id"], "run only the failing file", directive_user_origin=True
+    )
+
+    # And the worker is handed over, which is exactly what revokes the lead's reach.
+    worker._manager = conductor.key
+    worker._manager_tab = conductor._tab_id
+    assert sc.require_manager_of(state, worker) == conductor.key
+
+    cr._drop_stale_admissions(state, worker)
+
+    assert [item["content"] for item in worker._queue] == [
+        "run only the failing file"
+    ], "the person's own words were deleted by a sweep about somebody else's reach"
+    assert not _notices(lead), "and the lead is told nothing: it is not its message"
+
+
+def test_an_unedited_delivery_from_a_lapsed_sender_still_drops(tmp_path):
+    """The other half, so the exemption is about EDITS and not about the check.
+
+    Nothing was replaced here, so the stamp still describes the text, and a sender whose
+    reach demonstrably ended still has its delivery dropped and is still told.
+    """
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    lead._created_by = "chat-owner"  # fenced, as above
+    conductor = state.get_or_create_slot("chat-conductor")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+    _send(state, lead, "chat-worker", "run the full suite")
+    assert sc.send_origin_manager_fenced(worker._queue[0].get("meta")) is True
+
+    worker._manager = conductor.key
+    worker._manager_tab = conductor._tab_id
+
+    cr._drop_stale_admissions(state, worker)
+
+    assert worker._queue == [], "an unedited entry is still re-checked"
+    assert any("will not run" in notice for notice in _notices(lead))

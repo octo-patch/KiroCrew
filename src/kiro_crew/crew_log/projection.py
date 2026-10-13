@@ -4167,12 +4167,20 @@ def _supplemental_units(slot: str, name: str) -> "tuple[str, ...]":
     return session_units_for_slot(slot)
 
 
-def units_in_succession(slot: str) -> "tuple[str, ...]":
+def units_in_succession(slot: str, *, units: "tuple[str, ...] | None" = None) -> "tuple[str, ...]":
     """The slot's session units ordered by DURABLE succession rather than by the clock.
 
     Read by every fold whose answer depends on which unit is folded LAST: ``usage``,
-    whose per-turn window trims from the front, and ``agentic``, which keeps the newest
-    value per field and so lets a predecessor folded last overwrite a newer one.
+    whose per-turn window trims from the front; ``agentic``, which keeps the newest
+    value per field and so lets a predecessor folded last overwrite a newer one; and
+    the manager reconstruction, which takes the first answer from the NEWEST unit and
+    would otherwise restore a revoked manager from a predecessor.
+
+    *units* is an already-listed population to order, for a caller that listed it under
+    terms of its own -- the manager read lists STRICTLY, because it has to tell "no store
+    at this name" from "the store could not be read" and act differently on each. Passing
+    the list keeps that distinction with the caller and the ORDER here, rather than
+    duplicating one of them.
 
     The header fallthrough orders units by ``createdAt``, a wall-clock stamp: a clock
     that steps backward between two units of one slot -- an NTP correction, a VM
@@ -4202,7 +4210,7 @@ def units_in_succession(slot: str) -> "tuple[str, ...]":
     preserves every predecessor edge as a contiguous run and confines the wall clock to
     the one question the chain leaves open.
     """
-    units = session_units_for_slot(slot)
+    units = session_units_for_slot(slot) if units is None else units
     if len(units) < 2:
         # One unit (or none) has nothing to reorder, and the chain read is pure cost.
         return units

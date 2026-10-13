@@ -41,7 +41,7 @@ from collections import OrderedDict, deque  # noqa: F401
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence  # noqa: F401
 from itertools import chain, islice  # noqa: F401
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import mcp_apps_render, model_registry  # noqa: F401
 from kiro_crew.agent import kiro_agents_dir_path  # noqa: F401
@@ -142,6 +142,11 @@ from kiro_crew.sel import sel  # noqa: F401
 from kiro_crew.session_agent_selection import session_agent_selection_name  # noqa: F401
 from kiro_crew.validation import ARTIFACT_SLUG_RE  # noqa: F401
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Type-only: this module passes one of these through and never builds one, and the
+    # crew log is not something every import of this module should pull in.
+    from kiro_crew.crew_log.handed_over import HandoffIndex
+
 logger = logging.getLogger(__name__)
 
 
@@ -178,6 +183,20 @@ _SKIP_MEMBER_RESTORE: tuple[str, str] = ("", "__skip__")
 #: non-member key) — defaulting to ``None`` would silently unpin every member
 #: slot restored by a caller that forgot to prefetch.
 _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
+
+
+def _read_handoff_index() -> "HandoffIndex":
+    """One read of the handed-over index, for a build with nothing prefetched.
+
+    Named and kept here so the module lookup it makes is not written inside a
+    loop-affine build function: an async caller prefetches this in its own worker thread
+    and never reaches here, and the callers that do reach it are synchronous and off the
+    loop already. The import is function-level because the crew log is optional and this
+    module is on the boot path.
+    """
+    from kiro_crew.crew_log.handed_over import handed_over_slots
+
+    return handed_over_slots()
 
 
 _MAX_HISTORY_CHARS = 8000
@@ -512,6 +531,12 @@ def _prefetch_rehydrate_inputs(
     *member_identity* is the prefetched ``_member_restore_identity`` answer
     (dm.json is file IO too, and the apply half is loop-affine); it is resolved
     only when there is something to build.
+
+    The handed-over index is deliberately NOT among these, even though the apply half
+    needs it and cannot read it. This seam is PER SLOT, and that answer is per PASS: a
+    bulk driver takes one read before its loop and hands the same value to every slot,
+    so taking it here would restore exactly the per-slot file read the value exists to
+    remove. The one caller with a single slot and no pass reads it in its own hop.
     """
     if with_status:
         meta, readable = conv_log.get_metadata_status(history_key)
@@ -824,6 +849,10 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
     # main's restore budget plan, kept: past the budget only a pinned or crew-bound
     # tab is still built. The rest stay in history, out of the reopen seed.
     keys, looped = _open_slot_restore_plan(state.conversation_log, keys)
+    # ONE read of the handed-over index for the whole pass, before the first tab is
+    # built. Passed down as a value so no tab's construction reads it -- a hundred
+    # restored tabs cost one read of this file, and an unreadable one costs one too.
+    handoff_index = _read_handoff_index()
     skipped = 0
     # Which key the loop is on, so an abort can name the ones it never read. A
     # generator is ABANDONED by a GeneratorExit thrown AT its yield rather than by
@@ -877,6 +906,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
                     preserve_remote_only=preserve_remote_only,
                     tail=tail,
                     dropped=dropped,
+                    handoff_index=handoff_index,
                 )
             except Exception:
                 logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
@@ -1049,6 +1079,7 @@ def _apply_restored_open_slot(
     preserve_remote_only: bool = False,
     tail: list[dict] | None = None,
     dropped: set[str] | None = None,
+    handoff_index: "HandoffIndex | None" = None,
 ) -> int:
     """Turn one prefetched open-tab read into a slot; return 1 if it restored.
 
@@ -1151,6 +1182,10 @@ def _apply_restored_open_slot(
         _prefetched_member_identity=member_identity,
         _prefetched_agent=agent,
         _prefetched_effort_marker=effort_marker,
+        # Taken ONCE per restore pass by the driver, not per tab: this build is
+        # loop-affine and the index is a file. ``None`` from a driver that did not
+        # prefetch makes the build read it inline.
+        _prefetched_handoff_index=handoff_index,
         _lazy_tail=tail if messages is None else None,
     )
     return 1 if slot is not None else 0
@@ -1306,6 +1341,11 @@ async def restore_open_slots_async(state: DashboardState) -> int:
             kiro_model_map = await asyncio.to_thread(_build_kiro_model_map)
             # main's restore budget plan, kept.
             keys, looped = await asyncio.to_thread(_open_slot_restore_plan, conv_log, keys)
+            # ONE read of the handed-over index for the whole pass, off the loop, before
+            # the first tab is built. Passed down as a value, so the loop-affine build
+            # of each tab reads no file to answer "was this slot handed over" -- which
+            # is the difference between one read per boot and one per restored tab.
+            handoff_index = await asyncio.to_thread(_read_handoff_index)
             for reached, raw in enumerate(keys):
                 key = _sanitize_open_slot_key(raw)
                 if key is None or key in state._slots:
@@ -1360,6 +1400,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                         preserve_remote_only=preserve_remote_only,
                         tail=tail,
                         dropped=dropped,
+                        handoff_index=handoff_index,
                     )
                 except Exception:
                     logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
@@ -1884,9 +1925,17 @@ def _rehydrate_slot_from_history(
     _prefetched_member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     _prefetched_agent: str | None = None,
     _prefetched_effort_marker: bool = False,
+    _prefetched_handoff_index: "HandoffIndex | None" = None,
     _lazy_tail: list[dict] | None = None,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
+
+    *_prefetched_handoff_index* is the handed-over index read, which the codec needs
+    and will not read for itself (that read is a file read, and the apply half is
+    loop-affine). Every ASYNC caller passes one it took in its own worker-thread step;
+    ``None`` makes this read it inline, which serves the synchronous callers whose reads
+    already happen inline -- the same split ``_prefetched_member_identity`` makes, for
+    the same reason.
 
     *_lazy_tail* builds the slot as a sidebar row instead: every metadata field
     is applied as usual, but the transcript window is left to load on the
@@ -1968,6 +2017,13 @@ def _rehydrate_slot_from_history(
     )
     if _member_identity is _SKIP_MEMBER_RESTORE:
         return None
+    # The handed-over index, read ONCE for this build. Prefetched by every async caller
+    # in the worker-thread step above its hop; read here only for a synchronous caller,
+    # which is not on the loop, and read before the slot exists so no slot's
+    # construction waits on a file.
+    handoff_index = (
+        _read_handoff_index() if _prefetched_handoff_index is None else _prefetched_handoff_index
+    )
     purpose = _metadata_codec.Restore(
         name=slot_name,
         member=_member_identity,
@@ -1984,7 +2040,7 @@ def _rehydrate_slot_from_history(
         # ``list_sessions()``: that globs, stats and reads the first line of EVERY
         # session file, once per restored slot -- a boot with many open tabs then
         # blocks the event loop long enough to trip the LoopStallWatchdog.
-        applied = _metadata_codec.apply(state, slot, meta, purpose)
+        applied = _metadata_codec.apply(state, slot, meta, purpose, handoff_index=handoff_index)
         # Use read_messages_chained (not read_messages) so the loaded window walks
         # the tab_id ancestry across forks, matching restore_recent_sessions.
         # read_messages alone caps visible history at 200 lines from THIS file and
@@ -2117,6 +2173,12 @@ async def rehydrate_slot_from_history_async(
             kiro_model_map=kiro_model_map,
         )
     )
+    # The handed-over index, in its own hop: it is the apply half's input and the apply
+    # half is loop-affine, so it cannot be read there. Not folded into the prefetch
+    # above because that seam is per slot and this answer is per pass -- the bulk
+    # drivers take ONE and hand it to every slot, and this is the caller that has one
+    # slot and no pass.
+    handoff_index = await asyncio.to_thread(_read_handoff_index)
     # ``messages is None`` covers both "never persisted" and "closed with ✕"
     # — the prefetch already applied the same guards the synchronous form does.
     if messages is None:
@@ -2190,8 +2252,20 @@ async def rehydrate_slot_from_history_async(
         _prefetched_member_identity=_member_id,
         _prefetched_agent=agent,
         _prefetched_effort_marker=effort_marker,
+        _prefetched_handoff_index=handoff_index,
     )
     if _restored is not None:
+        # The MANAGER, for the reason the claim recovery below belongs here: this is how
+        # anything outside this module rebuilds one slot by targeted history rehydration,
+        # and the slot's line carries no manager -- the crew log is the only store. The
+        # codec marked the slot unresolved as it hydrated it, so until this read lands
+        # session control refuses the verbs whose authorization reads the manager rather
+        # than answering them from the creator, which would hand a revoked giver its
+        # reach back. Resolved through session-control's own helper, the one place that
+        # reads the log and re-validates the grant.
+        from kiro_crew.dashboard import session_control as _session_control
+
+        await _session_control.resolve_slot_manager(state, _restored)
         # Claim recovery belongs HERE, not in each caller: this function is how
         # anything outside this module rebuilds one slot from disk by TARGETED
         # history rehydration -- `channel_slots.surface_channel_session` reaches a
@@ -2287,6 +2361,7 @@ def _apply_recent_session(
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     agent: str | None = None,
     effort_marker: bool = False,
+    handoff_index: "HandoffIndex | None" = None,
 ) -> None:
     """Build the slot for one prefetched recent session.
 
@@ -2296,6 +2371,10 @@ def _apply_recent_session(
     synchronous generator and :func:`restore_recent_sessions_async` share one
     definition of the build while differing only in where the reads that feed it
     happen.
+
+    *handoff_index* is the handed-over index read the codec needs, taken ONCE per
+    restore pass rather than per session: this half is loop-affine and that read is a
+    file read. ``None`` reads it inline, which is the synchronous generator's case.
     """
     _restore_cfg = restore_cfg
     # Member keys resolve their pin from dm.json BEFORE construction (the
@@ -2329,7 +2408,13 @@ def _apply_recent_session(
     # The title is the session list's (it names an untitled session after its
     # first message); every other field comes from the line, through the one
     # field table (``slot_persistence.metadata_codec``).
-    applied = _metadata_codec.apply(state, slot, meta, purpose)
+    applied = _metadata_codec.apply(
+        state,
+        slot,
+        meta,
+        purpose,
+        handoff_index=(_read_handoff_index() if handoff_index is None else handoff_index),
+    )
     if applied.minted_tab_id is not None:
         # restore_recent_sessions runs during on_startup (event loop live) — keep
         # the _locked flock/os.close off the loop via the off-loop backfill
@@ -2405,6 +2490,10 @@ def _restore_recent_sessions_steps(
 
     kiro_model_map = _build_kiro_model_map()
     _restore_cfg = _load_restore_cfg()
+    # ONE read for the whole pass, like the model map beside it, and for the same
+    # reason: it is the same answer for every session and the build that needs it is
+    # loop-affine.
+    handoff_index = _read_handoff_index()
     for s in conv_log.list_sessions():
         key = s.get("key", "")
         slot_name = _recent_session_slot_name(key)
@@ -2428,6 +2517,7 @@ def _restore_recent_sessions_steps(
             member_identity=_member_id,
             agent=agent,
             effort_marker=effort_marker,
+            handoff_index=handoff_index,
         )
         restored += 1
         # Recover an app flag whose claim outlived its row, as the open-slots
@@ -2485,6 +2575,9 @@ async def restore_recent_sessions_async(
         sessions = await asyncio.to_thread(conv_log.list_sessions)
         kiro_model_map = await asyncio.to_thread(_build_kiro_model_map)
         _restore_cfg = await asyncio.to_thread(_load_restore_cfg)
+        # ONE read for the whole pass, off the loop, beside the model map. Passed as a
+        # value into every build below, which is loop-affine and must read no file.
+        handoff_index = await asyncio.to_thread(_read_handoff_index)
         for s in sessions:
             key = s.get("key", "")
             slot_name = _recent_session_slot_name(key)
@@ -2562,6 +2655,7 @@ async def restore_recent_sessions_async(
                 member_identity=_member_id,
                 agent=agent,
                 effort_marker=effort_marker,
+                handoff_index=handoff_index,
             )
             restored += 1
             # Same recovery, with the spool read awaited: this driver is

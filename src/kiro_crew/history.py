@@ -333,6 +333,16 @@ ROWS_ONLY_OWNED_META_KEYS: frozenset[str] = frozenset({"_type", "created_at", "l
 # absent ``origin`` restores to the empty sentinel the rehydrate paths already treat
 # that way.
 #
+# ``manager`` is deliberately NOT here, and not anywhere in this module. Who holds a
+# session is the other half of the same authorization answer, so it looks like
+# ``created_by``'s companion -- but it is not stored on the line at all. The crew log
+# is its only store, and a start rebuilds it from the newest ``session/manager_set``
+# entry per slot. A copy on the line would be a field written on every save and read
+# on every restore that nothing trusts, and the only thing it could do is disagree
+# with the log it was copied from. Whether the log has an answer for a slot is not on
+# the line either: that is the crew log's own handed-over index, which the session whose
+# grant a handoff revoked cannot write.
+#
 # What is left out is left out deliberately: ``auto_tagged``, ``human_seen``,
 # ``channel_origin`` and ``channel_folder_filed`` are MONOTONE once-flags about the
 # CONVERSATION, set and never cleared, so a shared transcript's two writers cannot

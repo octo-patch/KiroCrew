@@ -1418,11 +1418,69 @@ def _tree_settle_hooks(on_settled: "Callable[[bool], None] | None") -> _TreeSett
     return _TreeSettle(on_settled)
 
 
-#: How long :func:`awaiting_commit` waits before it answers False. Bounded because a
-#: retryable write stays queued against a filesystem that may never answer, and the
-#: callers are user-facing requests. Matched to :func:`flush`'s own default, the other
-#: place that waits on this writer.
+#: How long :func:`awaiting_settlement` waits before it answers "undecided". Bounded
+#: because a retryable write stays queued against a filesystem that may never answer,
+#: and the callers are user-facing requests. Matched to :func:`flush`'s own default, the
+#: other place that waits on this writer.
 COMMIT_WAIT_SECONDS = 5.0
+
+
+async def awaiting_settlement(
+    emit_one: "Callable[[Callable[[bool], None]], None]",
+    *,
+    what: str,
+    timeout: float = COMMIT_WAIT_SECONDS,
+) -> bool | None:
+    """Queue one append through *emit_one* and wait, bounded, for the writer's verdict.
+
+    THREE answers, because a caller that has to undo something needs to know whether
+    there is anything to undo:
+
+    * ``True`` -- the entry is on disk. Publish on it.
+    * ``False`` -- the writer gave the entry up, or there was no log to write to.
+      Nothing landed and nothing can land, so a refusal here needs no correction.
+    * ``None`` -- the bound ran out with the entry still queued. The outcome is
+      UNKNOWN and the entry may land at any time afterwards, so a caller that
+      refuses the operation must append a correction rather than assume nothing is
+      there: the queue is FIFO per unit, so a correction queued now is ordered
+      behind this entry and is what a later read of the log folds to.
+
+    The two-valued :func:`awaiting_commit` is this with ``None`` read as ``False``, for
+    the callers that publish on the append and have nothing to take back.
+
+    *emit_one* is handed the ``on_settled`` callback and must pass it to exactly one
+    emitter call, or invoke it itself when it decides there is nothing to queue --
+    otherwise this waits out the whole bound for an answer that is not coming.
+
+    The wait is SHIELDED so the bound ends this wait and not the write: the future
+    stays pending, which is what lets the writer's own verdict still resolve it after
+    this returns ``None``.
+
+    Must be called from a running loop: the callback arrives on the writer's thread
+    and is marshalled back onto this one.
+    """
+    loop = asyncio.get_running_loop()
+    settled: "asyncio.Future[bool]" = loop.create_future()
+
+    def _settle(wrote: bool) -> None:
+        def _resolve() -> None:
+            # Guarded because the bound can win the race, and setting a result on
+            # a future that already has one raises.
+            if not settled.done():
+                settled.set_result(wrote)
+
+        loop.call_soon_threadsafe(_resolve)
+
+    emit_one(_settle)
+    try:
+        return await asyncio.wait_for(asyncio.shield(settled), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "crew log: %s was still queued after %.1fs; its outcome is undecided",
+            what,
+            timeout,
+        )
+        return None
 
 
 async def awaiting_commit(
@@ -1439,40 +1497,16 @@ async def awaiting_commit(
     writer may still drop, and when the log is the only record of the fact there is
     then nothing left to explain the reversal and nothing for a retry to act on.
 
-    *emit_one* is handed the ``on_settled`` callback and must pass it to exactly one
-    emitter call, or invoke it itself when it decides there is nothing to queue --
-    otherwise this waits out the whole bound for an answer that is not coming.
+    False on a drop AND on an exhausted bound, which are the same thing to a caller
+    with nothing to take back: the record is not there to publish from. An exhausted
+    bound is not a failure of the append, which may still land, so the caller's own
+    answer should be retryable rather than final.
 
-    False on a drop AND on a timeout, which are the same thing to the caller: the
-    record is not there to publish from. A timeout is not a failure of the append,
-    which may still land later, so the caller's own answer should be retryable
-    rather than final.
-
-    Must be called from a running loop: the callback arrives on the writer's thread
-    and is marshalled back onto this one.
+    A caller that must UNDO on a refusal wants :func:`awaiting_settlement` instead:
+    the two cases this folds together need different handling there, because only one
+    of them can leave an entry on disk afterwards.
     """
-    loop = asyncio.get_running_loop()
-    settled: "asyncio.Future[bool]" = loop.create_future()
-
-    def _settle(wrote: bool) -> None:
-        def _resolve() -> None:
-            # Guarded because the timeout can win the race, and setting a result on
-            # a future that already has one raises.
-            if not settled.done():
-                settled.set_result(wrote)
-
-        loop.call_soon_threadsafe(_resolve)
-
-    emit_one(_settle)
-    try:
-        return await asyncio.wait_for(settled, timeout=timeout)
-    except asyncio.TimeoutError:
-        logger.warning(
-            "crew log: %s was not committed within %.1fs; reporting it as not recorded",
-            what,
-            timeout,
-        )
-        return False
+    return (await awaiting_settlement(emit_one, what=what, timeout=timeout)) is True
 
 
 def on_session_adopted(
@@ -1540,6 +1574,99 @@ def on_session_adopted(
     _submit(
         _job,
         "appending session/adopted",
+        session_id,
+        after=settle.after,
+        on_permanent_drop=settle.fail,
+    )
+
+
+def on_manager_set(
+    session_id: str,
+    *,
+    slot: str,
+    manager: str,
+    previous: str = "",
+    to_creator: bool = False,
+    manager_tab: str = "",
+    slot_tab: str = "",
+    on_settled: "Callable[[bool], None] | None" = None,
+) -> None:
+    """Record who drives the session *session_id* from now on.
+
+    The durable statement a handoff IS. The gateway publishes the new manager only
+    after this entry is on disk, and a start rebuilds the manager from the newest such
+    entry per slot -- so the log is the authority and the slot's own metadata line is a
+    cache of it. Written on the session that moved, where the tree edges about it
+    already live.
+
+    Separate from :func:`on_session_adopted` because the two move different powers: an
+    adoption moves where the sidebar PUTS a session, and this moves who may DRIVE it.
+    A rebuild that read the manager off an adoption would hand every adopter the
+    authorization too.
+
+    TWO statements, because the authority has to be able to say both things a rebuild
+    may have to apply:
+
+    * *manager* names a session: that session drives the target.
+    * *to_creator* with an empty *manager*: the target has NO manager and reverts to
+      whoever created it. This is what lets a rebuild CLEAR a manager the metadata
+      cache still names, which a statement that can only name a successor cannot do.
+
+    ``slot_tab`` is REQUIRED on both statements: it is the tab identity of the target
+    session, and without it the entry names a slot KEY, which is a name a later session
+    can take. Close a handed-over session, open one under the same name, restart, and an
+    entry qualified by name alone is applied to the replacement -- a grant restored to a
+    session nobody handed anything. An entry that cannot say which session it is about
+    is not written at all rather than written weakly.
+
+    ``previous`` is for a reader and is not folded, like ``previous_parent`` on an
+    adoption: the rebuild takes the manager from ``manager`` and ``to_creator`` alone.
+
+    ``on_settled`` is how a caller waits for the durable outcome, and this entry point
+    has one for the reason the adoption does -- the append IS the operation here. It is
+    called once, off the caller's thread, with ``True`` when the entry is on disk and
+    ``False`` when the write was given up on or there was no log to write to.
+    """
+    if not session_id or not slot or (not manager and not to_creator) or not slot_tab:
+        # An entry that names no slot, one that states neither a manager nor a revert,
+        # and one that cannot say WHICH session under that slot name it is about, all
+        # state nothing a rebuild could apply: this emitter must not write one. The
+        # identity is required because a slot key is a name a later session can take,
+        # and an entry without it would be applied to whichever session holds the name
+        # at the next start.
+        if on_settled is not None:
+            on_settled(False)
+        return
+    data: dict[str, Any] = {
+        "slot": slot,
+        "slot_tab": slot_tab,
+        "manager": "" if to_creator else manager,
+    }
+    if to_creator:
+        # The flag and not the empty string is what carries the meaning: an entry whose
+        # manager is empty for any other reason is unprovable and decides nothing.
+        data["to_creator"] = True
+    if previous:
+        data["previous"] = previous
+    if manager_tab and not to_creator:
+        # The occupancy of the manager key, so a rebuild can tell the session that was
+        # handed the worker from a later one that took its key. Omitted on a revert,
+        # which names no manager to be occupied.
+        data["manager_tab"] = manager_tab
+
+    settle = _tree_settle_hooks(on_settled)
+
+    def _job() -> None:
+        log = _handle(session_id)
+        if log is None:
+            settle.fail()
+            return
+        log.append("session/manager_set", data, src=_SRC_GATEWAY)
+        settle.wrote()
+
+    _submit(
+        _job,
+        "appending session/manager_set",
         session_id,
         after=settle.after,
         on_permanent_drop=settle.fail,
@@ -5049,6 +5176,7 @@ __all__ = [
     "on_model_selected",
     "on_request_configured",
     "on_session_adopted",
+    "on_manager_set",
     "on_session_closed",
     "on_session_opened",
     "on_session_released",

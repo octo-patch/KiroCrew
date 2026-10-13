@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from kiro_crew.crew_log.handed_over import HandoffIndex
     from kiro_crew.dashboard.chat_handlers import (
         _REOPEN_REREAD_EXTRA_ATTEMPTS,
         _REOPEN_REREAD_RETRY_SECS,
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
         _load_restore_cfg,
         _normalize_slot_key,
         _prepare_messages,
+        _read_handoff_index,
         _redact_meta_for_role,
         _restore_model_fields,
         _restored_agent_name,
@@ -391,6 +393,7 @@ def _materialise_slot_from_history(
     disk_meta_observed: bool = True,
     broadcast_rows: bool = True,
     mint_missing_mids: bool = False,
+    handoff_index: "HandoffIndex | None" = None,
 ) -> _ChatSlot:
     """Build and hydrate a slot from a persisted history snapshot, UNPUBLISHED.
 
@@ -538,6 +541,7 @@ def _materialise_slot_from_history(
             disk_meta_observed=disk_meta_observed,
             broadcast_rows=broadcast_rows,
             mint_missing_mids=mint_missing_mids,
+            handoff_index=handoff_index,
         )
     except BaseException:
         # ``slot`` is None if ``get_or_create_slot`` itself raised (nothing was
@@ -579,6 +583,7 @@ def _hydrate_slot_from_history(
     disk_meta_observed: bool = True,
     broadcast_rows: bool = True,
     mint_missing_mids: bool = False,
+    handoff_index: "HandoffIndex | None" = None,
 ) -> None:
     """Apply persisted metadata to *slot* and hydrate its message window.
 
@@ -586,6 +591,11 @@ def _hydrate_slot_from_history(
     caller can wrap it in the construction-count try/except above. Sets the same
     metadata field set resume has always applied and never the remote binding
     (RFC 7.1b); see the parameter docs on the public function.
+
+    *handoff_index* is the handed-over index read the codec needs and will not take for
+    itself: this half is loop-affine, and that read is a file read. Both async callers
+    prefetch it off the loop; ``None`` reads it inline, which keeps a synchronous caller
+    (a test, a tool) working without putting a read on the loop in production.
     """
     from kiro_crew.dashboard.slot_persistence import metadata_codec
 
@@ -611,6 +621,7 @@ def _hydrate_slot_from_history(
             folder_checked_id=folder_checked_id,
             disk_meta_observed=disk_meta_observed,
         ),
+        handoff_index=(_read_handoff_index() if handoff_index is None else handoff_index),
     )
     disk_total = len(all_messages)
     # ``window_limit`` is a fact about the data, not a caller switch: how many of
@@ -1015,9 +1026,18 @@ async def resume_slot_from_history(
     # The model restore needs the provider (config.json) and the effort marker
     # (a file under the config dir). Both are disk reads, so they are taken here,
     # off the loop, before the synchronous construction below.
+    #
+    # The handed-over index rides in the same hop, for the same reason and one more: the
+    # construction below is loop-affine, so a read inside it is a blocking read on the
+    # event loop, and the codec takes this answer as a VALUE rather than reading it
+    # itself. One read serves the whole build.
     _prefetched_effort = meta.get("reasoning_effort")
-    restore_cfg, effort_marker = await asyncio.to_thread(
-        lambda: (_load_restore_cfg(), _has_validated_effort_marker(_prefetched_effort))
+    restore_cfg, effort_marker, handoff_index = await asyncio.to_thread(
+        lambda: (
+            _load_restore_cfg(),
+            _has_validated_effort_marker(_prefetched_effort),
+            _read_handoff_index(),
+        )
     )
     # Re-check after the await: a concurrent resume can publish the slot while we
     # are suspended, and the publish below would skip the ownership gate above.
@@ -1389,6 +1409,9 @@ async def resume_slot_from_history(
         # passed: a refused build is discarded, and frames already pushed for it
         # would describe a session that never appears.
         broadcast_rows=not reserved,
+        # Read in this handler's own worker-thread hop above, so the loop-affine
+        # hydrate below reads no file to answer "was this slot handed over".
+        handoff_index=handoff_index,
     )
     if _member_binding is None:
         # Restore the protected choice read before construction, not the
@@ -1664,6 +1687,22 @@ async def resume_slot_from_history(
             # act or a binding recorded during this read would publish. The
             # generation re-check below the hook still covers a delete landing in
             # EITHER await.
+            # The MANAGER, read HERE for the same reason the identity read below is here
+            # and not lower: it is an off-loop crew-log read, so it is an awaiting act,
+            # and the hook must stay the LAST one. Published after the hook instead, a
+            # channel link or Slack binding recorded during this read would reach the
+            # slot with no pass left to see it.
+            #
+            # The slot's line carries no manager -- the crew log is the only store -- and
+            # the codec marked the slot unresolved as it hydrated it, so until this lands
+            # session control refuses the verbs whose authorization reads the manager
+            # rather than answering them from the creator. Resolved through
+            # session-control's own helper, the one place that reads the log and
+            # re-validates the grant.
+            from kiro_crew.dashboard import session_control as _session_control
+
+            await _session_control.resolve_slot_manager(state, slot)
+
             last_cache_gen = log._cache_gen(history_key)
             try:
                 _last, _last_readable = await _status_riding_transient(log, history_key)

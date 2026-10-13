@@ -22,6 +22,10 @@ The **Emitter** column says whether this build writes the type. Every row below 
 `live`. A type this kind owns with no producing site is kept under
 [Removed types](#removed-types) instead of being presented as live API.
 
+A row links to its own subsection. The three `dashboard/*` rows do not, because this
+page carries no subsection for them yet: a row linking to an anchor that is not here
+sends a reader nowhere, so the type is listed plainly until its subsection lands.
+
 | Type | One line | Emitter | `src` | Pairing |
 |---|---|---|---|---|
 | [`session/opened`](#sessionopened) | The crew log was created, or a claim re-attached to it. | live | `gateway` | — |
@@ -30,6 +34,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`session/adopted`](#sessionadopted) | Another session took this one over. | live | `gateway` | supersedes `session/opened.parent` |
 | [`session/released`](#sessionreleased) | This session's parent let it go. | live | `gateway` | retracts the parent edge |
 | [`session/spawned`](#sessionspawned) | This session created another one. | live | `gateway` | the creator's side of `session/opened.parent` |
+| [`session/manager_set`](#sessionmanager_set) | Who drives this session: another session, or nobody but its creator. | live | `gateway` | the authority for the manager |
 | [`turn/started`](#turnstarted) | A turn was authorized and is about to run. | live | `gateway` | opener of `turn/completed` |
 | [`turn/refused`](#turnrefused) | A gate refused to run a dispatched turn. | live | `gateway` | terminal on its own |
 | [`turn/completed`](#turncompleted) | A turn ended; its outcome and cost. | live | `acp`, `gateway` | closer, written last |
@@ -60,9 +65,9 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`radar/recorded`](#radarrecorded) | One Issue Radar crew-ledger update: the work-item fields it set and the event explaining them. | live | `gateway` | — |
 | [`work/recorded`](#workrecorded) | One work-board mutation: who acted, on which item, and the fields it set. | live | `gateway` | — |
 | [`panel/published`](#panelpublished) | One publish of a crew's own webview: the data, and the template that renders it. | live | `gateway` | — |
-| [`dashboard/instance_changed`](#dashboardinstance_changed) | One crewmate dashboard-instance change: adopted, edited or rolled back. | live | `gateway` | — |
-| [`dashboard/agentic_value`](#dashboardagentic_value) | One agent-written dynamic dashboard value. | live | `gateway` | — |
-| [`dashboard/agentic_refused`](#dashboardagentic_refused) | A refused agentic dashboard write (the mistake book's input), or a correction. | live | `gateway` | — |
+| `dashboard/instance_changed` | One crewmate dashboard-instance change: adopted, edited or rolled back. | live | `gateway` | — |
+| `dashboard/agentic_value` | One agent-written dynamic dashboard value. | live | `gateway` | — |
+| `dashboard/agentic_refused` | A refused agentic dashboard write (the mistake book's input), or a correction. | live | `gateway` | — |
 | [`card/proposed`](#cardproposed) | The agent proposed a change card, at this point in the conversation. | live | `gateway` | opener of `card/finished` |
 | [`card/finished`](#cardfinished) | A change card reached a finished status. | live | `gateway` | closer, by `card_id`; may repeat |
 | [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
@@ -316,6 +321,67 @@ states who holds it now.
 `previous_parent`; it is there for a person reading who held the session and when.
 
 **Since** — #12962.
+
+### `session/manager_set`
+
+Who drives this session from now on: another session, or nobody but its creator.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — When a handoff lands, on the session that moved. Carries no
+`turn`. The gateway waits for the append before it publishes the new manager, so
+this entry is the handoff rather than a note about one. Also written to TAKE a
+handoff back: a transfer refused after its entry was queued is corrected by a
+further entry rather than left standing, because this entry is what a start reads.
+
+**Pairing** — None. Separate from `session/adopted` on purpose: an adoption moves
+where the sidebar PUTS a session, this moves who may DRIVE it.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `slot` | string | required | The session this entry is about, repeated from the unit header so a reader holding the entry alone can act on it. | |
+| `slot_tab` | string | required | WHICH session under that name: the tab identity of the target. A slot key is a name a later session can take. | |
+| `manager` | string | required | Slot key of the session that manages this one from now on. Empty only alongside `to_creator`. | |
+| `to_creator` | bool | optional | True when this entry reverts the session to its creator, leaving it with no manager. | |
+| `previous` | string | optional | The manager it replaced, for a reader. Absent when the gateway could not name it. | |
+| `manager_tab` | string | optional | The occupancy of the manager key: the tab identity of the session this was handed to. Absent on a revert, which names no manager. | |
+
+**Invariants** — The manager is keyed by slot, so an entry naming no slot states
+nothing a rebuild can apply and is not written; nor is one that states neither a
+manager nor a revert. A rebuild takes the current answer from `manager` and
+`to_creator` alone; `previous` is history and no fold reads it. A start with no
+entry for a slot, a newest entry that reverts it, or a log it cannot read all fall
+back to the session that CREATED the slot.
+
+The revert needs the flag and not merely an empty `manager`, because the two
+statements a rebuild applies are not symmetrical. An entry that can only name a
+successor cannot CLEAR a manager, so a metadata line naming a manager the log took
+away would survive every restart and re-grant the reach the revert removed. An
+entry whose `manager` is empty without the flag is unprovable and decides nothing.
+
+`slot_tab` is required because `slot` is a NAME. Close a handed-over session, open
+one under the same name, and both sessions' units sit in that slot's store -- the
+newer one holding no manager entry at all, so a read qualified by name alone falls
+through it to the older one's grant and the replacement inherits a reach nobody gave
+it. A read matches entries against the asking session's own identity, passes over
+every other incarnation's, and answers "no handoff was recorded" for a session with
+no entry of its own. A session that cannot say which incarnation it is gets an
+UNDECIDED answer rather than a creator-held one.
+
+```json
+{"type":"session/manager_set","seq":214,"time":1789000093000,"src":"gateway","data":{"slot":"dashboard:7","slot_tab":"a1b2c3d4e5f6","manager":"chat-12-1764","previous":"chat-3-1701","manager_tab":"9f8e7d6c5b4a"}}
+```
+
+And the same type taking that handoff back:
+
+```json
+{"type":"session/manager_set","seq":215,"time":1789000093400,"src":"gateway","data":{"slot":"dashboard:7","slot_tab":"a1b2c3d4e5f6","manager":"","to_creator":true,"previous":"chat-12-1764"}}
+```
+
+**Reader hint** — The newest entry of this type per slot is who drives that
+session, and it is the AUTHORITY: the slot's own metadata line is a cache of it and
+a start reconciles that line against this. Who CREATED a session never changes and
+is read from `session/opened`.
 
 ### `session/released`
 

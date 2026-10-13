@@ -4189,6 +4189,14 @@ SESSION_ADOPT_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_HANDOFF_SCHEMA = ToolSchema(
+    tool_name="session_handoff",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("to", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
 SESSION_RELEASE_SCHEMA = ToolSchema(
     tool_name="session_release",
     fields=[
@@ -4465,6 +4473,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_broadcast": SESSION_BROADCAST_SCHEMA,
     "session_status": SESSION_STATUS_SCHEMA,
     "session_adopt": SESSION_ADOPT_SCHEMA,
+    "session_handoff": SESSION_HANDOFF_SCHEMA,
     "session_release": SESSION_RELEASE_SCHEMA,
     "session_read_message": SESSION_READ_MESSAGE_SCHEMA,
     "session_summary": SESSION_SUMMARY_SCHEMA,

@@ -4162,6 +4162,11 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 # Its note speaks for one message; merged, it would vouch that
                 # messages never written to any pipe may already have run.
                 or (item.get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META)
+                # HELD by the admission sweep: its manager could not be read, so it is
+                # neither deliverable nor droppable yet. A merge run is a DELIVERY, so
+                # folding it in would carry it past the hold -- the sweep refuses the
+                # head, and this refuses it anywhere else in the run.
+                or item.get("_held_for_manager") is True
             ):
                 break
             if to_merge and _stamped_turn_actor(item) != _stamped_turn_actor(to_merge[0]):

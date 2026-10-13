@@ -1166,7 +1166,7 @@ class TestAFailedUnitSearchIsNotReadAsNoObligation:
         def _unscannable(kind: str):
             raise PermissionError(13, "the session root could not be read")
 
-        monkeypatch.setattr(store, "_checked_crew_log_root", _unscannable)
+        monkeypatch.setattr(store, "checked_crew_log_root", _unscannable)
         store._slot_index = None
         with pytest.raises(OSError):
             crew_log_units("chat-1", strict=True)

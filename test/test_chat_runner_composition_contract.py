@@ -483,9 +483,14 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("_QUEUE_KIND_ACTORS", "value", "dict"),
         ("_actor_for_queue_items", "function", "(items: \"'list[dict]'\") -> 'str'"),
         (
+            # Returns bool, not None: the sweep is the only place that knows an entry
+            # is HELD -- its manager could not be read, so it is neither deliverable
+            # nor droppable -- and the drain is the only place that can act on it. The
+            # alternative is a second manager read at the caller, which is the one
+            # thing the chokepoint rule forbids.
             "_drop_stale_admissions",
             "function",
-            "(state: 'DashboardState', slot: '_ChatSlot') -> 'None'",
+            "(state: 'DashboardState', slot: '_ChatSlot') -> 'bool'",
         ),
         ("_has_user_queued_followup", "function", "(slot: \"'_ChatSlot'\") -> 'bool'"),
         (

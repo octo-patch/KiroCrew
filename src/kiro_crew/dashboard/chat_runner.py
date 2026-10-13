@@ -7135,7 +7135,15 @@ async def _start_next_queued_turn(
     # qualifying.
     # Everything below — the note flush peeking at queue[0], the user-intervention
     # purge, the dequeue itself — must see only entries that may still deliver.
-    _drop_stale_admissions(state, slot)
+    if _drop_stale_admissions(state, slot):
+        # The head entry is waiting on a manager read -- neither deliverable nor
+        # droppable yet. Start nothing from it: delivering would grant a reach this
+        # gateway cannot currently verify, and dropping would destroy a message
+        # somebody was already told had been accepted. WHICH refusals a hold may be
+        # taken on belongs to `_drop_stale_admissions`, which marks the hold, and is
+        # deliberately not restated here -- the mark is the whole instruction, and a
+        # waiting head that cannot be waited out is this call's only failure mode.
+        return False
     # The sweep may have dropped that recovery, leaving a new turn at the head.
     if (
         predecessor_actor

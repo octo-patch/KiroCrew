@@ -21,6 +21,7 @@ import json
 import pytest
 from chat_test_helpers import _make_state
 
+from kiro_crew.crew_log.handed_over import HandoffIndex
 from kiro_crew.dashboard import chat_persistence as cp
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_buffers import (
@@ -32,6 +33,12 @@ from kiro_crew.dashboard.slot_persistence import metadata_line
 from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
 from kiro_crew.dashboard.state import durable_queue_entries
 from kiro_crew.history import SLOT_OWNED_META_KEYS
+
+#: A DECIDED, empty handed-over index: nothing was ever handed over on this store.
+#: Passed explicitly because ``apply`` requires it and reads no file -- which is also
+#: what keeps these tests off the real index, so none of them depends on process state
+#: a sibling test could have published.
+_NO_HANDOFFS = HandoffIndex(frozenset(), True)
 
 K1 = source_ref_identity_key(("github", "github.com", "o", "r", 1, "", "change", ""))
 K2 = source_ref_identity_key(("github", "github.com", "o", "r", 2, "", "change", ""))
@@ -67,6 +74,7 @@ _POPULATED: dict = {
     "_turn_in_flight_prompt": PROMPT,
     "mode": "focus",
     "_created_by": "member-x",
+    "_manager": "chat-manager",
     "folder_id": "folder-1",
     "_channel_folder_filed": True,
     "_origin": "cron",
@@ -250,7 +258,7 @@ def _read_back(state, meta: dict, purpose: str, *, name: str = "", **kwargs):
     baseline = {
         row.attr: copy.deepcopy(getattr(slot, row.attr)) for row in codec.FIELDS if row.attr
     }
-    applied = codec.apply(state, slot, meta, chosen)
+    applied = codec.apply(state, slot, meta, chosen, handoff_index=_NO_HANDOFFS)
     return slot, applied, baseline
 
 
@@ -481,7 +489,7 @@ def test_a_member_pin_keeps_the_bindings_agent_and_mode(purpose, tmp_path, monke
     meta = {"agent": "line-agent", "mode": "focus"}
     chosen = _purpose(purpose, name="member-crew-a", member=("crew-a", "member"), listed="")
     slot = state.get_or_create_slot("member-crew-a", **codec.slot_args(meta, chosen))
-    codec.apply(state, slot, meta, chosen)
+    codec.apply(state, slot, meta, chosen, handoff_index=_NO_HANDOFFS)
     assert (slot.agent, slot.mode) == ("crew-a", "member")
 
 
@@ -495,7 +503,7 @@ def test_each_purpose_takes_the_title_from_its_own_source(tmp_path, monkeypatch)
     chosen = codec.Resume(request_title="Asked", history_key="dashboard:h")
     resume = state.get_or_create_slot("h", **codec.slot_args(untitled, chosen))
     epoch = resume._title_epoch
-    codec.apply(state, resume, dict(untitled), chosen)
+    codec.apply(state, resume, dict(untitled), chosen, handoff_index=_NO_HANDOFFS)
     assert (resume.title, resume._titled, resume._title_origin) == ("Asked", True, "user")
     assert resume._title_epoch == epoch + 1
 
@@ -505,7 +513,7 @@ def test_a_non_string_title_fails_a_restore_but_reads_as_absent_on_resume(tmp_pa
     chosen = codec.Restore(name="r")
     slot = state.get_or_create_slot("r", **codec.slot_args({"title": 5}, chosen))
     with pytest.raises(TypeError):
-        codec.apply(state, slot, {"title": 5}, chosen)
+        codec.apply(state, slot, {"title": 5}, chosen, handoff_index=_NO_HANDOFFS)
     resume, _, _ = _read_back(state, {"title": 5}, codec.RESUME)
     assert resume._titled is False
 
@@ -515,7 +523,7 @@ def test_a_restore_reads_the_committed_agent_not_the_lines(tmp_path, monkeypatch
     meta = {"agent": "line-agent"}
     chosen = codec.Restore(name="r", agent="committed")
     slot = state.get_or_create_slot("r", **codec.slot_args(meta, chosen))
-    codec.apply(state, slot, meta, chosen)
+    codec.apply(state, slot, meta, chosen, handoff_index=_NO_HANDOFFS)
     assert slot.agent == "committed"
     resume, _, _ = _read_back(state, meta, codec.RESUME)
     assert resume.agent == "line-agent"
@@ -525,7 +533,7 @@ def test_a_line_with_no_model_falls_back_to_the_agents_configured_model(tmp_path
     state = _state(tmp_path, monkeypatch)
     chosen = codec.Restore(name="r", agent="writer", model_map={"writer": "model-of-writer"})
     slot = state.get_or_create_slot("r", **codec.slot_args({}, chosen))
-    codec.apply(state, slot, {}, chosen)
+    codec.apply(state, slot, {}, chosen, handoff_index=_NO_HANDOFFS)
     assert slot.model == "model-of-writer"
     resume, _, _ = _read_back(state, {"agent": "writer"}, codec.RESUME)
     assert resume.model == ""
@@ -600,7 +608,7 @@ def test_a_resume_drops_a_folder_only_on_a_verdict_about_that_folder(tmp_path, m
             folder_unhidden=False, folder_checked_id=checked, history_key="dashboard:h"
         )
         slot = state.get_or_create_slot(f"h-{checked}", **codec.slot_args({}, chosen))
-        codec.apply(state, slot, {"folder_id": "folder-1"}, chosen)
+        codec.apply(state, slot, {"folder_id": "folder-1"}, chosen, handoff_index=_NO_HANDOFFS)
         assert slot.folder_id == kept
 
 
@@ -716,7 +724,13 @@ def test_a_resume_mints_a_tag_revision_even_for_a_slot_without_the_bump(tmp_path
     for purpose in sorted(codec.PURPOSES):
         slot = state.get_or_create_slot(f"bare-{purpose}")
         before = slot.tags_revision
-        codec.apply(state, slot, copy.deepcopy(meta), _purpose(purpose, name=f"bare-{purpose}"))
+        codec.apply(
+            state,
+            slot,
+            copy.deepcopy(meta),
+            _purpose(purpose, name=f"bare-{purpose}"),
+            handoff_index=_NO_HANDOFFS,
+        )
         revisions[purpose] = slot.tags_revision != before
     assert revisions == {codec.RECENT: False, codec.RESTORE: False, codec.RESUME: True}
 

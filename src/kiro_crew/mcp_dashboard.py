@@ -1328,6 +1328,43 @@ def _session_tools() -> tuple[Tool, ...]:
             routes=("POST /api/session-control/adopt",),
         ),
         Tool(
+            name="session_handoff",
+            description=(
+                "Hand a session you manage to ANOTHER session, which manages it "
+                "from then on. Use it when the session that should be running a "
+                "worker is not the one that opened it: open a conductor, then hand "
+                "each worker to that conductor, and from then on the conductor can "
+                "send to them, read them, stop them and close them — and you "
+                "cannot, unless you are handed them back. The sidebar nests the "
+                "worker under its new manager too. Only the session that manages "
+                "the target right now may hand it over, and the recipient has to "
+                "be a session you also manage. What does not move: who CREATED the "
+                "session stays on the record, so the new manager cannot open new "
+                "sessions or forks against your memory. Refused when the recipient "
+                "already manages the target."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": (
+                            "The session that will manage the target: its key from "
+                            "list_sessions, or its exact title."
+                        ),
+                    },
+                },
+                "required": ["target", "to"],
+            },
+            run=_run_session_handoff,
+            identity="strict",
+            routes=("POST /api/session-control/handoff",),
+        ),
+        Tool(
             name="session_release",
             description=(
                 "Let a session out from under its parent, so it stands on its own "
@@ -3329,6 +3366,25 @@ def _run_session_adopt(args: dict[str, Any], ctx: ToolContext) -> str:
     return (
         f"\U0001f91d Adopted `{target}` — the sidebar now nests it under this "
         f"session, along with anything it opened.{took_over}"
+    )
+
+
+def _run_session_handoff(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/handoff",
+            {"target": args["target"], "to": args["to"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not hand that session over: {refused.error}"
+    target = resp.get("target", args["target"])
+    manager = resp.get("manager", args["to"])
+    return (
+        f"\U0001f91d Handed `{target}` to `{manager}` — that session manages it now: "
+        "it can send, read, stop and close it, and the sidebar nests the session "
+        "under it. You no longer can, unless it hands the session back. Who created "
+        "the session is unchanged on the record."
     )
 
 

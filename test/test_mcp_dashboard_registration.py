@@ -401,6 +401,12 @@ class TestWhatThisSetGrants:
         # already returns one at a time.
         "session_status",
         "session_adopt",
+        # The transfer verb, in the same granted set as the tree verbs because it
+        # reaches no further than they do: the caller must already hold both the
+        # session it gives away and the session it gives it to, and the one thing it
+        # cannot move -- who CREATED a session, which is what the memory delegation
+        # gate reads -- is not reachable from this server at all.
+        "session_handoff",
         "session_release",
         "session_read_message",
         "session_summary",

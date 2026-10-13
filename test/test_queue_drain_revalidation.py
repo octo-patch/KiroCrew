@@ -94,6 +94,9 @@ def test_human_typed_enqueue_stamps_admission_snapshot(tmp_path):
         "app": False,
         "unattended": False,
         "workspace": "default",
+        # False at admission by construction: this slot's manager is known, which is
+        # what let the entry be admitted for a verb that reads it at all.
+        "manager_unknown": False,
     }
 
 
@@ -775,6 +778,27 @@ _TARGET_CONTAINMENT_REFUSALS = {
     "app_scoped_target": "app",
     "unattended_target": "unattended",
     "workspace_mismatch": "workspace",
+    # Both ways `require_manager_of` can refuse, against the one snapshot boolean that
+    # says who manages the slot is not known. Containment, not caller-side: the value
+    # is a property of the TARGET, a handoff moves it while an entry waits, and a
+    # failed read can retract it -- so the drain has something of the target's to
+    # re-compare, unlike `not_creator` below.
+    #
+    # Compared only when the entry RECORDED it, like `workspace`: the boolean set is
+    # the wrong fail-closed floor for this one, because the restore path strips the
+    # stamp and every hydrated slot starts unresolved, so counting it against the
+    # unmarked baseline would delete every prompt a person typed before a restart. The
+    # population that skips the check is restores, whose admission was the composer and
+    # never read the manager; every cross-session producer stamps at enqueue.
+    "manager_unresolved": "manager_unknown",
+    # The third way the value is not usable: read, decided, and the recorded manager
+    # cannot hold the session. Same snapshot boolean, because the drain-time
+    # consequence is identical -- there is no manager to authorize a delivery against.
+    "manager_grant_inadmissible": "manager_unknown",
+    # The fourth way the value is not usable: the key is a name a later session took,
+    # so the recorded manager cannot be identified. Same snapshot boolean, same
+    # drain-time consequence -- no manager to authorize a delivery against.
+    "manager_session_changed": "manager_unknown",
 }
 
 _NON_CONTAINMENT_REFUSALS = {
@@ -788,9 +812,21 @@ _NON_CONTAINMENT_REFUSALS = {
     "mirrored_caller",
     "caller_gone",
     # Caller-relative ownership: fires only for member callers, comparing the
-    # caller's key to the target's created_by. Both are written once at birth
-    # and never mutate, so the relation that admitted an entry cannot flip
-    # while it waits -- and the drain has no caller left to re-evaluate.
+    # caller's key to the target's holder. For every verb OUTSIDE
+    # `HANDOFF_WIDENED_OPERATIONS` that holder is `created_by`, and both sides are
+    # written once at birth and never mutate, so the relation that admitted an entry
+    # cannot flip while it waits -- and the drain has no caller left to re-evaluate.
+    #
+    # For a WIDENED verb the holder is `manager_of`, which a handoff MOVES, so the
+    # relation can flip mid-wait: an entry admitted while A managed the target is
+    # drained after the target was handed to B. `manager_unknown` above covers the
+    # case where the value cannot be read; it does NOT cover a value that was read
+    # and then moved. That half is not re-checked HERE because it is not a per-slot
+    # constraint: it is a relation between the target's current manager and one entry's
+    # stamped sender, so it is per-entry and lives beside this table rather than in it
+    # (`session_control.sender_lost_its_reach`, called by `_drop_stale_admissions`).
+    # `manager_unknown` above covers a value that cannot be READ; that one covers a
+    # value read and then moved.
     "not_creator",
     # Not containment: global config state, a resolution failure, and the
     # self-target guard. None of the three can change while an entry waits in a
@@ -832,6 +868,16 @@ def _authorize_target_refusal_codes() -> set[str]:
     The four live-target containment refusals live in ``_live_target_refusal``,
     which RETURNS ``(reason, code)`` for its caller to raise through ``deny``, so
     its returned tuples are read as codes the same way.
+
+    ``_manager_unread_refusal`` is read the same way and for the same reason. The
+    two refusals owed when who manages a slot has not been read deliberately do
+    NOT live in the gate: they live on the READ (``require_manager_of``), because a
+    condition in the gate had to name which operations consult the manager and that
+    list was wrong at three sites which reach the value without passing the gate.
+    They still reach the caller through ``authorize_target``, which re-raises them
+    via ``deny`` with ``exc.code`` -- a variable the ``deny`` parse cannot see. So
+    the helper that spells them is parsed directly; without this the two codes read
+    as deleted and the tables they are classified in fail OPEN.
     """
     codes: set[str] = set()
     for fn in (
@@ -842,21 +888,35 @@ def _authorize_target_refusal_codes() -> set[str]:
     ):
         tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
         codes |= _deny_codes(tree)
-    codes |= _returned_refusal_codes(
-        ast.parse(textwrap.dedent(inspect.getsource(sc._live_target_refusal)))
-    )
+    for returning in (
+        sc._live_target_refusal,
+        sc._manager_unread_refusal,
+        sc._manager_record_refusal,
+    ):
+        codes |= _returned_refusal_codes(ast.parse(textwrap.dedent(inspect.getsource(returning))))
     return codes
 
 
 def _returned_refusal_codes(tree: ast.AST) -> set[str]:
-    """Codes from ``return ("reason", "code")`` statements in a refusal helper."""
+    """Codes from ``return ("reason", "code")`` statements in a refusal helper.
+
+    A code spelled as a module CONSTANT is resolved to its value rather than skipped.
+    One of them is: the single refusal a caller may wait on is named
+    (``MANAGER_READ_PENDING``) because two readers decide hold-or-drop on it, and a
+    parse that only understood literals would read it as deleted and fail OPEN.
+    """
     codes: set[str] = set()
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple)):
             continue
         elts = node.value.elts
-        if len(elts) == 2 and isinstance(elts[1], ast.Constant) and isinstance(elts[1].value, str):
-            codes.add(elts[1].value)
+        if len(elts) != 2:
+            continue
+        code = elts[1]
+        if isinstance(code, ast.Constant) and isinstance(code.value, str):
+            codes.add(code.value)
+        elif isinstance(code, ast.Name) and isinstance(getattr(sc, code.id, None), str):
+            codes.add(getattr(sc, code.id))
     return codes
 
 
@@ -948,3 +1008,672 @@ def test_the_snapshot_carries_no_unmapped_constraint(tmp_path):
         f"{sorted(extra)}. Map each to its refusal, or add it to "
         "_SNAPSHOT_NON_CONSTRAINT_KEYS if it is comparison detail rather than a constraint."
     )
+
+
+def test_a_handoff_between_enqueue_and_drain_drops_the_givers_queued_send(tmp_path, _inline_audit):
+    """The caller-side half of the admission, re-asserted at the drain.
+
+    Every other test in this file changes something about the TARGET. This one changes
+    nothing about it: the worker is the same session, unlinked, unmirrored, in the same
+    workspace, with a readable manager. What moved is WHO manages it, and the entry was
+    admitted on the relation between that value and its sender.
+
+    The relation needed no re-check while the fence read ``created_by``, which is
+    written at birth and never moves. A handoff moves it, so the lead's queued message
+    would otherwise run in a worker it had already been refused.
+    """
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    conductor = state.get_or_create_slot("chat-conductor")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+
+    worker.queue_append(
+        "finish the migration",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, lead.key, manager_fenced=True),
+        },
+    )
+    assert worker._queue, "the premise: the lead's delivery is waiting"
+
+    # The containment snapshot is unchanged; only the manager moved.
+    worker._manager = conductor.key
+    worker._manager_tab = conductor._tab_id
+    cr._drop_stale_admissions(state, worker)
+
+    assert worker._queue == [], "the giver's queued send does not survive the handoff"
+    notices = [m for m in worker.messages if m.get("role") == "notice"]
+    assert notices and "no longer manages this one" in notices[-1]["content"]
+    call = _inline_audit.log_tool_invocation.call_args
+    assert call.kwargs["outcome"] == "denied"
+    assert sc.SENDER_LOST_REACH in call.kwargs["metadata"]["newly_held"]
+
+
+def test_the_new_managers_own_queued_send_survives_the_drain(tmp_path):
+    """The counterpart, so the check cannot pass by dropping everything.
+
+    A delivery from the session that NOW manages the target is exactly what the handoff
+    was for, and dropping it would make the feature useless the moment it was used.
+    """
+    state = _make_state(tmp_path)
+    conductor = state.get_or_create_slot("chat-conductor")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = "chat-lead"
+    worker._manager = conductor.key
+    worker._manager_tab = conductor._tab_id
+
+    worker.queue_append(
+        "carry on",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, conductor.key, manager_fenced=True),
+        },
+    )
+    cr._drop_stale_admissions(state, worker)
+    assert len(worker._queue) == 1, "the manager's own delivery is untouched"
+
+
+def test_a_replacement_under_the_senders_key_does_not_inherit_the_queued_send(
+    tmp_path, _inline_audit
+):
+    """A slot key is a NAME. The grant was given to a SESSION, and taken back from it.
+
+    The sequence this drives is ordinary: a conductor is handed a worker and queues a
+    message on it; the conductor is closed; another session comes up under the same key
+    -- the explicitly-named keys are deterministic, so that happens by design, not by
+    accident -- and the worker is handed to THAT one. The record is now consistent: its
+    key and its identity both name the session in the chair, so nothing refuses on the
+    target side.
+
+    What is left over is one queued entry stamped by a session whose grant was revoked,
+    under a name that still resolves. Compared by key, the drain reads the stamp as the
+    current manager's and runs the dead predecessor's instruction under the live one's
+    authority. The identity beside the key is what tells them apart.
+    """
+    state = _make_state(tmp_path)
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = "chat-lead"
+
+    gone = state.get_or_create_slot("chat-conductor")
+    worker._manager = gone.key
+    worker._manager_tab = gone._tab_id
+    worker.queue_append(
+        "roll the migration back",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, gone.key, manager_fenced=True),
+        },
+    )
+    assert worker._queue, "the premise: the session that held it queued a message"
+
+    # Closed, and a DIFFERENT session takes the name. The worker is handed to that one,
+    # so the record is sound again -- and names nobody who queued anything.
+    state._slots.pop(gone.key, None)
+    successor = state.get_or_create_slot(gone.key)
+    assert successor._tab_id != gone._tab_id, "a new session mints its own identity"
+    worker._manager_tab = successor._tab_id
+
+    cr._drop_stale_admissions(state, worker)
+
+    assert worker._queue == [], "a revoked sender's message does not run under its successor"
+    call = _inline_audit.log_tool_invocation.call_args
+    assert call.kwargs["outcome"] == "denied"
+    assert sc.SENDER_LOST_REACH in call.kwargs["metadata"]["newly_held"]
+
+
+def test_the_creators_own_queued_send_survives_a_target_nobody_handed_over(tmp_path):
+    """The identity compare must not reach a slot that has no record to compare against.
+
+    ``_created_by`` carries no recorded identity anywhere -- it is written at birth and
+    never again -- so an absent manager record names NOBODY, and reading it as "names
+    somebody other than the asker" fences every creator out of its own worker. On a
+    gateway where nothing was ever handed over that is every delivery there is, which
+    makes this the blast radius of the compare and not an edge of it.
+    """
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+    assert worker._manager == "", "the premise: nothing was handed over"
+
+    worker.queue_append(
+        "pick the next item up",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, lead.key, manager_fenced=True),
+        },
+    )
+    cr._drop_stale_admissions(state, worker)
+
+    assert len(worker._queue) == 1, "the creator's own delivery is untouched"
+
+
+# ── The TIME axis: what the gate reads, and whether it can go stale ──────────
+
+
+def test_every_mutable_target_value_the_gate_reads_is_re_checked_at_drain():
+    """The temporal completeness argument, parsed rather than asserted in prose.
+
+    Admission is decided at enqueue and re-asserted at drain only for what can CHANGE in
+    between. That makes the exemption list a claim about MUTABILITY, and a claim like
+    that rots silently: the day someone adds a writer for an exempt value, the drain
+    stops re-checking something that now moves, and nothing fails.
+
+    So the gate's target-side reads are extracted from source and each one must be
+    accounted for -- either carried in `containment_snapshot`, so the drain compares it,
+    or named here as immutable with the reason. A read this cannot classify fails.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    #: Target-side values the gate reads that the drain does NOT re-compare, each with
+    #: why it cannot go stale. Anything else must be in the snapshot.
+    _IMMUTABLE_READS = {
+        # Written at birth by the three mint paths and by restore onto a fresh slot
+        # object, never on a live one -- which is what `test_created_by_is_only_ever_
+        # written_at_birth` below pins. This is the premise that exempts `not_creator`.
+        "_created_by": "written at birth only",
+        # A slot key never changes, and `unattended` keys off its prefix.
+        "key": "slot keys are immutable",
+    }
+    #: Snapshot fields that are not slot attribute names, mapped to the attribute each
+    #: one carries. The drain compares the FIELD; this says which read it covers.
+    _COVERED_BY = {
+        "_app": "app",
+        "linked_session_key": "linked",
+        "memory_mode": "ephemeral",
+        "workspace": "workspace",
+        "_manager": "manager_unknown",
+        "_manager_unresolved": "manager_unknown",
+        "_manager_grant_inadmissible": "manager_unknown",
+    }
+
+    gate = (
+        sc.authorize_target,
+        sc._live_target_refusal,
+        sc._managed_by_other,
+        sc.manager_of,
+        sc._created_by_other,
+        sc._manager_unread_refusal,
+    )
+    reads: set[str] = set()
+    for fn in gate:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "id", "") == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "slot"
+                and isinstance(node.args[1], ast.Constant)
+            ):
+                reads.add(node.args[1].value)
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "slot"
+            ):
+                reads.add(node.attr)
+    assert reads, "the parse found nothing, so this test would pin nothing"
+
+    snapshot_fields = set(_base_snapshot_fields())
+    unaccounted = sorted(
+        name
+        for name in reads
+        if name not in _IMMUTABLE_READS and _COVERED_BY.get(name) not in snapshot_fields
+    )
+    assert not unaccounted, (
+        "the gate reads these target values and the drain does not re-compare them: "
+        f"{unaccounted}. Either add the value to containment_snapshot and map it in "
+        "_COVERED_BY, or add it to _IMMUTABLE_READS with the reason it cannot change "
+        "between admission and delivery."
+    )
+    # And every mapping points at a field that really exists, so a renamed snapshot key
+    # cannot leave a read silently 'covered' by a field that is gone.
+    stale = sorted(f for f in _COVERED_BY.values() if f not in snapshot_fields)
+    assert not stale, f"_COVERED_BY names snapshot fields that do not exist: {stale}"
+
+
+def _base_snapshot_fields() -> set[str]:
+    """Snapshot field names, read off the builder rather than a hand-kept copy."""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(sc._snapshot_from_probe)))
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for key in node.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    out.add(key.value)
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+            if isinstance(node.slice.value, str):
+                out.add(node.slice.value)
+    return out
+
+
+def test_created_by_is_only_ever_written_at_birth():
+    """The premise that exempts `not_creator` from the drain re-check, pinned.
+
+    `not_creator` is the one caller-relative refusal the drain does not re-evaluate, and
+    the stated reason is that both sides are written once and never mutate. If a writer
+    appears that stamps `_created_by` on a slot that is already open, a queued entry
+    admitted under one creator can be delivered under another, and the exemption becomes
+    a hole with nothing red.
+
+    Every writer must therefore be a MINT or a RESTORE -- a slot object with no queue
+    yet. Scanned from source, so a new writer has to come and argue with this list.
+    """
+    import pathlib
+    import re
+
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    #: Each writer, with why it cannot reach a slot that already has a queue.
+    allowed = {
+        "src/kiro_crew/dashboard/session_control.py": "create_session, at the mint",
+        "src/kiro_crew/dashboard/chat_handlers.py": (
+            "cron attribution, both sites guarded by created_in_send / is_new_slot"
+        ),
+        "src/kiro_crew/dashboard/slot_persistence/metadata_codec.py": (
+            "restore, onto a freshly built slot object"
+        ),
+    }
+    offenders: list[str] = []
+    for path in sorted(repo_root.joinpath("src").rglob("*.py")):
+        rel = path.relative_to(repo_root).as_posix()
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"^\s*\w+\._created_by\s*=\s*", text, re.M):
+            if rel not in allowed:
+                line = text[: match.start()].count("\n") + 1
+                offenders.append(f"{rel}:{line}")
+    assert not offenders, (
+        "these write _created_by outside the mint and restore paths: "
+        f"{offenders}. A slot that is already open can then change creator while an "
+        "entry waits in its queue, which breaks the premise that exempts `not_creator` "
+        "from the drain re-check. Either write it at the mint, or re-check it at the "
+        "drain and move the refusal into _TARGET_CONTAINMENT_REFUSALS."
+    )
+
+
+def test_every_send_origin_stamp_records_a_resolved_fence_verdict():
+    """The stamp's verdict must be the one authorization used, not a second derivation.
+
+    ``caller_fenced`` arrives as ``bool | None``, and ``None`` means NOT RESOLVED YET --
+    the HTTP handler's carried verdict is ``None`` for any caller that is not a crew
+    member. ``bool(None)`` is ``False``, so coercing it at the stamp records an
+    unresolved verdict as UNFENCED, which exempts that sender from the drain's manager
+    re-check and lets the message it queued run after it has handed the session away.
+
+    The verdict is therefore resolved ONCE per verb, before the gate, and both the gate
+    and the stamp read that local. This parses every stamp site and fails on a coercion
+    or on a site with no resolution above it in the same function, because the failure
+    mode is silent: the stamp is well-formed and simply says the wrong thing.
+    """
+    import ast
+    import inspect
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    source = (repo_root / "src/kiro_crew/dashboard/session_control.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # Parent links, because a stamp often sits in a CLOSURE over the verb's local --
+    # `send_to_target` resolves the verdict once and its nested queue helpers read it.
+    # A closure is the correct shape here, so the resolution is looked for in the
+    # enclosing function too rather than only where the stamp is written.
+    parent: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+
+    def _resolves_anywhere_up(node: ast.AST) -> bool:
+        cur: ast.AST | None = node
+        while cur is not None:
+            if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                body = ast.get_source_segment(source, cur) or ""
+                if "caller_fenced is None" in body:
+                    return True
+            cur = parent.get(cur)
+        return False
+
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            if not (
+                isinstance(inner, ast.Call) and getattr(inner.func, "id", "") == "send_origin_meta"
+            ):
+                continue
+            verdict = next((kw.value for kw in inner.keywords if kw.arg == "manager_fenced"), None)
+            where = f"{node.name}:{inner.lineno}"
+            if verdict is None:
+                offenders.append(f"{where} (no manager_fenced argument)")
+                continue
+            if isinstance(verdict, ast.Call) and getattr(verdict.func, "id", "") == "bool":
+                offenders.append(f"{where} (coerces the verdict with bool())")
+                continue
+            if not _resolves_anywhere_up(inner):
+                offenders.append(f"{where} (no `caller_fenced is None` resolution above it)")
+
+    assert not offenders, (
+        "these send-origin stamps may record an unresolved fence verdict: "
+        f"{offenders}. Resolve it once at the top of the verb -- "
+        "`if caller_fenced is None: caller_fenced = bool(caller_key) and "
+        "_caller_is_ownership_fenced(state, caller_key)` -- and pass that local to both "
+        "authorize_target and the stamp."
+    )
+    # Guard the guard: the parse must actually be finding the stamps.
+    stamp_sites = sum(
+        1
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "send_origin_meta"
+    )
+    assert stamp_sites >= 3, "the parse found almost no stamp sites, so this test would pin nothing"
+    # And the parameter stays REQUIRED, so a new site cannot silently default to False.
+    assert (
+        inspect.signature(sc.send_origin_meta).parameters["manager_fenced"].default
+        is inspect.Parameter.empty
+    ), "manager_fenced must have no default: a forgotten stamp would read as unfenced"
+
+
+# ── Fail-closed governs granting reach; it never governs keeping data ────────
+
+
+def test_an_unreadable_manager_holds_a_queued_message_instead_of_destroying_it(
+    tmp_path, _inline_audit
+):
+    """ "We cannot tell" is not a finding about the message.
+
+    A queued entry is content somebody was already told had been accepted. An
+    unreadable manager is not a statement that its authorization lapsed -- it is this
+    gateway's own read not having landed. Dropping on it spends a person's work to
+    protect a reach nobody can show was at issue, and the read is self-clearing, so
+    waiting costs one pass.
+
+    So the entry is HELD: not delivered, because delivering would grant a reach that
+    cannot be verified, and not dropped, because nothing about it is known to be wrong.
+    """
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+
+    worker.queue_append(
+        "finish the migration",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, lead.key, manager_fenced=True),
+        },
+    )
+    assert worker._queue, "the premise"
+
+    # The manager cannot be read. Nothing is known to have lapsed.
+    worker._manager_unresolved = True
+    held = cr._drop_stale_admissions(state, worker)
+
+    assert held is True, "the drain reports the head as held"
+    assert len(worker._queue) == 1, "the message is still there"
+    notices = [m for m in worker.messages if m.get("role") == "notice"]
+    assert not notices, "and the person is not told their message was discarded"
+    assert not _inline_audit.log_tool_invocation.called, "nothing was denied"
+
+    # Once the read lands, the same entry delivers.
+    worker._manager_unresolved = False
+    worker._manager = lead.key
+    worker._manager_tab = lead._tab_id
+    assert cr._drop_stale_admissions(state, worker) is False
+    assert len(worker._queue) == 1, "still intact, now deliverable"
+
+
+def test_a_sender_that_demonstrably_lost_its_reach_still_drops(tmp_path, _inline_audit):
+    """The other half of the boundary, so holding does not become never-dropping.
+
+    A handoff that LANDED is a finding about the message: the grant that admitted it
+    ended, the sender is told, and holding it would deliver it the moment the manager
+    came back. That is governing reach, which is what fail-closed is for.
+    """
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    conductor = state.get_or_create_slot("chat-conductor")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+
+    worker.queue_append(
+        "finish the migration",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, lead.key, manager_fenced=True),
+        },
+    )
+    worker._manager = conductor.key
+    worker._manager_tab = conductor._tab_id
+
+    assert cr._drop_stale_admissions(state, worker) is False, "dropped, not held"
+    assert worker._queue == []
+    notices = [m for m in worker.messages if m.get("role") == "notice"]
+    assert notices and "no longer manages this one" in notices[-1]["content"]
+
+
+def _settle_refusal(state, slot, shape: str) -> None:
+    """Put *slot* in one of the two manager refusals that do NOT end by themselves."""
+    if shape == "manager_grant_inadmissible":
+        # The recorded manager was closed or rebound to another principal before a
+        # restart, and no transfer back was ever recorded.
+        slot._manager_grant_inadmissible = True
+        return
+    # The record's key is answered by a DIFFERENT session than the one it names.
+    manager = state.get_or_create_slot("chat-conductor")
+    slot._manager = manager.key
+    slot._manager_tab = "the-session-that-was-given-it"
+
+
+@pytest.mark.parametrize("shape", ["manager_grant_inadmissible", "manager_session_changed"])
+def test_a_settled_manager_refusal_drops_instead_of_holding_the_queue_shut(
+    tmp_path, _inline_audit, shape
+):
+    """A hold is a WAIT, so it is owed only where there is something to wait for.
+
+    Three refusals arrive as one snapshot boolean. The read that has not landed arms
+    its own re-read, so a hold on it costs a pass. These two do not: one says the
+    recorded manager cannot hold the session, the other that a different session
+    answers to its name, and both stand until a person hands the session over again.
+    Waiting on them is waiting for the life of the process, with the queue shut behind
+    the held head, and the entry is delivered to nobody in the end anyway.
+
+    So a settled refusal DROPS, with the reason the refusal already carries and the
+    sender told, which is the one outcome that leaves everybody informed.
+    """
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+    worker.queue_append(
+        "finish the migration",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, lead.key, manager_fenced=True),
+        },
+    )
+    _settle_refusal(state, worker, shape)
+    assert sc.manager_read_is_pending(state, worker) is False, "the premise: settled"
+
+    assert cr._drop_stale_admissions(state, worker) is False, "dropped, not held"
+    assert worker._queue == [], "the queue is not left shut on an answer that never comes"
+    notices = [m for m in worker.messages if m.get("role") == "notice"]
+    assert notices, "and the message is not discarded silently"
+    assert _inline_audit.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
+
+
+def test_a_settled_manager_refusal_does_not_bury_a_persons_own_typed_prompt(tmp_path):
+    """What the unbounded hold costs, measured on the entry that has nothing to do
+    with it.
+
+    A held entry is marked so a merge run breaks at it, so everything BEHIND it waits
+    too -- and a person's own typed prompt carries no sender stamp, is never re-checked
+    against any manager, and is deliverable the whole time. Holding the fenced entry
+    forever buries it.
+    """
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+    worker.queue_append(
+        "the lead's, and settled against",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, lead.key, manager_fenced=True),
+        },
+    )
+    worker.queue_append("mine, typed here", meta=sc.containment_meta(state, worker))
+    _settle_refusal(state, worker, "manager_session_changed")
+
+    assert cr._drop_stale_admissions(state, worker) is False
+    assert [entry["content"] for entry in worker._queue] == ["mine, typed here"]
+    assert "_held_for_manager" not in worker._queue[0]
+
+    from kiro_crew.dashboard.chat_utils import _dequeue_next_message
+
+    content, taken = _dequeue_next_message(worker, True)
+    assert content == "mine, typed here", "the person's own prompt runs"
+    assert len(taken) == 1
+
+
+def test_a_merge_run_does_not_carry_a_held_entry_out(tmp_path):
+    """A merge is a DELIVERY, so it must break at a held entry wherever it sits.
+
+    Refusing only the HEAD is not enough. ``_dequeue_next_message`` folds a RUN of
+    entries into one turn, and it breaks only at a system injection, an attachment, a
+    possibly-delivered steer and an actor change. A held entry behind a deliverable one
+    would be merged into the batch and run -- carried straight past the hold the sweep
+    just decided.
+
+    So the hold is marked per entry and the merge treats it as a stop, the same way it
+    treats the other four.
+    """
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+
+    # A HUMAN-typed entry first, which is always deliverable, then a fenced
+    # cross-session entry whose manager cannot be read.
+    worker.queue_append("mine, and deliverable", meta=sc.containment_meta(state, worker))
+    worker.queue_append(
+        "the lead's, and not resolvable",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, lead.key, manager_fenced=True),
+        },
+    )
+    worker._manager_unresolved = True
+
+    assert cr._drop_stale_admissions(state, worker) is False, "the head is deliverable"
+    assert len(worker._queue) == 2, "and nothing was dropped"
+    assert worker._queue[1].get("_held_for_manager") is True, "the second is marked held"
+
+    from kiro_crew.dashboard.chat_utils import _dequeue_next_message
+
+    content, taken = _dequeue_next_message(worker, True)
+    assert len(taken) == 1, "the merge stopped at the held entry"
+    assert content == "mine, and deliverable"
+    assert len(worker._queue) == 1, "the held entry is still queued"
+    assert worker._queue[0].get("_held_for_manager") is True
+
+
+def test_the_hold_mark_is_cleared_once_the_read_lands(tmp_path):
+    """A hold must not outlive its reason, or the entry is stuck behind a stale mark."""
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+    worker.queue_append(
+        "the lead's",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, lead.key, manager_fenced=True),
+        },
+    )
+
+    worker._manager_unresolved = True
+    assert cr._drop_stale_admissions(state, worker) is True
+    assert worker._queue[0].get("_held_for_manager") is True
+
+    # The read lands and the lead is the manager, so the entry is deliverable again.
+    worker._manager_unresolved = False
+    worker._manager = lead.key
+    worker._manager_tab = lead._tab_id
+    assert cr._drop_stale_admissions(state, worker) is False
+    assert "_held_for_manager" not in worker._queue[0], "the mark is gone with its reason"
+
+
+# ── Provenance survives what routing does not ───────────────────────────────
+
+
+def test_a_revoked_senders_message_does_not_survive_a_restart(tmp_path):
+    """The restore strips the ROUTING stamp; it must not strip the re-check with it.
+
+    The routing stamp names a write target, so the restore path drops it rather than
+    trust an editable line. When the fence verdict and the sender rode in that same
+    stamp, a restart turned a fenced cross-session entry into one with no provenance
+    at all -- the drain read it as unfenced, skipped the sender re-check, and the
+    message a revoked lead had queued ran after the restart.
+    """
+    from kiro_crew.dashboard.slot_queue_repository import sanitize_restored_queue
+
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    conductor = state.get_or_create_slot("chat-conductor")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+    worker.queue_append(
+        "finish the migration",
+        meta={
+            **sc.containment_meta(state, worker),
+            **sc.send_origin_meta(state, lead.key, manager_fenced=True),
+        },
+    )
+
+    # The queue as a restart rebuilds it from the slot's own line.
+    restored = sanitize_restored_queue(list(worker._queue))
+    assert restored, "the premise: the entry is restored"
+    meta = restored[0]["meta"]
+    assert sc.SEND_ORIGIN_META_KEY not in meta, "routing is stripped, as designed"
+    # The sender's IDENTITY survives the restore with its key, which is the reason the
+    # two stamps are separate keys: routing is stripped and the re-check is not.
+    assert meta[sc.ADMISSION_PROVENANCE_META_KEY] == {
+        "sender": lead.key,
+        "fenced": True,
+        "tab": lead._tab_id,
+    }
+
+    # The worker was handed away before the restart; the restored entry is re-checked.
+    worker._queue[:] = restored
+    worker._manager = conductor.key
+    worker._manager_tab = conductor._tab_id
+    assert sc.sender_lost_its_reach(state, worker, meta) is True
+    cr._drop_stale_admissions(state, worker)
+    assert worker._queue == [], "the revoked sender's message does not run"
+
+
+def test_a_tabless_senders_message_is_still_re_checked(tmp_path):
+    """No tab means nobody to REPORT to. It does not mean nothing to re-check."""
+    state = _make_state(tmp_path)
+    lead = state.get_or_create_slot("chat-lead")
+    lead._tab_id = ""
+    conductor = state.get_or_create_slot("chat-conductor")
+    worker = _busy(state.get_or_create_slot("chat-worker"))
+    worker._created_by = lead.key
+
+    meta = {
+        **sc.containment_meta(state, worker),
+        **sc.send_origin_meta(state, lead.key, manager_fenced=True),
+    }
+    assert sc.SEND_ORIGIN_META_KEY not in meta, "no routing without an identity"
+    worker._manager = conductor.key
+    worker._manager_tab = conductor._tab_id
+    assert sc.sender_lost_its_reach(state, worker, meta) is True

@@ -1078,7 +1078,7 @@ async def test_a_recovery_replayed_cross_session_delivery_keeps_its_sender(
     state = _make_state(tmp_path)
     sender = state.get_or_create_slot("sender-1")
     slot = state.get_or_create_slot("target-1")
-    origin = sc.send_origin_meta(state, sender.key)
+    origin = sc.send_origin_meta(state, sender.key, manager_fenced=False)
     assert origin, "the sender has a tab identity to stamp"
     text = "a delivery from another session"
     row = slot.append("user", text, "msg msg-user", meta=dict(origin))

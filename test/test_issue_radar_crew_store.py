@@ -2218,7 +2218,7 @@ def test_a_unit_listing_that_fails_refuses_the_write_and_empties_the_read(tmp_pa
         raise OSError("the store could not be scanned")
 
     with monkeypatch.context() as scan:
-        scan.setattr(crew_log_store, "_checked_crew_log_root", scan_fails)
+        scan.setattr(crew_log_store, "checked_crew_log_root", scan_fails)
         assert crew_log_store.session_units_for_slot(cs.slot_key_for(cid)) == ()
         with pytest.raises(OSError):
             crew_log_store.session_units_for_slot(cs.slot_key_for(cid), strict=True)
@@ -2287,7 +2287,7 @@ def test_a_unit_directory_with_nothing_in_it_yet_does_not_refuse_the_write(tmp_p
 
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
-    root = crew_log_store._checked_crew_log_root(KIND_SESSION)
+    root = crew_log_store.checked_crew_log_root(KIND_SESSION)
     (root / "acp-mid-create").mkdir()
     crew_log_store._slot_index = None
     crew_log_projection.forget_slot_folds()

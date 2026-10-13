@@ -788,6 +788,22 @@ class SlotQueueRepository:
             else:
                 item["content"] = prune_attachment_meta(item.get("meta"), content, previous)
             prune_quote_meta(item.get("meta"), item["content"])
+            # THE TEXT IS GONE, SO THE ADMISSION THAT DESCRIBED IT IS TOO. A
+            # cross-session admission stamps who authorized the words it put on
+            # this queue, and the drain re-checks that sender's reach against
+            # the target's manager. After a replacement the sender did not write
+            # what is in the entry, so re-checking it deletes text on the
+            # strength of a grant that was never about this text -- and when the
+            # editor is the person at the dashboard, what gets deleted is their
+            # own words, which exist nowhere else until a save carries the queue.
+            #
+            # Deferred import: this module is reached from ``state``, which
+            # ``session_control`` imports, so a module-scope import closes a
+            # cycle. One function there owns which keys describe an admission,
+            # so this layer does not enumerate them.
+            from kiro_crew.dashboard.session_control import forget_admission_provenance
+
+            forget_admission_provenance(item.get("meta"))
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

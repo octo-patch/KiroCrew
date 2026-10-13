@@ -454,6 +454,13 @@ _LAZY_IMPORTS = {
     "kiro_crew.config.live": "ConfigChange",
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
+    # The manager rebuild the session restore runs at boot. Lazy to keep the module OFF
+    # THE STARTUP PATH, which is the only one of the two standing reasons that applies
+    # here -- there is no cycle, and both import orders succeed on their own. Importing
+    # ``kiro_crew.dashboard.server`` leaves ``session_control`` out of ``sys.modules``
+    # entirely, so this import is what keeps the whole verb module and its own imports
+    # out of the server's boot import rather than merely reordering them.
+    "kiro_crew.dashboard": "_session_control",
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.handlers": "wf_handlers work_ledger",
     "kiro_crew.dashboard.handlers.ask_question": (
@@ -512,7 +519,40 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 82
+    assert len(expected) == 83
+
+
+def test_the_manager_rebuild_import_sits_in_the_task_and_not_on_the_boot_path() -> None:
+    """WHICH function holds a lazy import is the whole point of it being lazy.
+
+    The count above cannot see it. ``_session_control`` is imported inside a function
+    either way, so the placement changes no name and no total. But
+    ``_restore_dashboard_sessions`` runs on the boot path before readiness, and an
+    import there pays for the optional session-control subsystem and its whole
+    dependency set on every start -- including starts with session control switched off,
+    which never reach the rebuild at all. The rebuild is scheduled as its own task, so
+    the import belongs in that task's coroutine, where it runs after the restore
+    returns.
+    """
+    import ast
+
+    source = (_OWNER_DIR / "session_restore.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    holders: set[str] = set()
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.iter_child_nodes(function):
+            if isinstance(node, ast.ImportFrom) and any(
+                (alias.asname or alias.name) == "_session_control" for alias in node.names
+            ):
+                holders.add(function.name)
+
+    assert holders == {"_rebuild_managers"}, (
+        "the session_control import must sit in the background rebuild's own coroutine, "
+        f"not on the boot path; it is in {sorted(holders)}. A function that runs before "
+        "readiness pays for the whole subsystem even when session control is off."
+    )
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -1418,6 +1458,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
@@ -1486,6 +1527,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown _register_browser_install_cleanup
@@ -1699,8 +1741,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 283
-_MCP_TABLE_DIGEST = "e46b1d1f39ae16e706b16cf5795764452e51debb26edbd9bea0f13886bdadfa1"
+_MCP_TABLE_ROWS = 284
+_MCP_TABLE_DIGEST = "cea77c428cf679ca7d66286425c9e7da391807b71e27e45b8ad0359932df368d"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

@@ -84,6 +84,10 @@ from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.validation import ARTIFACT_SLUG_RE, normalize_theme_consent_sha
 
 if TYPE_CHECKING:
+    # Type-only, deliberately: this module never needs the VALUE at runtime, it only
+    # calls a method on the one its caller passes in. A runtime import would put the
+    # crew log's module set behind every import of the codec for nothing.
+    from kiro_crew.crew_log.handed_over import HandoffIndex
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_persistence")
@@ -1187,6 +1191,16 @@ FIELDS: tuple[Field, ...] = (
             "it after the build when lineage corroborates"
         ),
     ),
+    # NO ``manager`` row, deliberately, and not beside ``created_by``: the two look
+    # alike and are stored in opposite places. The crew log is the ONLY store for who
+    # manages a session -- ``session_control.rebuild_managers_from_log`` reads it from
+    # the log and re-validates it before publishing -- so a copy on this line would be
+    # written on every save, read on every restore and then overwritten every time. A
+    # field nobody trusts is worse than no field: it would itself be the way a revoked
+    # manager came back, because a line can outlive the grant it names. ``created_by``
+    # stays because nothing else records it. WHETHER the log has to be read for a slot
+    # is not on the line either: that is the crew log's own handed-over index, which the
+    # session whose grant a handoff revoked cannot write -- see ``apply`` below.
     Field(
         "folder_id",
         _ALL,
@@ -1659,7 +1673,12 @@ class AppliedMeta:
 
 
 def apply(
-    state: DashboardState, slot: _ChatSlot, meta: dict[str, Any], purpose: Purpose
+    state: DashboardState,
+    slot: _ChatSlot,
+    meta: dict[str, Any],
+    purpose: Purpose,
+    *,
+    handoff_index: HandoffIndex,
 ) -> AppliedMeta:
     """Read *meta* onto the freshly constructed *slot* for *purpose*.
 
@@ -1668,8 +1687,61 @@ def apply(
     channel-born slot seeds the session its turns run on). Synchronous and
     loop-affine like the slot it writes. Raises whatever a value check raises; the
     reader's own rollback owns the slot it created.
+
+    THIS FUNCTION READS NO FILE, and *handoff_index* is required so that it cannot
+    start to. Whether a slot was ever handed over does not come from the line (see
+    below) and so has to come from somewhere -- and this is the loop-affine half of a
+    build, so a read here is a blocking read on the event loop, once per slot. The
+    caller reads the index once, off the loop, and hands the same immutable answer to
+    every slot of its pass; a caller whose read failed hands in
+    :data:`~kiro_crew.crew_log.handed_over.UNDECIDED`, which hydrates every slot
+    unresolved. Required rather than defaulted because a default is a value a new
+    caller gets by saying nothing, and both possible defaults are wrong: the empty set
+    serves a handed-over slot from its creator, and undecided silently refuses a whole
+    gateway's worth of slots.
     """
     applied = AppliedMeta(slot=slot, purpose=purpose, meta=meta)
+    # The handed-over INDEX decides whether this slot's manager has to be read at all.
+    # The line carries neither the manager nor whether one was ever recorded -- the crew
+    # log is the only store for both.
+    #
+    # Unindexed: never handed over, so the creator holds it, and that is DECIDED here
+    # without reading any history. Indexed: UNRESOLVED until the log is read, because an
+    # empty field would otherwise read as "the creator holds it" -- a claim the log may
+    # contradict. Cleared only by ``session_control.resolve_slot_manager`` on an
+    # authoritative read, which keeps a build path that forgets that read fail closed
+    # for exactly the slots where forgetting could hand a revoked giver its reach back.
+    # Set BEFORE the field table runs, so a row that raises still leaves a marked slot
+    # denied rather than half-built and servable.
+    #
+    # Read straight off the line and NOT through a field row, on purpose: a row would
+    # make the slot save own the key, and a save from any slot object that had not
+    # hydrated it would then erase it. Unowned, it is carried through every rebuild of
+    # Published through ``publish_manager`` and not written here, because the attributes
+    # that say who manages a slot are one statement with one writer -- a hydrate that
+    # set a flag alone would be one more place able to write part of it, which is the
+    # shape the funnel exists to remove.
+    from kiro_crew.dashboard.session_control import publish_manager
+
+    # WHETHER THIS SLOT WAS EVER HANDED OVER IS NOT READ FROM THE LINE. The line is the
+    # transcript's, and its writers include the session whose grant a handoff revoked,
+    # so a field here is one the losing party can clear -- and clearing it would be the
+    # whole authorization, because an unhanded slot is served by its creator without
+    # reading anything. The answer comes from the fenced crew log's handed-over index
+    # instead, which this slot cannot write.
+    #
+    # Taken as a VALUE, not read here: one set lookup against an answer the caller
+    # already has. That is what keeps the property the marker bought -- a never-handed
+    # slot costs no history read -- without putting the index's file read in the
+    # per-slot, loop-affine path. UNDECIDED arrives as unresolved for every slot, since
+    # an index that exists and cannot be read establishes nothing and the empty set is
+    # the unsafe default: it reads as "never handed over".
+    publish_manager(
+        slot,
+        manager="",
+        manager_tab="",
+        unresolved=handoff_index.hydrates_unresolved(str(getattr(slot, "key", "") or "")),
+    )
     read = _Read(state=state, slot=slot, meta=meta, purpose=purpose, applied=applied)
     for row in FIELDS:
         if row.read is not None and purpose.purpose in row.purposes:
