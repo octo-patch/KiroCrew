@@ -103,6 +103,7 @@ from .shell_normalizer import (
     _REDIRECT_START_RE,
     _SHELL_WRAPPER_CHARS,
     _argv_programs,
+    _arith_int_literal_repl,
     _backtick_closer,
     _cut_at_operator,
     _data_consumer_exempt,
@@ -113,6 +114,7 @@ from .shell_normalizer import (
     _ends_argv,
     _glob_could_expand_to,
     _is_mint_verb,
+    _is_plain_simple_ssh_command,
     _is_self_program,
     _iter_shell_chars,
     _matching_close_paren,
@@ -132,7 +134,6 @@ from .shell_normalizer import (
     _strip_redirect,
     _substitution_bodies,
     _substitution_depth_delta,
-    _text_defeats_argv_position,
     _xargs_here_string_rebuild,
 )
 from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_FILE_DELIVERY_VERBS, _SELF_NAME_RE
@@ -2379,30 +2380,6 @@ _BRACE_RANGE_RE = re.compile(r"\A(-?[0-9]+|[A-Za-z])\.\.(-?[0-9]+|[A-Za-z])(?:\.
 _BRACE_EXPANSION_CAP = 256
 
 
-def _arith_int_literal_repl(match: "re.Match[str]") -> str:
-    """The decimal spelling bash prints for one arithmetic integer literal."""
-    lit = match.group(1)
-    magnitude = lit.lstrip("-")
-    try:
-        if magnitude.lower().startswith("0x"):
-            value = int(lit, 16)
-        elif magnitude.startswith("0") and len(magnitude) > 1:
-            # bash reads a leading zero as octal; an invalid octal digit is a
-            # bash error (no command runs), so the spelling is left alone.
-            value = int(lit, 8)
-        else:
-            value = int(lit, 10)
-        # ``str`` stays INSIDE the try (round-18): hex/octal ``int`` uses a
-        # power-of-two base exempt from the interpreter's digit cap, so a
-        # ~3600-digit hex literal converts -- but its decimal ``str`` IS
-        # capped and would raise straight through ``is_denied``, aborting
-        # the evaluation.  Keeping the original spelling instead composes
-        # with the target-position rule into a fail-closed deny.
-        return str(value)
-    except ValueError:
-        return match.group(0)
-
-
 def _brace_alternatives(body: str) -> "list[str] | None":
     """The words one brace-group *body* expands to, or None when literal.
 
@@ -3015,10 +2992,12 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     the shell-builtin export spellings (``declare -x``/``typeset -x``), which
     are not leading-assignment syntax and so are not modeled by the walk.
     """
-    # The ``-R`` path exemption trusts token POSITION; the normalizations below
-    # can rewrite an expansion into a clean literal (or drop an empty word),
-    # shifting the real argv, so an expansion anywhere disables it (fail closed).
-    position_unsafe = _text_defeats_argv_position(text_lower)
+    # The ``-R`` path exemption trusts token POSITION; it is sound only for a
+    # single plain simple command whose program word is literally ``ssh`` (any
+    # wrapper, operator, assignment or expansion can rewrite argv before exec and
+    # move a ``-R`` back into ssh's own options), so it is granted on that one
+    # structural shape and withheld (fail closed to main) on everything else.
+    plain_simple_ssh = _is_plain_simple_ssh_command(text_lower)
     # Collapse empty expansions in the SOURCE so the gate and tokenization both
     # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
     text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
@@ -3213,18 +3192,6 @@ def _is_ssh_to_self(text_lower: str) -> bool:
             # A verb starts a fresh simple command, so the ``export`` adjacency
             # run ends here.
             prev_stripped_tok = None
-            # The ``-R`` path exemption trusts that the tokens the walk reads
-            # after the destination ARE the argv ssh is exec'd with.  That holds
-            # only for an ssh at PROGRAM POSITION of its own simple command: a
-            # launcher that runs ssh as its argument (``xargs -I word ssh …``,
-            # and wrappers generally) can rewrite that argv before exec -- here
-            # xargs substitutes its ``-I`` token, so a word the walk reads as the
-            # remote command becomes an ``-R`` option into THIS host.  ``cmd_start``
-            # is false whenever a program word already preceded this verb, so a
-            # non-program-position ssh disables the exemption (fail closed),
-            # without naming any launcher.  ``position_unsafe`` covers the other
-            # argv-rewrite: an expansion/glob the normalizer may splice or drop.
-            verb_at_program_position = cmd_start
             # ``echo ssh localhost`` prints two words; it connects to nothing.
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
@@ -3439,11 +3406,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     # branch table lives on ``_remote_forward_value_targets_self``).
                     if forward_value_letter == "r" and _remote_forward_value_targets_self(
                         _unmask_separators(stripped),
-                        post_destination=(
-                            remote_command_started
-                            and not position_unsafe
-                            and verb_at_program_position
-                        ),
+                        post_destination=(remote_command_started and plain_simple_ssh),
                     ):
                         return True
                     forward_value_pending = False
@@ -3476,9 +3439,6 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                             )
                         elif destination_literal and _LITERAL_PATH_RE.match(stripped):
                             remote_command_started = True
-                    option_shadow = False
-                    value_shadow = False
-                    value_shadow_ambiguous = False
                     option_shadow = False
                     value_shadow = False
                     value_shadow_ambiguous = False

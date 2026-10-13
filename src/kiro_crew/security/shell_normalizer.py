@@ -408,43 +408,48 @@ _NESTED_SHELL_PROGRAMS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh", 
 
 
 # The ssh ``-R`` remote-command path exemption trusts that a token's POSITION in
-# the normalized walk is the position ssh is exec'd with. INDIRECTION MACHINERY
-# defeats that, so this fails the exemption CLOSED on ANY DOUBT rather than
-# modelling each spelling (per-spelling modelling is what keeps leaking):
-#
-#  * EXPANSION the shell performs before exec -- substitution, variable, glob,
-#    brace, extglob, process-sub, tilde, redirect -- which can splice, drop or
-#    reorder a word (``[$`{}()*?[]~<>]``), and a NEWLINE (an alias takes effect
-#    on the line after it is defined).
-#  * QUOTE and ESCAPE characters (``"`` ``'`` ``\``): these splice a word the
-#    walk cannot see -- ``a""lias``, ``e\val``, ``'ev'al`` all normalize to a
-#    bare keyword at exec, and a quoted/backslashed word is a NON-LITERAL command
-#    word.  Flagging the characters themselves catches every spliced spelling
-#    without a per-spelling normalizer.
-#  * INDIRECTION VERBS that rewrite argv or defer evaluation: ``alias`` (expands
-#    a later word away -- ``ssh far gh -R tmp/s`` with ``alias gh=`` runs
-#    ``ssh far -R tmp/s``, a real reverse forward in), ``eval`` (re-parses its
-#    text), and ``source``/``.`` (runs a file that can define that alias).  The
-#    verb words are matched too, as defence in depth beside the splice-character
-#    flag.
-#
-# It only ever makes the ``-R`` exemption MORE closed; it never allows anything.
-_POSITION_UNSAFE_RE = re.compile(
-    r"""[$`{}()*?\[\]~<>\n"'\\]"""  # expansion / glob / subst / redirect / newline / quote / escape
-    r"|\b(?:alias|eval|source)\b"  # indirection verbs: argv rewrite or deferred evaluation
-    r"|(?:\A|[\n;&|(])[ \t]*\.(?=[ \t])"  # the ``.`` (dot) source builtin at command position
-)
+# the walk is the position ssh is exec'd with.  That trust is sound ONLY for a
+# single PLAIN SIMPLE COMMAND whose program word is literally ``ssh``: any wrapper,
+# keyword, operator, separator, assignment, expansion, quote or escape can rewrite
+# argv before exec and move a ``-R`` the walk read as the remote command's own flag
+# back into ssh's OWN option list (a reverse forward into THIS host).  Modelling
+# each such rewrite one spelling at a time is what kept leaking, so the exemption is
+# granted ONLY on that one structural shape and withheld (fail closed to main's
+# behaviour) on everything else.  ``_PLAIN_TEXT_RE`` is the printable-ASCII
+# allowlist; ``_SHELL_SHAPE_RE`` is every character that could make the command
+# more than one plain simple ``ssh`` command.
+_PLAIN_TEXT_RE = re.compile(r"\A[\t\x20-\x7e]*\Z")
+_SHELL_SHAPE_RE = re.compile(r"""[;&|<>(){}=$`'"\\*?\[\]~]""")
 
 
-def _text_defeats_argv_position(text_lower: str) -> bool:
-    """True if expansion/quote-splice/indirection could shift argv so position is unsafe.
+def _is_plain_simple_ssh_command(text_lower: str) -> bool:
+    """True iff *text_lower* is one simple command whose first word is literally ssh.
 
-    Fails the ssh ``-R`` path exemption CLOSED on any doubt: an expansion, glob,
-    brace, substitution, redirect or newline; a quote or backslash (which splices
-    a non-literal command word the walk cannot see); or an ``alias``/``eval``/
-    ``source``/``.`` indirection verb that rewrites argv or defers evaluation.
+    The ONLY shape under which the ``-R`` remote-command path exemption is trusted;
+    fails CLOSED (returns False) on anything else, so the exemption falls back to
+    main's behaviour.  Structural, not per-spelling:
+
+      * plain printable ASCII with words separated by space or tab only
+        (``_PLAIN_TEXT_RE``) -- a control byte, odd whitespace (carriage return,
+        vertical tab, form feed), NUL or non-ASCII character the walk and bash can
+        split differently withholds it;
+      * no shell OPERATOR or SEPARATOR and no shell-active WORD character
+        (``_SHELL_SHAPE_RE``): a command separator (``;`` ``&`` ``|``), redirect
+        (``<`` ``>``), subshell/group (``(`` ``)`` ``{`` ``}``), assignment (``=``),
+        expansion/substitution (``$`` backtick), a quote or a backslash escape,
+        or glob/tilde (``* ? [ ] ~``) -- any of which can rewrite argv before exec;
+      * the FIRST word is exactly ``ssh`` -- which, with no operator or separator
+        permitted, is the program of the one simple command, so there is no prefix
+        assignment, no keyword (``set``/``shopt``), and no wrapper
+        (``env``/``command``/``builtin``/``xargs``/...) that could run ssh with a
+        rewritten argv.
     """
-    return bool(_POSITION_UNSAFE_RE.search(text_lower))
+    if not _PLAIN_TEXT_RE.match(text_lower):
+        return False
+    if _SHELL_SHAPE_RE.search(text_lower):
+        return False
+    words = text_lower.split()
+    return bool(words) and words[0] == "ssh"
 
 
 # A LITERAL path/repo token: a ``/``-bearing word drawn ONLY from path characters
@@ -1642,6 +1647,30 @@ def _substitution_bodies(text: str) -> "list[str]":
         else:
             i += 1
     return bodies
+
+
+def _arith_int_literal_repl(match: "re.Match[str]") -> str:
+    """The decimal spelling bash prints for one arithmetic integer literal."""
+    lit = match.group(1)
+    magnitude = lit.lstrip("-")
+    try:
+        if magnitude.lower().startswith("0x"):
+            value = int(lit, 16)
+        elif magnitude.startswith("0") and len(magnitude) > 1:
+            # bash reads a leading zero as octal; an invalid octal digit is a
+            # bash error (no command runs), so the spelling is left alone.
+            value = int(lit, 8)
+        else:
+            value = int(lit, 10)
+        # ``str`` stays INSIDE the try (round-18): hex/octal ``int`` uses a
+        # power-of-two base exempt from the interpreter's digit cap, so a
+        # ~3600-digit hex literal converts -- but its decimal ``str`` IS
+        # capped and would raise straight through ``is_denied``, aborting
+        # the evaluation.  Keeping the original spelling instead composes
+        # with the target-position rule into a fail-closed deny.
+        return str(value)
+    except ValueError:
+        return match.group(0)
 
 
 def _redirect_glue_point(word: str) -> "int | None":

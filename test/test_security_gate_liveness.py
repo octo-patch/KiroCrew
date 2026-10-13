@@ -319,20 +319,24 @@ def _url_payload_command(n: int) -> str:
 #: with no shell metacharacter is a non-forward value, since OpenSSH takes ``0``
 #: and service names and the shell expands braces/globs/variables/``${p%/}`` to a
 #: port). A TWO-field value always fails closed (its last field can be a local
-#: socket path, a real reverse forward in). The exemption is trusted ONLY for an
-#: ssh at program position with none of the INDIRECTION MACHINERY that defeats
-#: argv position: an expansion/glob/newline, a quote or backslash splice
-#: (``a""lias``, ``e\val``), or an ``alias``/``eval``/``source``/``.`` verb --
-#: all detected on the raw text, failing CLOSED on any doubt rather than
-#: modelling each spelling. So a launcher-run ssh (``xargs -I word ssh …``), a
-#: same-line ``alias``-rewritten argv, a quote-spliced ``a""lias`` and an
-#: ``eval``/``source``-wrapped payload all fail closed, while ``gh ... -R o/r``
-#: is allowed. ``mksh`` stays in the nested-shell set, so a self dial through
-#: ``mksh -c`` is caught while a non-self far host is allowed, exactly as under
-#: ``bash``/``ksh``. The one pure ``_arith_int_literal_repl`` helper moved from
-#: ``argv_floor`` to ``shell_normalizer`` (no behaviour change) keeps
-#: ``argv_floor`` under the per-module cap below.
-_PACKAGE_LINE_BUDGET = 29_281
+#: socket path, a real reverse forward in). ``mksh`` stays in the nested-shell set,
+#: so a self dial through ``mksh -c`` is caught while a non-self far host is
+#: allowed, exactly as under ``bash``/``ksh``.
+#:
+#: LOWERED, from 29,298 to 29,270, for the ``-R`` exemption's structural rewrite:
+#: the per-spelling INDIRECTION-MACHINERY detector (an allowlist plus an
+#: expansion/quote/``alias``/``eval``/``source`` denylist, each spelling leaking a
+#: new one) is replaced by ONE structural gate -- the exemption is granted ONLY
+#: when the whole command is a single plain simple command whose first word is
+#: literally ``ssh``: plain printable ASCII, space/tab separated, no shell operator
+#: or separator and no shell-active word character (``= $`` backtick quote
+#: backslash glob tilde). Anything else gets ``main``'s behaviour, so a keyword-mode
+#: assignment-shaped word (``set -k; ssh far -l a=b gh -R tmp/s``), a leading
+#: assignment, a launcher, a quote/expansion splice, an odd-whitespace split and an
+#: ``alias``/``eval``/``source`` wrapper all fail closed in one rule, while
+#: ``ssh far gh -R o/r`` is allowed. The net is a REMOVAL of lines, so the budget
+#: drops; it still carries no spare room of its own.
+_PACKAGE_LINE_BUDGET = 29_270
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -8878,10 +8878,15 @@ class TestSandboxEscapeSshSelf:
             "ssh far-host.example.com gh issue list -R o/r",
             "ssh far-host.example.com gh pr list -R o/r --limit 30",
             "ssh 198.51.100.9 gh pr view -R kirodotdev/kirocrew",
-            "ssh -o batchmode=yes far-host.example.com gh pr view -R o/r",
             "ssh far-host.example.com gh issue develop -R a/b/c",
             "ssh far-host.example.com 'gh issue list -R o/r'",
             "ssh user@far-host.example.com gh pr list -R o/r",
+            # Ordinary plain cases this PR exists for: a single simple command
+            # whose first word is literally ``ssh``, plain ASCII, space-separated,
+            # with a remote command before the ``-R`` repo flag. The structural
+            # gate grants the exemption and these stay allowed.
+            "ssh build-host.example.com gh repo clone owner/name -R upstream/name",
+            "ssh deploy.example.com gh workflow run -R owner/repo",
             "scp -R o/r file far-host.example.com:/tmp/x",
             # ``mksh`` is in the nested-shell set, so its ``-c`` payload is walked
             # like ``bash``/``ksh``: a NON-self destination inside it stays allowed,
@@ -9012,6 +9017,46 @@ class TestSandboxEscapeSshSelf:
             # either as a leading command fails the exemption closed too.
             "source /tmp/x; ssh far-host.example.com gh -R tmp/s",
             ". /tmp/x; ssh far-host.example.com gh -R o/r",
+            # A whitespace byte the WALK splits on but bash's IFS does NOT --
+            # a carriage return, vertical tab, form feed, NUL, or a non-ASCII
+            # space -- keeps the destination and the next word a SINGLE word for
+            # bash (so ``-R tmp/s`` is a real reverse forward into this host),
+            # while the walk reads them as two words and would treat ``-R`` as a
+            # remote-command flag.  The exemption is now granted ONLY when the
+            # whole command is plain printable ASCII separated by space or tab,
+            # so every one of these withholds it and falls back to ``main``'s
+            # refusal (``main`` has no exemption and refuses all of them).  The
+            # carriage-return case was ALLOWED on head f6e6f34b09; the others
+            # already failed closed and are pinned so the allowlist keeps them so.
+            "ssh far-host.example.com\rgh -R tmp/s",
+            "ssh far-host.example.com\x0bgh -R tmp/s",
+            "ssh far-host.example.com\x0cgh -R tmp/s",
+            "ssh far-host.example.com\x00gh -R tmp/s",
+            "ssh far-host.example.com\xa0gh -R tmp/s",
+            # The same odd-whitespace split in front of a ``-o hostname`` /
+            # ``-o proxyjump`` override that re-points the connection at this
+            # host: withheld for the same reason.
+            "ssh far-host.example.com\rgh -o hostname=localhost",
+            "ssh far-host.example.com\rgh -o proxyjump=localhost",
+            # An ASSIGNMENT-SHAPED word (a word containing ``=``) anywhere in the
+            # command withholds the exemption, because the shell can move such a
+            # word out of ssh's argv before exec: in keyword mode (``set -k``) an
+            # assignment-shaped word becomes an environment binding, and an option
+            # that consumes it (``-l a=b``) then shifts every following word one
+            # position left, so a word the walk reads as the remote command is
+            # handed to ssh as a real ``-R`` option into THIS host. The structural
+            # gate grants the exemption ONLY for a single plain simple ``ssh``
+            # command with no ``=`` in any word, so all of these fall back to
+            # ``main``'s refusal (``main`` refuses every 1-2 field ``-R``).  The
+            # ``set -k`` keyword-mode cases were ALLOWED on head 569ad91168 and are
+            # now refused; the ``-o batchmode=yes`` case likewise carries ``=``.
+            "set -k; ssh far-host.example.com -l a=b gh -R tmp/s",
+            "set -k; ssh -l a=b far-host.example.com gh -R tmp/s",
+            "ssh far-host.example.com -l a=b gh -R tmp/s",
+            "ssh -o batchmode=yes far-host.example.com gh pr view -R o/r",
+            # A leading assignment makes the first word NOT literally ``ssh``, so
+            # the whole command is not one plain simple ``ssh`` command: withheld.
+            "x=y ssh far-host.example.com gh -R tmp/s",
         ],
     )
     def test_portshaped_self_forward_in_remote_command_stays_refused(self, cmd):
