@@ -371,6 +371,7 @@ describe('CrewDynamicDashboard', () => {
   // tab shows the suggestions page instead of that default.
   const unadopted = () => page({
     state: 'empty',
+    suggestions: true,
     state_reason: "no template adopted; showing the default 'project-report'",
     instance_version: 0,
     rendered_html: '<!doctype html><title>report</title><p>default report</p>',
@@ -408,6 +409,28 @@ describe('CrewDynamicDashboard', () => {
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ state: 'live' }))
     mount()
     expect(await screen.findByTestId('crew-dashboard-frame')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-dashboard-suggestions')).toBeNull()
+  })
+
+  it('draws the page it was sent when the gateway does not say suggestions', async () => {
+    // The shipped page named for the crewmate (`kirocrew-conductor` gets its board)
+    // reads `empty` without the flag: the gateway decides, the tab does not re-derive.
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(
+      page({ ...unadopted(), suggestions: false, template: { id: 'kirocrew-conductor', version: 1 } }),
+    )
+    renderWithProviders(
+      <CrewDynamicDashboard target={{ kind: 'member', slug: 'kirocrew-conductor', member: 'kirocrew-conductor' }} displayName="Conductor" />,
+    )
+    expect(await screen.findByTestId('crew-dashboard-frame')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-dashboard-suggestions')).toBeNull()
+  })
+
+  it('a bound package with nothing applied keeps its own empty state', async () => {
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(
+      page({ state: 'empty', html: '', rendered_html: undefined, dashboard: 'my-pkg' }),
+    )
+    mount()
+    expect(await screen.findByTestId('crew-dashboard-none')).toBeInTheDocument()
     expect(screen.queryByTestId('crew-dashboard-suggestions')).toBeNull()
   })
 

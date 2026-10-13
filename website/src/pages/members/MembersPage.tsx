@@ -180,6 +180,7 @@ import { useMeasuredHeight } from '../../hooks/useMeasuredHeight'
 import { loadColumnWidth } from '../../lib/columnWidth'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
 import { lastActivityEpoch } from '../chat/sessionOrder'
+import { revealComposer } from '../chat/composerFocus'
 import TeamGroupHeader from './TeamGroupHeader'
 import TeamView, { type TeamMemberInput } from './TeamView'
 import TeamDialog from './TeamDialog'
@@ -5178,8 +5179,10 @@ export default function MembersPage() {
                   member={activeMemberName}
                   displayName={crewDisplayName(activeView ?? active)}
                   avatar={(activeView ?? active)?.avatar}
-                  // A needs-you option lands in this crewmate's chat box; the person sends it.
-                  onAct={activeSlot ? (text: string) => mergePaneDraft(activeSlot, text, []) : undefined}
+                  // A needs-you option or a suggested prompt lands in this crewmate's
+                  // chat box; the person sends it. The composer is revealed (focused on
+                  // desktop) so the result of the click is where the reader looks.
+                  onAct={activeSlot ? (text: string) => { mergePaneDraft(activeSlot, text, []); revealComposer() } : undefined}
                   // Badge click opens the Profile tab directly so the person can unlock.
                   // Guard against an unsaved schedule form in the already-open card:
                   // openProfile() increments the nonce which re-mounts the panel.

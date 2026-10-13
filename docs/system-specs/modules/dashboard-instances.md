@@ -79,6 +79,18 @@ An `empty` crewmate is still SHOWN a page, from `default_instance(slug)`: the sh
 whose id is the crewmate's slug, else `DEFAULT_TEMPLATE_ID`. Only shipped pages match by
 name; an operator's page never does. The read route and the `[DASHBOARD]` turn block both
 resolve through it, and nothing is written. No shipped page may be named `default`.
+The crewmate's Dashboard tab on `/members` does not draw the generic `DEFAULT_TEMPLATE_ID`
+fallback: it shows the suggestions page (`CrewDashboardEmpty`) instead, and the turn block
+says so and lists no fields and no upkeep pointer (a value written there would land on a
+page nobody sees). A shipped page named for the crewmate is drawn as before. The decision
+is made ONCE, by `dashboard_agentic.shows_suggestions` (template instance served, record
+`empty`, template not named for the slug, no package on screen): the read route sends it as
+`suggestions: true` and the website draws what that says, and `turn_block` and the
+profile's upkeep view ask the same function, with the same package lookup
+(`dashboard_agentic.bound_package`) and the same lock rule as the route.
+`dashboard_fields` and `dashboard_write` are NOT changed by this: a crewmate or script that
+still writes to the default while the suggestions page shows is accepted and the value is
+kept as before, only not drawn. Nothing here deletes or migrates it.
 
 `stale` covers two cases with different sentences: the template moved ahead of the copy,
 and the template left the registry. Nothing is missing from the copy in either case --

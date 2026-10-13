@@ -452,17 +452,13 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // preview link can start from a cached `no_preview` while its own read is in
   // flight, and handing over on that would skip the page staged since.
   const previewGone = staged && isError && !isFetching && apiErrorCode(error) === 'no_preview'
-  // A crewmate with no ADOPTED page gets the suggestions page, not the default
-  // template. The read answers `empty` for it and still carries the default
-  // `project-report` composed, but drawing that shows a page nobody chose as if
-  // it were the crewmate's own. Only the live member read: a staged preview is a
-  // page the crewmate offered, and a session's page has no crewmate to ask.
+  // A crewmate with no ADOPTED page gets the suggestions page, not the generic
+  // default the read still carries. The GATEWAY decides (`suggestions`), by the same
+  // function that tells the crewmate what its tab shows, so the two cannot drift.
+  // Only the live member read: a staged preview is a page the crewmate offered, and
+  // a session's page has no crewmate to ask.
   const liveMember = target.kind === 'member' && !staged
-  // Only the GENERIC default stands down. A crewmate a shipped page is named for
-  // (`kirocrew-conductor` gets its board) keeps that page, and a bound package with
-  // nothing applied keeps its own empty state.
-  const suggestions = liveMember && !isError && data?.state === 'empty'
-    && !livePackage && data?.template?.id !== memberSlug
+  const suggestions = liveMember && !isError && data?.suggestions === true
   useEffect(() => { onPreviewGone?.(previewGone) }, [onPreviewGone, previewGone])
 
   // The person's layout lock, read off the same body the page comes from. This tab

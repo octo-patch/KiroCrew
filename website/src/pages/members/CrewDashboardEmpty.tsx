@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import { ArrowRight, LayoutDashboard, Sparkles, Target } from 'lucide-react'
+import { LayoutDashboard, Sparkles, Target } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import CrewAvatar from '../../components/CrewAvatar'
 import { Btn } from '../../components/ui'
@@ -79,23 +79,34 @@ export default function CrewDashboardEmpty({ member, displayName, avatar, onAct 
         <CrewAvatar seed={member} avatar={avatar} size={AVATAR_PX} />
         {onAct && (
           <div className="mt-1.5 w-full" data-testid="crew-dashboard-suggestions-prompts">
-            <p id={leadId} className="mb-2 text-center text-[13px] text-muted">
+            {/* THE VOICE CHANGES HERE. The bubble above is the crewmate's "I"; the
+                prompts below are the PERSON's, written for them to send. A visible
+                heading naming who they are addressed to, and drafts drawn as the
+                person's own chat bubbles (right-aligned, dashed while unsent; `border-border-strong` so the dash shows at rest,
+                not only on hover or focus), keep
+                a first-time reader from taking a prompt's "I" for the crewmate. */}
+            <p className="mb-1 text-right text-[13px] font-semibold text-text-strong">
+              {t('pages.membersPage.dashboard_empty_prompts_heading', { name: displayName || member })}
+            </p>
+            <p id={leadId} className="mb-2 text-right text-[12px] text-muted">
               {t('pages.membersPage.dashboard_empty_prompts_lead')}
             </p>
-            <ul className="m-0 flex list-none flex-col gap-2 p-0">
+            <ul className="m-0 flex list-none flex-col items-end gap-2 p-0">
               {PROMPTS.map(({ key, Icon }) => {
                 const text = t(key)
                 return (
-                  <li key={key}>
+                  <li key={key} className="max-w-[92%]">
                     <Btn
-                      className="w-full justify-start gap-2.5 rounded-[10px] px-3 py-2.5 text-left"
+                      type="button"
+                      className="user-bubble w-full items-start gap-2.5 rounded-xl rounded-br-sm border-dashed border-border-strong bg-card px-3 py-2.5 text-left leading-relaxed text-card-fg hover:border-accent hover:bg-card focus-visible:outline-2 focus-visible:outline-accent"
                       onClick={() => onAct(text)}
                       aria-describedby={leadId}
                       data-testid="crew-dashboard-suggestion"
                     >
-                      <Icon className="lucide-inline text-accent" aria-hidden="true" />
+                      <Icon className="lucide-inline mt-0.5 shrink-0 text-accent" aria-hidden="true" />
+                      {/* No trailing glyph: the whole card is the one control, and a
+                          return arrow or a pencil each read as a second target. */}
                       <span className="flex-1">{text}</span>
-                      <ArrowRight className="lucide-inline text-muted" aria-hidden="true" />
                     </Btn>
                   </li>
                 )

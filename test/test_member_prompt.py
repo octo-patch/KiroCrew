@@ -584,7 +584,10 @@ class TestMemberSectionInjection:
     def test_upkeep_pointer_reinjected_after_compaction(self, tmp_path):
         """The pointer rides the member section, so a compaction cannot drop it."""
         from kiro_crew import dashboard_upkeep
+        from kiro_crew.dashboard_templates import instance
 
+        # An ADOPTED page: an unadopted one shows the suggestions page and offers no upkeep.
+        instance.adopt("code-reviewer", "project-report")
         with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
             full, _ = _builder(tmp_path).build_message(
                 "hello again",

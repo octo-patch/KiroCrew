@@ -28,6 +28,7 @@ from typing import Any, Callable, Final, Mapping
 
 from aiohttp import web
 
+from kiro_crew import dashboard_agentic
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers import member_dashboard_fields
@@ -196,22 +197,9 @@ def _bound_package_slug(member: str) -> str:
     run it off the event loop.
     """
     try:
-        from kiro_crew import members as members_mod
-        from kiro_crew.artifact_store.dashboard_package import (
-            BindingLookupIncomplete,
-            resolve_bound_slug,
-        )
-
-        slug = members_mod.member_slug(member)
-        if not slug:
-            return ""
-        try:
-            return resolve_bound_slug(f"crewmate:{slug}") or ""
-        except BindingLookupIncomplete as exc:
-            # Logged, not swallowed: the remedy is a library to prune or a duplicate
-            # binding to delete, and neither is visible from the page that results.
-            logger.info("dashboard: %r's package binding is unresolved: %s", member, exc)
-            return ""
+        # ONE lookup, shared with the crewmate's `[DASHBOARD]` turn block, so the
+        # page the person sees and the page the crewmate is told about agree.
+        return dashboard_agentic.bound_package(members_mod.member_slug(member))
     except Exception:
         logger.debug("dashboard: %r's package binding could not be resolved", member, exc_info=True)
         return ""
@@ -512,6 +500,11 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
             # own empty state IS the answer here, and it needs no html.
             renderable = False
     body = _safe_body(record.wire())
+    # THE SUGGESTIONS DECISION, made once on the server: the tab draws the suggestions
+    # page instead of this read's default exactly when this says so, and the crewmate's
+    # turn block is told the same answer by the same function. No package is being
+    # served on this branch -- that path returned above.
+    body["suggestions"] = dashboard_agentic.shows_suggestions(slug, record, package_slug="")
     # STALE belongs here with LIVE and EMPTY: `_state_of` calls a stale copy complete
     # and still renderable -- what it cannot do is be compared against or refreshed
     # from its source, which is what the frame's stale band says. A copy served

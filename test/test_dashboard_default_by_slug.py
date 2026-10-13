@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
+from unittest.mock import patch
 
 import pytest
 from aiohttp import web
@@ -127,8 +128,65 @@ class TestTheSeam:
         assert f"template {SLUG} v1" in block
 
     def test_the_turn_block_names_the_default_for_any_other_crewmate(self, builtin: Path) -> None:
+        # The generic default is not drawn on the tab: the suggestions page is, and
+        # the block says so instead of naming a page nobody sees.
         block = dashboard_agentic.turn_block("mate")
-        assert f"template {instance.DEFAULT_TEMPLATE_ID} v1" in block
+        assert dashboard_agentic.SUGGESTIONS_LINE in block
+        assert instance.DEFAULT_TEMPLATE_ID not in block
+
+
+async def _route_body(slug: str) -> dict[str, Any]:
+    async with _client() as client:
+        resp = await client.get(f"/api/members/{slug}/dashboard?member=Fleet+Conductor")
+        assert resp.status == 200, await resp.text()
+        return dict(await resp.json())
+
+
+class TestTheSuggestionsDecisionIsMadeOnce:
+    """The read route sends `suggestions` and the turn block says the same thing,
+    because both ask `dashboard_agentic.shows_suggestions`."""
+
+    @pytest.mark.asyncio
+    async def test_the_generic_default_is_the_suggestions_page_on_both(self, builtin: Path) -> None:
+        # No page named for this crewmate, so the read falls to the generic default.
+        (builtin / SLUG / "manifest.json").unlink()
+        assert (await _route_body(SLUG))["suggestions"] is True
+        assert dashboard_agentic.SUGGESTIONS_LINE in dashboard_agentic.turn_block(SLUG)
+
+    @pytest.mark.asyncio
+    async def test_the_page_named_for_the_crewmate_is_drawn_on_both(self, builtin: Path) -> None:
+        assert (await _route_body(SLUG))["suggestions"] is False
+        assert dashboard_agentic.SUGGESTIONS_LINE not in dashboard_agentic.turn_block(SLUG)
+
+    @pytest.mark.asyncio
+    async def test_an_adopted_page_is_drawn_on_both(self, builtin: Path) -> None:
+        instance.adopt(SLUG, "fixture-other")
+        assert (await _route_body(SLUG))["suggestions"] is False
+        assert dashboard_agentic.SUGGESTIONS_LINE not in dashboard_agentic.turn_block(SLUG)
+
+    def test_a_bound_package_is_not_the_suggestions_page(self, builtin: Path) -> None:
+        # The tab serves the package page, so the crewmate must not be told otherwise.
+        with patch.object(dashboard_agentic, "bound_package", return_value="my-pkg"):
+            block = dashboard_agentic.turn_block("mate")
+        assert dashboard_agentic.SUGGESTIONS_LINE not in block, block
+
+    def test_a_locked_crewmate_serves_no_package_so_it_is_the_suggestions_page(
+        self, builtin: Path
+    ) -> None:
+        # The read route clears the package under a lock and draws the template
+        # instance; the block follows the same rule.
+        instance.set_structure_lock("mate", True)
+        with patch.object(dashboard_agentic, "bound_package", return_value="my-pkg"):
+            block = dashboard_agentic.turn_block("mate")
+        assert dashboard_agentic.SUGGESTIONS_LINE in block, block
+
+    def test_the_profile_view_claims_no_pointer_for_the_suggestions_page(
+        self, builtin: Path
+    ) -> None:
+        from kiro_crew import dashboard_upkeep
+
+        view = dashboard_upkeep.view("mate")
+        assert view is not None and view["pointer"] == ""
 
 
 class TestAnOperatorPageNeverTakesOverByName:

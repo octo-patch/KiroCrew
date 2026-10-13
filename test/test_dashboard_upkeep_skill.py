@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -150,6 +151,8 @@ class TestTheUpkeepRows:
                 assert "upkeep" not in rows[name], "a fold field got upkeep text"
 
     def test_the_helper_is_the_absolute_path_of_the_copied_script(self) -> None:
+        # An ADOPTED page: an unadopted one shows the suggestions page and offers no fields.
+        instance.adopt(SLUG, "project-report")
         dashboard_agentic.turn_block(SLUG)  # the build copies the scripts
         helper = _rows(_fields())["ci"]["upkeep"]["helper"]
         assert helper == str(dashboard_upkeep.scripts_dir(SLUG) / "project_report_ci.py")
@@ -248,6 +251,8 @@ class TestTheSessionGuard:
 
 class TestThePointer:
     def test_the_block_ends_with_the_pointer_and_the_scripts_exist(self) -> None:
+        # An ADOPTED page: an unadopted one shows the suggestions page and offers no fields.
+        instance.adopt(SLUG, "project-report")
         block = dashboard_agentic.turn_block(SLUG)
         assert block.splitlines()[-1] == dashboard_upkeep.POINTER
         assert "dashboard_fields" in dashboard_upkeep.POINTER
@@ -259,6 +264,8 @@ class TestThePointer:
         assert block and "Upkeep:" not in block
 
     def test_the_member_section_carries_it_and_a_turn_off_the_desk_does_not(self) -> None:
+        # An ADOPTED page: an unadopted one shows the suggestions page and offers no fields.
+        instance.adopt(SLUG, "project-report")
         from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
         from kiro_crew.context_assembly.member import build_member_section
 
@@ -275,6 +282,8 @@ class TestThePointer:
             assert dashboard_upkeep.view(SLUG) is None
 
     def test_an_unwritable_scripts_dir_costs_nothing_but_the_scripts(self) -> None:
+        # An ADOPTED page: an unadopted one shows the suggestions page and offers no fields.
+        instance.adopt(SLUG, "project-report")
         with patch.object(dashboard_upkeep, "scripts_dir", side_effect=OSError("ro")):
             block = dashboard_agentic.turn_block(SLUG)
         assert block.startswith("[DASHBOARD]") and block.endswith(dashboard_upkeep.POINTER)
@@ -310,6 +319,9 @@ class TestThePointer:
 
 class TestTheView:
     def test_the_profile_view_is_the_tool_text_and_writes_nothing(self) -> None:
+        # An ADOPTED page: an unadopted one shows the suggestions page and offers no pointer.
+        instance.adopt(SLUG, "project-report")
+        shutil.rmtree(dashboard_upkeep.scripts_dir(SLUG), ignore_errors=True)
         view = dashboard_upkeep.view(SLUG)
         assert view is not None
         assert view["pointer"] == dashboard_upkeep.POINTER

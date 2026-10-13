@@ -884,6 +884,71 @@ def page_in_force(slug: str) -> tuple[Any, TemplateManifest] | None:
     return record, manifest
 
 
+def bound_package(slug: str) -> str:
+    """The ``kind="dashboard"`` artifact bound to crewmate *slug*, or ``""``.
+
+    The ONE lookup both the read route and the turn block ask, so the page the person
+    sees and the page the crewmate is told about cannot disagree. An unprovable answer
+    (a lookup that cannot finish, an ambiguous binding) is answered as no package,
+    which is the read route's own rule: the tab then draws the template instance.
+    """
+    try:
+        from kiro_crew.artifact_store.dashboard_package import (
+            BindingLookupIncomplete,
+            resolve_bound_slug,
+        )
+
+        if not slug:
+            return ""
+        try:
+            return resolve_bound_slug(f"crewmate:{slug}") or ""
+        except BindingLookupIncomplete as exc:
+            logger.info("dashboard: %r's package binding is unresolved: %s", slug, exc)
+            return ""
+    except Exception:
+        logger.debug("dashboard: %r's package binding could not be resolved", slug, exc_info=True)
+        return ""
+
+
+def shows_suggestions(slug: str, record: Any, *, package_slug: str) -> bool:
+    """Whether the person sees the SUGGESTIONS page on this crewmate's Dashboard tab.
+
+    THE decision, made once: the read route sends it to the website as
+    ``suggestions`` and :func:`turn_block` tells the crewmate the same answer.
+
+    True only for the template instance (no package page is being served), an
+    UNADOPTED record (``state: empty``, the default filled in), and the GENERIC
+    default -- a shipped page named for the crewmate (``default_template_id``'s slug
+    pick, e.g. ``kirocrew-conductor``'s board) is drawn as before.
+    """
+    from kiro_crew.dashboard_templates import instance as instance_store
+
+    if package_slug:
+        return False
+    if getattr(record, "state", None) != instance_store.STATE_EMPTY:
+        return False
+    return str(getattr(record, "template_id", "") or "") != slug
+
+
+def tab_shows_suggestions(slug: str) -> bool:
+    """:func:`shows_suggestions` for *slug* as it stands, for a reader that holds no
+    record of its own (the profile's upkeep view). TOTAL: unreadable is ``False``."""
+    record, manifest, locked_line = _read_page(slug)
+    if record is None or manifest is None:
+        return False
+    package_slug = "" if locked_line else bound_package(slug)
+    return shows_suggestions(slug, record, package_slug=package_slug)
+
+
+#: The block for a crewmate whose tab shows the suggestions page. No fields and no
+#: upkeep pointer: values written to the default would land on a page nobody sees, so
+#: offering them would spend every turn's tokens on upkeep no reader can look at.
+SUGGESTIONS_LINE: str = (
+    "Your Dashboard tab shows the suggestions page: no page is adopted yet, so there "
+    "are no fields to keep up. Offer a page with dashboard_preview; the person applies it."
+)
+
+
 def turn_block(slug: str) -> str:
     """The ``[DASHBOARD]`` lines for a crewmate's turn, or ``""`` when it has none.
 
@@ -900,6 +965,19 @@ def turn_block(slug: str) -> str:
     if record is None or manifest is None:
         # The line is the store's own refusal, so the turn and the tool never disagree.
         return f"[DASHBOARD]\n{locked_line}" if locked_line else ""
+    from kiro_crew import dashboard_upkeep  # the upkeep module reads this one
+
+    # The read route's rule for which package is on screen: a lock keeps the template
+    # instance there, so a locked crewmate serves no package. The lock is read off
+    # the STORED record (the default it fell back to carries none), which is what
+    # `locked_line` already is.
+    package_slug = "" if locked_line else bound_package(slug)
+    if shows_suggestions(slug, record, package_slug=package_slug):
+        # Still synced: `dashboard_fields` keeps answering for the default and names
+        # these helpers, so they must exist and be current even though the block
+        # offers no fields.
+        dashboard_upkeep.sync(slug, page=(record, manifest))
+        return "[DASHBOARD]\n" + SUGGESTIONS_LINE + (f"\n{locked_line}" if locked_line else "")
     names = sorted(agentic_fields(manifest))
     writes = ", ".join(names) if names else "none (every field is folded)"
     block = (
@@ -909,8 +987,6 @@ def turn_block(slug: str) -> str:
         + f"Fields you write: {writes}. Call dashboard_fields for their shapes and "
         "current values before dashboard_write."
     )
-    from kiro_crew import dashboard_upkeep  # the upkeep module reads this one
-
     dashboard_upkeep.sync(slug, page=(record, manifest))
     return block + ("\n" + dashboard_upkeep.pointer() if names else "")
 

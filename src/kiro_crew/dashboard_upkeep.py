@@ -190,10 +190,13 @@ def view(slug: str) -> dict[str, Any] | None:
             return None
         manifest = page[1]
         rows = upkeep_rows(manifest, slug)
+        # The suggestions page on the tab means [DASHBOARD] offers no fields and no
+        # pointer, so the profile must not claim one either.
+        suggestions = dashboard_agentic.tab_shows_suggestions(slug)
         return {
             # The pointer only when [DASHBOARD] carries it: a page with nothing to
             # write gets none there, so the profile must not claim one.
-            "pointer": POINTER if rows else "",
+            "pointer": POINTER if rows and not suggestions else "",
             "fields": [{"field": name, **row} for name, row in rows.items()],
             "scripts": sorted(render_scripts(manifest)),
         }

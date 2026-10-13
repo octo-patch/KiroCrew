@@ -147,6 +147,10 @@ export interface DashboardRead {
   preview?: boolean
   /** Set on a `preview` read: which staged page this is. Keep sends it back. */
   staged_ms?: number
+  /** The crewmate's tab shows the SUGGESTIONS page instead of this read's page: the
+   *  gateway's one decision (`dashboard_agentic.shows_suggestions`), which the
+   *  crewmate's turn block is told too. Absent on every other read. */
+  suggestions?: boolean
 }
 
 /** A dashboard template's manifest. Mirrors `TemplateManifest`. */

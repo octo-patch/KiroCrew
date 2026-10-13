@@ -3210,7 +3210,14 @@ class TestMemberBriefingEndpoint:
         crewmate reads -- and not the briefing read, so it is there even where notes
         cannot be read."""
         from kiro_crew import dashboard_agentic, dashboard_upkeep
+        from kiro_crew.dashboard_templates import instance
 
+        # An ADOPTED page: an unadopted one shows the suggestions page and offers no upkeep.
+        instance.adopt("code-reviewer", "project-report")
+        # Adopting syncs the helper scripts; this test is about the READ writing none.
+        import shutil
+
+        shutil.rmtree(dashboard_upkeep.scripts_dir("code-reviewer"), ignore_errors=True)
         state = _make_state(tmp_path)
         with (
             _patched_config([CREW]),
