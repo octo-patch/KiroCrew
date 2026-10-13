@@ -13,6 +13,12 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const {
+  dialTarget,
+  listenerSecretsFor,
+  listenerSecretPath,
+  LOOPBACK_FAMILY_BINDS,
+} = require("./local-token");
 
 const KIROCREW_EXE_NAMES = new Set(["kirocrew", "kirocrew-backend"]);
 const PYTHON_EXE_RE = /^(?:python(?:\d+(?:\.\d+)*)?w?|py)$/i;
@@ -208,39 +214,146 @@ function kirocrewCommandShape(
 const INIT_PPID = 1;
 
 /**
- * POST /api/shutdown with the local secret (mirrors the dashboard's
- * X-Local-Secret auth). Resolves true on HTTP 200, false on any failure
- * (missing secret, connection error, timeout, non-200) so the caller can fall
- * back to signals.
+ * True when `child` is a live process handle this app spawned.
  *
+ * Only the process that spawned a child gets one, and a handle whose child has
+ * exited (or never started, so it has no pid) proves nothing at all. A live
+ * handle proves the child RUNS, not that it is what answers the port; that
+ * second fact comes from the kernel (`childHoldsEveryListener`).
+ */
+function isLiveSpawnedChild(child) {
+  return Boolean(child)
+    && Number.isInteger(child.pid)
+    && child.pid > 0
+    && child.exitCode === null
+    && child.signalCode == null;
+}
+
+/**
+ * True when any loopback address on `port` has a listener entry file, whatever
+ * it holds. A gateway that withdraws an address may blank the file rather than
+ * delete it, so a readable empty file still counts as an entry.
+ */
+function hasAnyListenerEntry({ port, kirocrewHome, fsMod, pathMod }) {
+  for (const binds of Object.values(LOOPBACK_FAMILY_BINDS)) {
+    for (const bindAddress of binds) {
+      try {
+        fsMod.readFileSync(listenerSecretPath(kirocrewHome, port, bindAddress, pathMod), "utf8");
+        return true;
+      } catch {
+        // Absent or unreadable: no entry at this address.
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * True when the kernel names `child` as the ONLY listener on `port`.
+ *
+ * `listenerPidsFn` returns the pids listening on the port at any address, or
+ * null when that cannot be established. Every listener must be the child:
+ * `localhost` can reach either loopback family, so a second holder on the other
+ * family (a tunnel's local end, say) is a party the request may reach. A pid is
+ * a kernel fact, not something a process can present, and the child must still
+ * be the same live process once the probe returns. A missing probe, a failed
+ * one, or no listener at all is "not established" and refuses.
+ */
+async function childHoldsEveryListener({ port, child, listenerPidsFn }) {
+  if (typeof listenerPidsFn !== "function") return false;
+  let pids = null;
+  try { pids = await listenerPidsFn(Number(port)); } catch { pids = null; }
+  if (!Array.isArray(pids) || pids.length === 0) return false;
+  if (!pids.every((pid) => Number(pid) === child.pid)) return false;
+  return isLiveSpawnedChild(child);
+}
+
+/**
+ * The secrets it is safe to POST /api/shutdown with at `target`, or `[]`.
+ *
+ * First choice is the listener entry the gateway published for the dialed
+ * address and port (`listenerSecretsFor`): it authenticates only against the
+ * listener it is sent to. The home-wide `.local_secret` is a last-writer-wins
+ * slot shared by every gateway on this data home, so sending it to whatever
+ * answers the port could hand a tunnel's local end, or another gateway, a
+ * credential minted elsewhere. It is read ONLY with all three of:
+ *   - no listener entry on the port at any loopback address, so the gateway is
+ *     an older build that publishes none;
+ *   - `spawnedChild` is a live child this process spawned;
+ *   - the kernel names that child as the only listener on the port.
+ * Then the party the request reaches is our own child, and the home-wide value
+ * is its credential. Without all three nothing is sent and the caller falls
+ * through to signals.
+ *
+ * Any entry on the port, even an empty or refused one, means a build that
+ * publishes entries owns it, so the coverage test alone decides. A live child
+ * proves only the listeners it published; when one family the dialed name can
+ * reach is uncovered (another process took that address), the child handle
+ * does not prove the name reaches the child, so it must not reopen the
+ * home-wide file.
+ */
+async function shutdownSecretsFor({
+  target, kirocrewHome, spawnedChild, listenerPidsFn, fsMod, pathMod,
+}) {
+  const listenerSecrets = listenerSecretsFor({
+    target, home: kirocrewHome, path: pathMod, fs: fsMod,
+  });
+  if (listenerSecrets) return listenerSecrets;
+  if (!isLiveSpawnedChild(spawnedChild)) return [];
+  if (hasAnyListenerEntry({ port: target.port, kirocrewHome, fsMod, pathMod })) return [];
+  if (!(await childHoldsEveryListener({
+    port: target.port, child: spawnedChild, listenerPidsFn,
+  }))) return [];
+  try {
+    const s = fsMod.readFileSync(pathMod.join(kirocrewHome, ".local_secret"), "utf8").trim();
+    return s ? [s] : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * POST /api/shutdown with a secret this gateway published (mirrors the
+ * dashboard's X-Local-Secret auth). Resolves true on HTTP 200, false on any
+ * failure (refused target, no usable secret, connection error, timeout,
+ * non-200) so the caller can fall back to signals.
+ *
+ * Only an `http:` loopback target is ever sent a secret, and which secret is
+ * decided by `shutdownSecretsFor`.
+ *
+ * @param {object} opts
+ * @param {object} [opts.spawnedChild] the child process handle this app
+ *   spawned for the gateway. With `listenerPidsFn`, the evidence that unlocks
+ *   the home-wide `.local_secret` fallback.
+ * @param {(port:number) => Promise<number[]|null>} [opts.listenerPidsFn] the
+ *   pids the kernel reports listening on a port, or null when unknown.
  * @returns {Promise<boolean>}
  */
-function postShutdown({
+async function postShutdown({
   backendUrl,
   kirocrewHome,
-  secrets,
+  spawnedChild = null,
+  listenerPidsFn = null,
   httpMod = http,
   fsMod = fs,
   pathMod = path,
   timeoutMs = 5000,
 }) {
-  // The caller may pass more than one candidate secret, and the running gateway
-  // is authenticated by whichever one it actually loaded. Try every candidate
-  // and let a 200 pick the live one: a stale/wrong secret returning 403 must NOT
+  const target = dialTarget(backendUrl);
+  if (!target || !kirocrewHome) return false;
+  // More than one candidate can be present, and the running gateway is
+  // authenticated by whichever one it actually loaded. Try every candidate and
+  // let a 200 pick the live one: a stale entry returning 403 must NOT
   // short-circuit the clean-flush path into a hard SIGTERM that skips
-  // session/memory/cron persistence.
-  let secretList = Array.isArray(secrets) ? secrets : [];
-  if (!secretList.length) {
-    try {
-      const s = fsMod.readFileSync(pathMod.join(kirocrewHome, ".local_secret"), "utf8");
-      secretList = [s];
-    } catch { /* none readable */ }
-  }
-  secretList = [...new Set(secretList.map((s) => (s || "").trim()).filter(Boolean))];
-  if (!secretList.length) return Promise.resolve(false);
+  // session/memory/cron persistence. Every candidate names the dialed listener,
+  // so the walk never widens where a secret goes.
+  const secretList = await shutdownSecretsFor({
+    target, kirocrewHome, spawnedChild, listenerPidsFn, fsMod, pathMod,
+  });
+  if (!secretList.length) return false;
 
   let u;
-  try { u = new URL(`${backendUrl}/api/shutdown`); } catch { return Promise.resolve(false); }
+  try { u = new URL(`${target.origin}/api/shutdown`); } catch { return false; }
 
   const attempt = (secret) => new Promise((resolve) => {
     const req = httpMod.request(
@@ -366,6 +479,9 @@ async function stopForkedGatewaySurvivors(pids, { deadline, graceMs, getCommandF
  *
  * @param {import("child_process").ChildProcess} proc
  * @param {object} opts
+ * @param {(port:number) => Promise<number[]|null>} [opts.listenerPidsFn] the
+ *   pids listening on a port; postShutdown's home-wide fallback needs it to
+ *   confirm `proc` is the only listener. Without it that fallback is off.
  * @param {string} [opts.platform] process.platform override (tests)
  * @param {(pid:number) => Promise<void>} [opts.killTreeFn] tree-kill used on
  *   win32. Injected because the real one shells out to taskkill. The single-pid
@@ -397,7 +513,7 @@ async function stopGatewayGracefully(
   {
     backendUrl,
     kirocrewHome,
-    secrets,
+    listenerPidsFn = null,
     timeoutMs = 15000,
     postShutdownFn = postShutdown,
     httpMod,
@@ -495,8 +611,13 @@ async function stopGatewayGracefully(
     }
     armEscalation(deadline);
     proc.once("exit", () => { clearTimeout(killTimer); clearTimeout(hardTimer); });
-    // Prefer the clean endpoint; kill only if it didn't take.
-    postShutdownFn({ backendUrl, kirocrewHome, secrets, httpMod, fsMod, pathMod }).then((ok) => {
+    // Prefer the clean endpoint; kill only if it didn't take. `proc` is the child
+    // this app spawned and `listenerPidsFn` lets postShutdown confirm it holds the
+    // port: together, the evidence it needs before it may fall back to the
+    // home-wide secret.
+    postShutdownFn({
+      backendUrl, kirocrewHome, spawnedChild: proc, listenerPidsFn, httpMod, fsMod, pathMod,
+    }).then((ok) => {
       if (ok || proc.exitCode !== null) return;
       killWith("SIGTERM");
     });

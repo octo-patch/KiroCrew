@@ -1630,22 +1630,15 @@ function createGatewaySupervisor({
       return;
     }
     glog("Stopping gateway gracefully...");
-    // Resolve secrets at call time. The gateway accepts only the secret for its
-    // current boot; trying every readable candidate prevents a stale copy from
-    // forcing the hard-signal path and skipping session/memory/cron flushes.
-    const candidates = secretCandidates();
-    const currentHome = path.dirname(candidates[0]);
-    const secrets = [];
-    for (const candidate of candidates) {
-      try {
-        const value = fs.readFileSync(candidate, "utf8").trim();
-        if (value) secrets.push(value);
-      } catch { /* absent or unreadable */ }
-    }
+    // Resolve the home at call time: the gateway publishes the secret for its
+    // current boot there. postShutdown picks which secret may go to BACKEND_URL;
+    // the child handle, plus the kernel naming it as the port's only listener,
+    // is what lets it use the home-wide one.
+    const currentHome = path.dirname(secretCandidates()[0]);
     await stopGatewayProcessGracefully(gateway, {
       backendUrl: BACKEND_URL,
       kirocrewHome: currentHome,
-      secrets,
+      listenerPidsFn: snapshotGatewayPortPids,
       timeoutMs,
       // 3s PowerShell + 2s WMIC + 5s taskkill fits inside the 18s hard
       // shutdown deadline. The tree sweep is awaited because taskkill can emit
