@@ -494,7 +494,7 @@ so a concurrent admission during the await sees the cap spent;
 `claim_and_start` awaits `store.run(taskq_claim)` and re-enters with
 `_claimed=`, which consumes the reservation instead of re-checking capacity.
 A pre-claim refusal releases it. Once the row is `admitted`, an unavailable
-post-claim generation check moves the claim into the process-local
+`admitted -> starting` start write (`taskq_claim_start`) moves the claim into the process-local
 `_retained_claims` map with its reservation still spent; one retry timer opens a
 later pump settlement pass, and that pass retries one retained generation before
 ordinary refill. The map is bounded by already-reserved capacity. A successful
@@ -523,11 +523,15 @@ ledger's outstanding children and the parent's deadline on the writer thread,
 yields the parent's slot on the loop, and posts `enter_wait` / `update_wait`
 (`spawn_impl(_child_registration=False)` skips the inline branch). A re-entry
 that raises releases the reservation like any other non-start
-(`claim_and_start`'s `finally`, keyed on registration) -- the
+(`claim_and_start`'s `finally`, keyed on registration), and a start the store
+had already taken for it is ended `failed` under the claim's generation
+(`taskq_fail(generation=)`), so no `starting` row is left with nothing running
+under it -- the
 registration and terminal writes (`taskq_mark`, `taskq_fail`, `taskq_settle`'s
 `finish`) are POSTED to the writer thread through `_post_store_write` /
 `store.run` -- the single worker keeps them in submission order, so
-`admitted -> starting` lands before the run's later `running`, and a `starting`
+`admitted -> starting` (written awaited by the off-loop claimer, posted by the
+inline one) lands before the run's later `running`, and a `starting`
 that did not land at all is replayed by that later mark's own store phase
 (`taskq_advance`, § The claim/start boundary) rather than leaving the row where a
 reconcile requeues it blind -- and
@@ -700,18 +704,30 @@ makes cancel-vs-dispatch safe in either order: cancel first → the claim's
 `WHERE state IN (...)` fails; claim first → the next fenced write (`starting`)
 fails, and for the runner entries that refusal STOPS the start (§ The
 claim/start boundary). On the subagent path that write is posted, so its refusal
-reaches nobody. So the subagent claimer re-reads the row after its claim and
-before it registers (`claim_and_start`, subagent.md § `spawn` step 5): a cancel
-that landed before that re-read refuses the start there. The re-read is a read,
-not a compare-and-set, so a store-only cancel (no `_agents` record, such as an
-orphan cancel or reconcile) that commits after it answers and before the
-claimer resumes still registers a run that finishes in memory. Stop all's queued
-stop does not reach that window. Its batched cancel files the row in
-`_batched_stops` before the stop first awaits, and a claimer that finds it there
-waits for the batch's answer and re-reads behind the cancel. A single queued
-stop installs a loop record, which the claimer checks after the re-read. The ROW is the cancel the operator asked for
-and every later write of that run is fenced out as `stale_result`. Nothing is
-re-dispatched either way.
+reaches nobody. So the subagent claimer writes `admitted -> starting` itself,
+awaited, after its claim and before it registers (`claim_and_start` ->
+`taskq_claim_start`, subagent.md § `spawn` step 5): one `transition` fenced on
+the claim's generation, so the store decides atomically whether the claimer
+still owns the row. A cancel that committed first, by any path (a store-only
+orphan cancel or reconcile included), bumped the generation and the start is
+refused as `stale_result`; a cancel that commits after it meets a `starting`
+row, which no unstarted-row cancel (`taskq_cancel_queued`'s `only_from`)
+accepts, and the registered run is reaped as the live run it is. There is no
+window in which a cancel lands on the row and a run registers over it. Before
+the start write the claimer also checks the loop for a stop recorded while the
+claim was in flight (a queued stop's record), which covers a claim retained
+across a store outage whose row Stop all cancelled meanwhile. Between the
+start write landing and the claimer's registration (no await, but a loop
+callback can run) the row is `starting` with no `_agents` record; a single
+`cancel` that finds it so joins the start's answer (`_starting_claims`) and
+then reaps the run, and a cancelled parent's cascade
+(`taskq_cancel_children_of`) counts such a child as live and hands it to that
+same `cancel` rather than to the ledger's unconditional `cancel_tree`. A
+claimer cancelled while its start write is on the writer thread queues the
+row's release behind it (`taskq_release_start`: `starting -> retry_wait`,
+eligible at once; refused where the start did not take), so a start nobody
+registers goes back to the queue instead of reading as a live run. Nothing is
+re-dispatched either way for a cancelled row.
 
 #### A cancel whose PRECONDITION came from an earlier read
 

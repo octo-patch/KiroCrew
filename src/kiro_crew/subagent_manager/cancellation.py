@@ -885,8 +885,8 @@ class CancellationCoordinator(ManagerComponent):
                     # that window may be carrying a person's decision (a spawn approval
                     # is the visible case), which a teardown has no standing to revoke
                     # for them. Stop-all keeps the wider behaviour: there the user asked
-                    # for exactly that, and the claimer's post-claim re-read refuses the
-                    # row it cancelled.
+                    # for exactly that, and the claimer's generation-fenced start write
+                    # is refused for the row it cancelled.
                     agent_id,
                     allow_admitted=False,
                 )
@@ -1344,13 +1344,14 @@ class CancellationCoordinator(ManagerComponent):
         Until that task has reported a row, the row is in neither ``_queue``
         nor ``_agents``, and nothing on the loop says a cancel of it is on the
         way. Every id of the job is filed in ``_batched_stops`` for that span,
-        and the two readers that would otherwise act on the row join its answer:
-        a single ``cancel`` (``cancel_impl``), which would report the row itself
-        and leave the batch, finding the row already cancelled, to report a
-        popped one again; and a claim whose post-claim re-read answered before
-        the cancel landed (``claim_and_start``), which would register the row
-        as a run the cancel then ends under it, counted once as queued and once
-        as running. Each id's parent (*parent_session_key*, whose rows the ids
+        and a single ``cancel`` of the row (``cancel_impl``) joins its answer
+        rather than reporting the row itself and leaving the batch, finding the
+        row already cancelled, to report a popped one again. A claim in flight
+        for the row needs no join: its start is one generation-fenced
+        ``admitted -> starting`` write (``claim_and_start``), so whichever of
+        the two lands first refuses the other, and a run the start registered
+        is a live one the running sweep reaps. Each id's parent
+        (*parent_session_key*, whose rows the ids
         are) is filed beside it in ``_batched_stop_parents``, for a third
         reader: a parent-end teardown's snapshot
         (``snapshot_teardown_children``), which reads ``_queue`` and
@@ -1571,6 +1572,18 @@ class CancellationCoordinator(ManagerComponent):
                 logger.info("Cancelled queued subagent %s before it started", agent_id)
                 self._manager._report_queued_stop(queued, row_settled=stored is not None)
                 return True
+            # Nothing to cancel in the store and nothing in the window: the row
+            # may be one whose start the claimer has just taken in the store
+            # (``admitted -> starting``, ``claim_and_start``) and not yet
+            # registered -- the one gap between its store write and its
+            # ``_agents`` record. Such a start owes its answer in
+            # ``_starting_claims``; wait for it, then stop what it registered
+            # as the live run it is. A start that was refused meanwhile leaves
+            # nothing to stop here, as it never ran.
+            starting = self._manager._admission.starting_claim_of(agent_id)
+            if starting is not None:
+                await asyncio.shield(starting)
+                return await self._manager.cancel(agent_id)
             return False
         if not info._reap_started:
             # The stamps below name THIS stop as the run's stopper. A reap already

@@ -1097,7 +1097,13 @@ class _TaskqBridgeMixin(ManagerComponent):
         return int(waiting_outside) == 0
 
     def _post_store_write(
-        self, store: "_taskq.TaskStore", what: str, fn: Any, *args: Any, **kw: Any
+        self,
+        store: "_taskq.TaskStore",
+        what: str,
+        fn: Any,
+        *args: Any,
+        behind_posted: bool = False,
+        **kw: Any,
     ) -> "_asyncio.Task[Any] | None":
         """Run a best-effort store write whose result nothing waits for.
 
@@ -1109,7 +1115,9 @@ class _TaskqBridgeMixin(ManagerComponent):
         the run's own ``running`` write posted later, and before any read
         queued after this call (the queue-depth chip's re-read relies on it).
         The returned task only waits for the result. Without a loop the write
-        runs inline.
+        runs inline. *behind_posted* says the write answers one that went to
+        the writer thread through ``TaskStore.run`` whatever the pump mode, so
+        it is posted too whenever a loop runs: inline it would land first.
         """
         from kiro_crew import taskq as _taskq
 
@@ -1117,7 +1125,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             loop = _asyncio.get_running_loop()
         except RuntimeError:
             loop = None
-        if loop is None or not type(self).pump_off_loop:
+        if loop is None or not (behind_posted or type(self).pump_off_loop):
             try:
                 fn(*args, **kw)
             except _taskq.TaskStoreUnavailable:
@@ -1199,16 +1207,65 @@ class _TaskqBridgeMixin(ManagerComponent):
             return False
         return store.advance(agent_id, state, generation=generation)
 
-    def taskq_fail(self, agent_id: str, reason: str) -> None:
-        """Terminal ``failed`` for a persisted row refused before it registered."""
+    def taskq_fail(self, agent_id: str, reason: str, *, generation: int | None = None) -> None:
+        """Terminal ``failed`` for a persisted row refused before it registered.
+
+        With *generation*, the write is fenced to that claim: a row another
+        owner has since moved on is refused as ``stale_result`` and left alone.
+        """
         from kiro_crew import taskq as _taskq
 
         store = self.taskq_store()
         if store is None:
             return
         self._post_store_write(
-            store, f"fail {agent_id}", store.finish, agent_id, _taskq.FAILED, error=reason
+            store,
+            f"fail {agent_id}",
+            store.finish,
+            agent_id,
+            _taskq.FAILED,
+            generation=generation,
+            error=reason,
         )
+
+    def taskq_release_start(self, agent_id: str, generation: int) -> "_asyncio.Task[Any] | None":
+        """Give back a start the claimer could not carry to registration.
+
+        ``starting -> retry_wait`` under *generation*, eligible at once: the
+        row is claimable again, as it would have been had the start never
+        been written. Posted whatever the pump mode (the start write it
+        answers went to the writer thread through ``TaskStore.run``), so it
+        lands behind that write on the same single writer; where that write
+        did not take (the row was cancelled first, or the store was down) this
+        one is refused the same way and changes nothing. Once it has landed
+        the pump is run again, so the released row does not wait for an
+        unrelated spawn or finish to refill the window. Returns the posted
+        task, or None when no loop runs.
+        """
+        from kiro_crew import taskq as _taskq
+
+        store = self.taskq_store()
+        if store is None:
+            return None
+        released = self._post_store_write(
+            store,
+            f"release start {agent_id}",
+            store.transition,
+            agent_id,
+            _taskq.RETRY_WAIT,
+            behind_posted=True,
+            generation=generation,
+            next_run_at=None,
+            detail={"released": "start interrupted before registration"},
+        )
+        if released is not None:
+
+            def _repump(_task: Any) -> None:
+                if not self._manager._shutting_down:
+                    self._manager._drain_queue()
+
+            released.add_done_callback(_repump)
+        return released
 
     def taskq_settle(self, info: SubagentInfo, *, row_settled: bool = False) -> None:
         """Write the run's terminal state from its record; fenced by generation.
@@ -1590,9 +1647,9 @@ class _TaskqBridgeMixin(ManagerComponent):
         Waiting means accepted with no run yet, the definition the overflow
         count uses: claimable rows, and ``admitted`` rows nothing has
         registered -- a claim the pump is still awaiting, or a retained one.
-        Stop all cancels exactly these ids, and the claimer's post-claim
-        re-read refuses a row cancelled here, so a claimed row never starts
-        after the stop.
+        Stop all cancels exactly these ids, and the claimer's generation-fenced
+        ``admitted -> starting`` write is refused for a row cancelled here, so a
+        claimed row never starts after the stop.
         """
         from kiro_crew import taskq as _taskq
 
@@ -2372,8 +2429,10 @@ class _TaskqBridgeMixin(ManagerComponent):
 
         ``allow_admitted=False`` refuses a row that has been CLAIMED but not started.
         Stop-all leaves it True: the user pressed Stop, and a claimed-not-started row is
-        work they asked to end; the claimer's post-claim re-read (``claim_and_start``)
-        refuses a row cancelled here. A parent-end teardown passes False: a row in that
+        work they asked to end; the claimer's ``admitted -> starting`` compare-and-set
+        (``claim_and_start``) is refused for a row cancelled here, and a row it has
+        already moved is ``starting``, which this path leaves to the live reap. A
+        parent-end teardown passes False: a row in that
         window may be carrying a decision a person made (a spawn approval is the visible
         case), which a teardown has no standing to revoke on their behalf. Refusing
         leaves the row to the incarnation that owns it.
@@ -2384,8 +2443,8 @@ class _TaskqBridgeMixin(ManagerComponent):
         so a row a drain claimed and started in between answers None here and the
         caller falls through to the live reap -- never a ``cancelled`` row with a
         running spawn under it. A row claimed but not started (``admitted``) is
-        still this path's: the spawn re-reads the state before it registers and
-        stops there.
+        still this path's: the spawn's own start write is fenced on the
+        generation this cancel bumps, so it is refused and stops there.
 
         The cancel is deliberately NOT fenced on the read's generation. A claim, a
         requeue or a wake can bump the generation while the row stays unstarted

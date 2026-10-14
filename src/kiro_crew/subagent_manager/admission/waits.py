@@ -729,8 +729,18 @@ class _WaitsMixin(ManagerComponent):
             pass
 
     def _live_agent_ids(self) -> frozenset[str]:
-        """The ids this process is still running, read on the loop that owns them."""
-        return frozenset(i.id for i in self._manager._agents.values() if not i.done)
+        """The ids this process is still running, read on the loop that owns them.
+
+        A row whose start is in flight (``_starting_claims``: its ``admitted ->
+        starting`` write posted, its run not yet registered) counts as live too.
+        The ledger's unconditional ``cancel_tree`` would otherwise cancel that
+        row under a start the store has already taken, and the run the claimer
+        then registers would be reaped by nothing; handed to ``cancel`` on the
+        loop instead, it joins the start's answer and reaps what it registered.
+        """
+        running = (i.id for i in self._manager._agents.values() if not i.done)
+        starting = self._manager.__dict__.get("_starting_claims", {})
+        return frozenset(running).union(starting)
 
     @staticmethod
     def _cancel_children_db(

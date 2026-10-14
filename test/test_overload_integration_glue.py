@@ -3313,10 +3313,15 @@ async def test_a_raise_inside_reenter_releases_the_reservation(
         await mgr._admission.claim_and_start(point, _reenter)
     assert mgr._running_count == before, "the reservation is released when re-entry raises"
     assert "boom1" not in mgr._agents
-    # The claim itself landed; the row is leased to this incarnation and the
-    # pump's next claim keeps that lease (not lost, not a phantom run).
-    assert store.state_of("boom1") == _taskq.ADMITTED
-    assert mgr._admission.taskq_lease_is_ours("boom1")
+    # The claim landed and the store took the start (``admitted -> starting``)
+    # before the re-entry raised. Nothing runs under that row, so it is ended
+    # ``failed`` under the claim's generation, not left ``starting`` as a live
+    # run no sweep ever reaps (not lost, not a phantom run).
+    await asyncio.wait_for(store.run(lambda: None), 10)
+    assert store.state_of("boom1") == _taskq.FAILED
+    last = store.events("boom1")[-1]
+    assert last.data.get("from") == _taskq.STARTING and last.data.get("to") == _taskq.FAILED
+    assert "registration failed" in str(last.data.get("error"))
     # The pump path swallows the same raise without leaking either.
     monkeypatch.setattr(
         mgr,
