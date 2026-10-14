@@ -298,6 +298,13 @@ human passes `--full`. See
   --max-worker-restart=2`; a bare override silently drops `--dist loadgroup` and
   scatters `@pytest.mark.xdist_group` tests into flaky races.
 
+**No hand-written file over 2,000 lines; put new code in a new module.** When a
+file nears the cap, move whole definitions into a sibling module and keep the
+original path as the import path callers use. `scripts/check_file_line_cap.py`
+enforces it; the files already over are listed in
+`.github/file-line-cap-baseline.txt`, which only shrinks, so never add a row.
+Details: [code-style](docs/system-specs/common/code-style.md).
+
 Gates, the seven flake classes, the conftest isolation floor and the traps that are
 invisible when reading a test: [code-style](docs/system-specs/common/code-style.md) +
 [testing-conventions](docs/system-specs/common/testing-conventions.md). A test that

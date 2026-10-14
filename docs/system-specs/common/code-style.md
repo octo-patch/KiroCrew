@@ -154,6 +154,57 @@ The formatter, linter and type-checker are pinned to exact versions in both
 black and mypy change their output across minor releases and a floating range
 makes a local venv disagree with CI. Bump them in lockstep.
 
+## No file over 2,000 lines
+
+A hand-written code file holds at most 2,000 lines: Python, TypeScript and
+JavaScript, CSS, shell, PowerShell and Swift, backend and frontend alike. Put new
+code in a new module. When a file nears the cap, move whole definitions into a
+sibling module and keep the original path as the import path callers use. A name
+tests patch must stay patchable there, through a forwarding facade or call-time
+reads of the facade (see
+[testing-conventions](testing-conventions.md#patch-the-defining-module-not-a-re-export)):
+a plain re-export silently stops the patch reaching the moved code.
+
+`scripts/check_file_line_cap.py` enforces it over every tracked code file, and
+`test/test_file_line_cap.py` runs it in the backend test suite (Linux and
+Windows) on every change, including the leaf-test and frontend-only reductions,
+and pins every rule. Only tracked files count, so `git add` a new file before
+checking it locally.
+Generated output, vendored code, data, prose and workflow YAML are exempt; the
+script's `EXEMPTIONS` table names each one with its reason. A line counts the way
+`wc -l` counts it, plus one for an unterminated last line.
+
+The files that were already over the cap are listed in
+`.github/file-line-cap-baseline.txt` as `<lines> <path>` rows, and the list only
+shrinks. The tree is scanned whole, but the verdict is scoped to the change
+(`scripts/ratchet_scope.py`, as for the black and subprocess-encoding gates,
+read with `--no-renames` so a renamed file's old path counts): a violation in a
+file the change does not touch is main drift, a warning, because two changes
+that were each green can together push a file over the cap.
+
+| Situation | Verdict |
+|---|---|
+| A file over the cap that the baseline does not list | Fails if the change touches it; split it, never add a row. Otherwise a main-drift warning. |
+| A listed file now within the cap, deleted, or exempt | Fails if the change touches it, until its row is deleted in the same commit as the split. Otherwise a main-drift warning. |
+| A baseline edit that adds a path, raises a count, or lowers a row below its file's size | Fails: the baseline only shrinks, and a row it writes is never below the file's measured size nor above the row at the base. A deletion-only or lowering edit is judged by the rows it changed, so someone else's stale row beside it stays a main-drift warning. |
+| A listed file that grew past its row | Reported, not failed. It must not grow; split it. |
+| A malformed or unsorted baseline | Fails. |
+
+In CI the test runs on a shallow checkout that cannot tell which files a change
+touched, so there it reports violations without failing; run the script locally
+for the enforced verdict.
+
+After a split, delete your own row in the same commit. Delete only your own
+rows: never edit someone else's, by hand or with `--update-baseline`. The
+refresh edits only the rows of files your change touches; it deletes stale rows
+and lowers counts, and never adds a path or raises a count. Where it cannot tell
+which files the change touches, it refuses unless `--whole-tree` asks it to
+rewrite every row:
+
+```bash
+python3 scripts/check_file_line_cap.py --update-baseline
+```
+
 ## Subprocess output is decoded explicitly
 
 A text-mode subprocess call (`text=True` / `universal_newlines=True`) without an
