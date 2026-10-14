@@ -12133,7 +12133,7 @@ async def _run_chat(
                     compressed_history=compressed,
                     mode=slot.mode,
                     blocks_reads=slot.blocks_reads,
-                    provider_type=cfg.agent.provider,
+                    provider_type=provider_name,
                     runtime_source="dashboard",
                     request_prefix_context=_request_prefix_context or None,
                     exclude_last_n=1,
