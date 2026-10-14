@@ -41,6 +41,12 @@ function createFeedLane({
   channelForVersion,
   launchCheckDelayMs,
   checkIntervalMs,
+  // Called before every discovery. When true the gateway's security policy
+  // owns updates on this install and the Electron feed lane stands down: no
+  // check, no download, no notification. The renderer notifies the main
+  // process via update:notify-policy-governed (ipc-registrar.js) when the
+  // gateway status reports a policy provider governs a bundled install.
+  isPolicyGoverned = () => false,
 }) {
   let updateReady = false;
   let downloading = false;
@@ -140,6 +146,27 @@ function createFeedLane({
       // handler's phase derivation, a feed failure would fire the host's
       // gateway recovery in the middle of the bundle swap.
       log.info("[update] check requested during install activity — skipping");
+      return;
+    }
+    // A security policy provider owns updates on this install. Checked after
+    // the installing/quitHandled guard so a governance signal arriving mid-
+    // handoff cannot emit not-available over an in-progress install or quit.
+    if (isPolicyGoverned()) {
+      log.info("[update] policy provider governs this install — feed lane stands down");
+      // Disarm any staged build. Without this a build already downloaded
+      // before governance was detected installs on quit while the provider
+      // also applies — violating the exclusive-owner goal. Mirrors the
+      // cleanup the update-not-available handler performs.
+      downloading = false;
+      foundVersion = null;
+      if (updateReady) {
+        log.info(`[update] policy stand-down: discarding staged ${stagedVersion}`);
+      }
+      updateReady = false;
+      stagedVersion = null;
+      stagedNotes = "";
+      app.removeListener("before-quit", deferredInstallOnQuit);
+      emit("not-available", {});
       return;
     }
     if (downloading) {

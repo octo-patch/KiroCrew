@@ -10,9 +10,9 @@
  *   `update_auto_effect` and nothing about the desktop updater. In a browser
  *   window the gateway card IS the update UI, so the row is always drawn and
  *   says when the switch cannot install or when the gateway has not said yet.
- *   In a desktop window it is drawn only on a definite install or mandatory:
- *   the app's own gateway ignores the switch, and an unknown effect cannot
- *   tell that gateway from one the app merely attaches to.
+ *   In a desktop window it is drawn when the effect is a definite install or
+ *   mandatory, or when the status frame reports the connected gateway is not the
+ *   bundled one (the app reuses an external gateway that manages its own bytes).
  */
 import { useQuery } from '@tanstack/react-query'
 import { useAppSelector } from '../store'
@@ -38,15 +38,26 @@ export function useGatewayAutoUpdateEffect(): Effect {
 /**
  * Which update switches a window draws (see the module rule). `info` is the
  * updater's `getInfo()` answer, `undefined` while it has not answered.
+ * `bundledByApp` is `update_bundled_by_app` from the status frame: `true` when
+ * this gateway is the one the desktop app bundled and launched, `false` when the
+ * app reuses an external gateway (a CLI service, an SSH-forwarded one), and
+ * `undefined` while the status has not arrived. A reused gateway in a desktop
+ * window has its own update surface, so its switch is always drawn even when the
+ * effect is not yet a definite install.
  */
-export function updateSwitchesShown({ bridge, info, effect }: {
+export function updateSwitchesShown({ bridge, info, effect, bundledByApp }: {
   bridge: UpdateAPI | undefined
   info: { disabled?: string } | null | undefined
   effect: Effect
+  bundledByApp?: boolean
 }): { app: boolean; gateway: boolean } {
   return {
     app: hasAutoDownload(bridge) && !info?.disabled,
-    gateway: !bridge || effect === 'install' || effect === 'mandatory',
+    // In a desktop window, show the gateway switch when the effect is a definite
+    // install or mandatory (the existing rule), OR when the gateway is known to be
+    // a reused one (not the bundled gateway): a reused gateway manages its own
+    // updates and the app's updater does not cover it.
+    gateway: !bridge || bundledByApp === false || effect === 'install' || effect === 'mandatory',
   }
 }
 
@@ -60,7 +71,8 @@ export function updateSwitchesShown({ bridge, info, effect }: {
 export function useUpdateSwitchesShown({ fetch = true }: { fetch?: boolean } = {}): { app: boolean; gateway: boolean } {
   const bridge = window.updateAPI
   const { data: info } = useQuery({ ...updateInfoQuery, enabled: fetch && !!bridge })
-  return updateSwitchesShown({ bridge, info, effect: useGatewayAutoUpdateEffect() })
+  const bundledByApp = useAppSelector(s => s.dashboard.status?.update_bundled_by_app)
+  return updateSwitchesShown({ bridge, info, effect: useGatewayAutoUpdateEffect(), bundledByApp })
 }
 
 /**

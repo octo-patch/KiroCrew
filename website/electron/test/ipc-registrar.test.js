@@ -1222,7 +1222,10 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
 
   assert.strictEqual(h.registerUpdater(h.registrar), updater);
   assert.deepEqual([...h.handlers.keys()].sort(), UPDATE_HANDLES);
-  assert.equal(h.listeners.size, 0);
+  // One listener: update:notify-policy-governed (ipcMain.on, not ipcMain.handle).
+  assert.equal(h.listeners.size, 1);
+  assert.equal(h.listeners.has("update:notify-policy-governed"), true,
+    "registerUpdater must install the update:notify-policy-governed listener");
   assert.equal(initCalls, 1);
   assert.strictEqual(deps.app, h.electron.app);
   assert.strictEqual(deps.autoUpdater, h.updaterPackage.autoUpdater);
@@ -1260,6 +1263,16 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   assert.deepEqual(h.handlers.get("update:download")(), { ok: true });
   assert.deepEqual(await h.handlers.get("update:install")(), { ok: true });
   assert.deepEqual(updater.calls, ["check", "download", "install"]);
+
+  // The policy-governed listener wires isPolicyGoverned in initAutoUpdate.
+  // It must be a function (not a static boolean) so the lane re-checks each call.
+  assert.strictEqual(typeof deps.isPolicyGoverned, "function",
+    "isPolicyGoverned must be a live function, not a captured boolean");
+  assert.equal(deps.isPolicyGoverned(), false, "governance must start false");
+  h.listeners.get("update:notify-policy-governed")({}, true);
+  assert.equal(deps.isPolicyGoverned(), true, "listener must update the closure");
+  h.listeners.get("update:notify-policy-governed")({}, false);
+  assert.equal(deps.isPolicyGoverned(), false);
 
   assert.deepEqual(h.handlers.get("update:set-channel")({}, "nightly"), {
     ok: false,

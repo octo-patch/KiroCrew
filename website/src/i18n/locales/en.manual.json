@@ -7301,6 +7301,8 @@
         "commits_behind_one": "{{count}} commit behind",
         "commits_behind_other": "{{count}} commits behind",
         "updates_managed_by_policy": "Updates for this install are managed by an operator-defined update policy. New versions arrive through the mechanism it defines.",
+
+        "updates_managed_by_policy_desktop": "A policy on this computer manages updates for this app. New versions arrive through that policy, so {{productName}} doesn't check for updates itself. Ask whoever set this up to change it, or edit security_policy.json.",
         "updates_managed_externally": "Updates for this install are managed by an external package manager. Use that package manager to get new versions.",
         "updates_managed_externally_by": "Updates for this install are managed by {{managedBy}}. Use it to get new versions.",
         "automatic_updates_unavailable_dev_build": "Automatic updates are unavailable in this build (development build).",
@@ -7358,6 +7360,10 @@
         "gateway_auto_update_unknown_hint": "Whether this switch applies here is known after the first update check, shortly after startup.",
         "gateway_auto_update_mandatory_note": "A policy requires a newer version than this one; when one is available it is installed whatever this switch says.",
         "gateway_auto_update_description": "Installs a new release once no work is running and restarts the gateway, on installs that can update themselves.",
+
+        "gateway_updates_heading": "Gateway updates",
+
+        "gateway_auto_update_desktop_context": "The gateway runs your agents and chats. It's installed separately from {{productName}}, so this switch updates it, not this app. Off: the gateway will stay on its current version.",
         "nightly": "Nightly",
         "channel_help_show_all": "▸ What's the difference between Stable, Insider and Nightly?",
         "channel_explainer_nightly": "Untested daily builds from main. Expect breakage — useful for trying a fix the day it lands.",

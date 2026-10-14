@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useAppDispatch } from '../store'
-import { setDesktopUpdateAvailable } from '../store/dashboardSlice'
+import { useAppDispatch, useAppSelector } from '../store'
+import { setDesktopUpdateAvailable, selectPolicyGoverned } from '../store/dashboardSlice'
 import { updateInfoQuery } from '../api/updateInfoQuery'
 
 export type UpdateState = globalThis.UpdateState
@@ -41,6 +41,22 @@ export type UpdateState = globalThis.UpdateState
  *
  * No-ops in the browser (window.updateAPI is only defined by the Electron preload).
  */
+/**
+ * Keeps the Electron main process informed when the gateway's security policy
+ * provider governs this install's updates, so the feed lane stands down and
+ * the Electron auto-updater does not compete with the provider.
+ *
+ * No-ops in the browser (window.updateAPI is only defined by the Electron
+ * preload). Also no-ops when the shell is too old to expose
+ * `notifyPolicyGoverned` (the field is optional; absent on older shells).
+ */
+export function usePolicyGovernedNotification() {
+  const governed = useAppSelector(selectPolicyGoverned)
+  useEffect(() => {
+    window.updateAPI?.notifyPolicyGoverned?.(governed)
+  }, [governed])
+}
+
 export function useUpdateSubscription() {
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()

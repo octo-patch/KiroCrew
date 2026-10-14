@@ -260,6 +260,10 @@ declare global {
     getInfo?: () => Promise<(UpdateInfo & { lastState?: UpdateState | null }) | undefined>
     setChannel?: (channel: string) => Promise<UpdateResult>
     setAutoDownload?: (enabled: boolean) => Promise<UpdateResult>
+    /** Notify the main process that a security policy provider now governs (or
+     *  no longer governs) this install's updates. Fire-and-forget; no return.
+     *  Absent on shells that predate the feature. */
+    notifyPolicyGoverned?: (governed: boolean) => void
   }
 
   interface Window {

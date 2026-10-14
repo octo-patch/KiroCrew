@@ -15311,6 +15311,8 @@
         "commits_ahead_other": "领先 {{count}} 个提交",
         "commits_behind_other": "落后 {{count}} 个提交",
         "updates_managed_by_policy": "此安装的更新由管理员定义的更新策略管理。新版本将通过该机制到达。",
+
+        "updates_managed_by_policy_desktop": "此计算机上的策略管理此应用的更新。新版本通过该策略到达，因此 {{productName}} 不会自行检查。请联系设置者进行更改，或编辑 security_policy.json。",
         "updates_managed_externally": "此安装的更新由外部包管理器管理。请使用该包管理器获取新版本。",
         "updates_managed_externally_by": "此安装的更新由 {{managedBy}} 管理。请使用它获取新版本。",
         "a_new_version": "新版本",
@@ -15324,6 +15326,10 @@
         "gateway_auto_update_unknown_hint": "首次检查更新后（启动后不久）即可知道此开关是否适用于这里。",
         "gateway_auto_update_mandatory_note": "策略要求使用比当前更新的版本；有可用版本时，无论此开关如何设置都会安装。",
         "gateway_auto_update_description": "没有任务运行时安装新版本并重启网关，仅适用于能够自行更新的安装。",
+
+        "gateway_updates_heading": "网关更新",
+
+        "gateway_auto_update_desktop_context": "网关运行设备上的代理和聊天。它与 {{productName}} 分开安装，因此此开关更新网关。关闭：网关将保留当前版本。",
         "automatic_updates_are_unavailable_in_this_build": "此构建版本不支持自动更新",
         "automatic_updates_unavailable_dev_build": "此构建版本不支持自动更新（开发版本）。",
         "automatic_updates_unavailable_channel": "自动更新不可用，因为该发布通道尚未提供适用于你所在平台的构建。在上方切换通道即可恢复更新。",

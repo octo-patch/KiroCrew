@@ -301,7 +301,13 @@ pins ride in the policy file for it:
   never run (`_shell_exec_args` returns `None`), so a Windows host with a
   provider never updates from the gateway. A packaged desktop app with a provider is
   treated as policy-managed: `_arm_packaged_app` refuses with "updates on this
-  host are managed by policy".
+  host are managed by policy". When the provider can apply on the current platform
+  (`can_apply` true, i.e. a trusted shell is available), the Electron desktop
+  updater's feed lane also stands down: it emits `not-available` and does not
+  contact the feed, so the provider is the one lane that finds and applies
+  updates. On Windows (`_shell_exec_args` returns `None`, `can_apply` false) the
+  provider runs nothing and the Electron updater continues as the working update
+  path.
 - **`platform_commands`** — per-platform overrides of those two commands, keyed
   `{sys.platform}-{machine}` (`linux-x86_64`, `darwin-arm64`, `win32-x86_64`;
   an unrecognised machine keeps its raw lowercased name). A matching entry

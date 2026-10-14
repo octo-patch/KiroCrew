@@ -1726,3 +1726,26 @@ export function selectUnreadByMode(mode: string): UnreadByModeSelector {
 }
 
 export default dashboardSlice.reducer
+
+/**
+ * Whether the gateway's security policy provider governs this bundled desktop
+ * install's updates. True only when all three status fields agree:
+ *  - `update_bundled_by_app`: this gateway is the one the app launched
+ *  - `update_managed_by`: a policy provider owns the check and apply
+ *  - `update_can_apply`: the provider can run on this platform (false on Windows)
+ *
+ * When true, the Electron feed lane stands down and only the provider checks.
+ * When false (Windows, no provider, or reused gateway), the Electron updater
+ * continues as the working update path.
+ *
+ * Shared by `usePolicyGovernedNotification`, `UpdateFoundModal`, and `AboutPanel`
+ * so all three surfaces use one consistent predicate.
+ */
+export function selectPolicyGoverned(s: { dashboard: DashboardState }): boolean {
+  const status = s.dashboard.status
+  if (!status) return false
+  return status.update_bundled_by_app === true
+    && status.update_managed_by === 'command'
+    && status.update_can_apply === true
+}
+

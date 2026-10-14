@@ -15811,6 +15811,8 @@
         "commits_behind_many": "{{count}} commits atrás",
         "commits_behind_other": "{{count}} commits atrás",
         "updates_managed_by_policy": "As atualizações desta instalação são gerenciadas por uma política de atualização definida pelo operador. Novas versões chegam por esse mecanismo.",
+
+        "updates_managed_by_policy_desktop": "Uma política neste computador gerencia as atualizações deste app. As novas versões chegam por meio dessa política, então {{productName}} não as verifica. Peça a quem a configurou para alterar, ou edite security_policy.json.",
         "updates_managed_externally": "As atualizações desta instalação são gerenciadas por um gerenciador de pacotes externo. Use esse gerenciador de pacotes para obter novas versões.",
         "updates_managed_externally_by": "As atualizações desta instalação são gerenciadas por {{managedBy}}. Use-o para obter novas versões.",
         "a_new_version": "Uma nova versão",
@@ -15824,6 +15826,10 @@
         "gateway_auto_update_unknown_hint": "Dá para saber se este botão vale aqui após a primeira verificação de atualizações, logo após a inicialização.",
         "gateway_auto_update_mandatory_note": "Uma política exige uma versão mais recente que esta; quando houver uma disponível, ela é instalada independentemente desta opção.",
         "gateway_auto_update_description": "Instala uma nova versão quando não há trabalho em andamento e reinicia o gateway, se esta instalação puder se atualizar sozinha.",
+
+        "gateway_updates_heading": "Atualizações do gateway",
+
+        "gateway_auto_update_desktop_context": "O gateway executa seus agentes e chats. Está instalado separadamente do {{productName}}, então este switch atualiza o gateway. Desativado: o gateway permanecerá na versão atual.",
         "automatic_updates_are_unavailable_in_this_build": "As atualizações automáticas não estão disponíveis nesta compilação",
         "automatic_updates_unavailable_dev_build": "As atualizações automáticas não estão disponíveis nesta compilação (compilação de desenvolvimento).",
         "automatic_updates_unavailable_channel": "As atualizações automáticas não estão disponíveis porque este canal de lançamento ainda não tem builds para a sua plataforma. Troque de canal acima para receber atualizações.",

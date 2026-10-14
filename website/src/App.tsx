@@ -102,7 +102,7 @@ import EmbedTabStrip from './components/EmbedTabStrip'
 // Dev-only layout-editor harness (RFC §7 PR 2). Lazy so it never weighs the main
 // bundle — it is a developer route, not a shipped surface.
 const LayoutEditorHarnessPage = lazy(() => import('./pages/LayoutEditorHarnessPage'))
-import { useUpdateSubscription } from './hooks/useUpdateSubscription'
+import { useUpdateSubscription, usePolicyGovernedNotification } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
@@ -967,6 +967,7 @@ export default function App() {
   // Capture Electron update lifecycle events app-wide so UpdateModal fires on
   // any page, not just after the user has opened Settings > About.
   useUpdateSubscription()
+  usePolicyGovernedNotification()
   const { branding, botName, avatar } = useShellBranding({ colorTheme, brandName, brandLogo, brandFavicon })
   useRumPageView()
   useNotificationSound()

@@ -980,6 +980,11 @@ function initAutoUpdate(deps) {
     feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
     onUpdateState = null,
     log = console,
+    // Whether a security policy provider currently governs this install's
+    // updates, making the Electron feed lane stand down. Wired by the
+    // caller (ipc-registrar.js) to a variable the renderer updates via
+    // update:notify-policy-governed once the gateway status is known.
+    isPolicyGoverned = () => false,
   } = deps;
 
   // Linux install shape. Resolved once, and BEFORE getInfo() is defined: the
@@ -1169,6 +1174,7 @@ function initAutoUpdate(deps) {
     channelForVersion,
     launchCheckDelayMs: LAUNCH_CHECK_DELAY_MS,
     checkIntervalMs: CHECK_INTERVAL_MS,
+    isPolicyGoverned,
   });
 }
 

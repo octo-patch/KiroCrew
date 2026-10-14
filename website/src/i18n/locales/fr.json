@@ -15811,6 +15811,8 @@
         "commits_behind_many": "{{count}} commits de retard",
         "commits_behind_other": "{{count}} commits de retard",
         "updates_managed_by_policy": "Les mises à jour de cette installation sont gérées par une politique de mise à jour définie par l'opérateur. Les nouvelles versions arrivent par ce mécanisme.",
+
+        "updates_managed_by_policy_desktop": "Une politique sur cet ordinateur gère les mises à jour de cette app. Les nouvelles versions arrivent via cette politique, donc {{productName}} ne les vérifie pas. Demandez à celui qui l'a configurée de la modifier, ou modifiez security_policy.json.",
         "updates_managed_externally": "Les mises à jour de cette installation sont gérées par un gestionnaire de paquets externe. Utilisez ce gestionnaire de paquets pour obtenir les nouvelles versions.",
         "updates_managed_externally_by": "Les mises à jour de cette installation sont gérées par {{managedBy}}. Utilisez-le pour obtenir les nouvelles versions.",
         "a_new_version": "Une nouvelle version",
@@ -15824,6 +15826,10 @@
         "gateway_auto_update_unknown_hint": "On sait si ce réglage s’applique ici après la première recherche de mises à jour, peu après le démarrage.",
         "gateway_auto_update_mandatory_note": "Une politique exige une version plus récente que celle-ci, et dès qu’il y en a une, elle est installée quel que soit ce réglage.",
         "gateway_auto_update_description": "Installe une nouvelle version dès qu’aucun travail n’est en cours et redémarre la passerelle, si cette installation peut se mettre à jour elle-même.",
+
+        "gateway_updates_heading": "Mises à jour de la gateway",
+
+        "gateway_auto_update_desktop_context": "La gateway exécute vos agents et chats. Elle est installée séparément de {{productName}}, donc ce bouton la met à jour. Désactivé : la gateway restera sur sa version actuelle.",
         "automatic_updates_are_unavailable_in_this_build": "Les mises à jour automatiques ne sont pas disponibles dans cette version",
         "automatic_updates_unavailable_dev_build": "Les mises à jour automatiques ne sont pas disponibles dans cette version (version de développement).",
         "automatic_updates_unavailable_channel": "Les mises à jour automatiques ne sont pas disponibles car ce canal de publication ne propose pas encore de builds pour votre plateforme. Changez de canal ci-dessus pour recevoir les mises à jour.",

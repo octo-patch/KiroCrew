@@ -11,6 +11,7 @@ import { Download, X, Copy, Check } from 'lucide-react'
 
 import { api, ApiError } from '../api/client'
 import { useAppSelector } from '../store'
+import { selectPolicyGoverned } from '../store/dashboardSlice'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { updateAffordance } from '../utils/updateAffordance'
@@ -99,6 +100,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   const gwCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
   const gwRequired = useAppSelector(s => s.dashboard.status?.update_required === true)
   const gwMinVersion = useAppSelector(s => s.dashboard.status?.update_min_version) || ''
+  // True when the provider governs this bundled install and can apply on this
+  // platform. Shared predicate: see selectPolicyGoverned in dashboardSlice.
+  const gwPolicyManaged = useAppSelector(selectPolicyGoverned)
 
   // When the user enabled background auto-download, the Electron main process
   // starts the download itself right after `found` — a consent popup whose
@@ -139,14 +143,15 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
     || (infoQ.data !== undefined && infoQ.errorUpdatedAt > infoQ.dataUpdatedAt)
 
   // Desktop first: when the dashboard runs inside the desktop app the gateway
-  // defers its own check (`managed_by_app`), so the two cannot both report —
-  // this ordering is belt-and-braces for the transition frame, not a policy.
+  // defers its own check (`managed_by_app`), so the two cannot both report.
+  // When a security policy provider governs the install, the Electron feed lane
+  // stands down (feed-lane.js), so the desktop candidate is skipped here too.
   // Candidacy waits for a read finished since this build was found (or for it
   // to fail), otherwise the popup opens for a frame on a stale preference and
   // then vanishes when the current one lands.
   const preferenceSettled = foundKey !== null && readForKey === foundKey && (bridgeInfo !== undefined || preferenceUnread)
   let candidate: Candidate | null = null
-  if (desktop && buildFound && !desktop.replayed && desktop.version && desktopCanDownload() && preferenceSettled && (preferenceUnread || bridgeInfo?.autoDownload !== true)) {
+  if (!gwPolicyManaged && desktop && buildFound && !desktop.replayed && desktop.version && desktopCanDownload() && preferenceSettled && (preferenceUnread || bridgeInfo?.autoDownload !== true)) {
     // Desktop-reported version never crosses the gateway, so the fold is
     // computed locally, keyed on the followed channel like the backend's.
     candidate = {

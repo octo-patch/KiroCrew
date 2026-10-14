@@ -10,7 +10,7 @@ import { Card, CardTitle, Btn } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import { useBranding } from '../../hooks/useBranding'
 import { useAppDispatch, useAppSelector } from '../../store'
-import { setUpdateProgress } from '../../store/dashboardSlice'
+import { setUpdateProgress, selectPolicyGoverned } from '../../store/dashboardSlice'
 import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowser'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import SegmentedControl from '../../components/SegmentedControl'
@@ -796,12 +796,19 @@ export function AppAutoDownloadSwitch({ unreadable, anchor = true, onHandoff }: 
  * a note says so (the Privacy tab's pin note); the switch stays usable, since
  * a click is how a removed override is noticed.
  */
-export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, onHandoff }: {
+export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, onHandoff, contextNote, sectionHeading }: {
   /** `false` for a copy outside Settings, so deep links land on About's row. */
   anchor?: boolean
   /** Re-read the saved value on every mount, not only once it is 30 s old. */
   readOnMount?: boolean
   onHandoff?: () => void
+  /** Optional sub-heading rendered inside the gateway section (below the divider),
+   *  before the context note and toggle. Makes the gateway controls visually
+   *  separate from the app's own update card above. */
+  sectionHeading?: string
+  /** Optional context note rendered below the section heading, before the toggle. */
+  contextNote?: string
+
 }) {
   const canApply = useAppSelector(s => s.dashboard.status?.update_can_apply) === true
   const copy = gatewayAutoUpdateCopy(useGatewayAutoUpdateEffect(), { canApply })
@@ -814,6 +821,12 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
   const describedBy = [copy.hint ? noteId : '', showPinNote ? pinNoteId : ''].filter(Boolean).join(' ') || undefined
   return (
     <div className="pt-2.5 border-t border-border">
+      {sectionHeading && (
+        <p className="text-[13px] font-semibold text-text mb-0.5">{sectionHeading}</p>
+      )}
+      {contextNote && (
+        <p className="text-[13px] text-muted mb-2">{contextNote}</p>
+      )}
       <SettingsToggle
         label={i18nT('pages.settings.aboutPanel.automatic_updates')}
         description={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
@@ -1091,6 +1104,9 @@ export function AboutPanel() {
   // owns them, so self-managed installer copy would instruct the user to run
   // the exact mechanism the policy excluded.
   const gwManagedByCommand = useAppSelector(s => s.dashboard.status?.update_managed_by) === 'command'
+  // True when the provider governs this bundled install and can apply on this
+  // platform. Shared predicate: see selectPolicyGoverned in dashboardSlice.
+  const isGatewayPolicyManaged = useAppSelector(selectPolicyGoverned)
   // In-app arm+approve applies only where the backend probed the managed-venv
   // shape; managed_by alone also covers bare source installs whose arm would 409.
   const gwCanArm = useAppSelector(s => s.dashboard.status?.update_can_arm) === true
@@ -1716,7 +1732,7 @@ export function AboutPanel() {
           </span>
         </div>
 
-        {isDesktop && channel && !isExternallyManaged && (
+        {isDesktop && channel && !isExternallyManaged && !isGatewayPolicyManaged && (
           info?.channelSwitchable && desktopApi?.setChannel ? (
             <div className="flex flex-col" data-testid="channel-switcher" data-setting-label={i18nT('pages.settings.aboutPanel.update_channel')}>
               <div className="flex items-center justify-between py-1.5 text-sm gap-3">
@@ -2022,6 +2038,15 @@ export function AboutPanel() {
                       ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_channel')
                       : i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_platform')}
             </p>
+          ) : isGatewayPolicyManaged ? (
+            // The gateway's security policy provider owns updates on this
+            // bundled install. The intro line and the Check button are hidden:
+            // clicking Check would return "not-available" from the feed lane
+            // that stands down, which is false when the provider has an update
+            // ready.
+            <p className="text-sm text-text" data-testid="gateway-policy-managed-note">
+              {i18nT('pages.settings.aboutPanel.updates_managed_by_policy_desktop')}
+            </p>
           ) : (
             <div className="flex flex-col gap-2.5">
               <p className="text-sm text-muted">
@@ -2087,8 +2112,20 @@ export function AboutPanel() {
           )}
           {/* Outside the app updater's branches on purpose: a gateway the app
               does not own (a reused cli.sh service, an SSH-forwarded one)
-              installs on its own switch whatever this build's updater says. */}
-          {updateSwitches.gateway && <GatewayAutoUpdateSwitch />}
+              installs on its own switch whatever this build's updater says.
+              On a policy-governed install the switch still controls whether
+              the provider's apply command runs unattended, as the existing
+              WhatsNewAutoUpdateToggle comment documents. */}
+          {updateSwitches.gateway && (
+            <GatewayAutoUpdateSwitch
+              sectionHeading={isDesktop && !isGatewayPolicyManaged
+                ? i18nT('pages.settings.aboutPanel.gateway_updates_heading')
+                : undefined}
+              contextNote={isDesktop && !isGatewayPolicyManaged
+                ? i18nT('pages.settings.aboutPanel.gateway_auto_update_desktop_context')
+                : undefined}
+            />
+          )}
         </>) : (
           <div className="flex flex-col gap-2.5">
             {(showUpdate || channelMovePending) ? (

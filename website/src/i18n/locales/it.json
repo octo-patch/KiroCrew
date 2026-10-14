@@ -15811,6 +15811,8 @@
         "commits_behind_many": "{{count}} commit indietro",
         "commits_behind_other": "{{count}} commit indietro",
         "updates_managed_by_policy": "Gli aggiornamenti di questa installazione sono gestiti da una politica di aggiornamento definita dall'operatore. Le nuove versioni arrivano tramite quel meccanismo.",
+
+        "updates_managed_by_policy_desktop": "Una policy su questo computer gestisce gli aggiornamenti di questa app. Le nuove versioni arrivano tramite quella policy, quindi {{productName}} non le verifica. Chiedi a chi l'ha configurata di modificarla, o modifica security_policy.json.",
         "updates_managed_externally": "Gli aggiornamenti di questa installazione sono gestiti da un gestore di pacchetti esterno. Usa quel gestore di pacchetti per ottenere le nuove versioni.",
         "updates_managed_externally_by": "Gli aggiornamenti di questa installazione sono gestiti da {{managedBy}}. Usalo per ottenere le nuove versioni.",
         "a_new_version": "Una nuova versione",
@@ -15824,6 +15826,10 @@
         "gateway_auto_update_unknown_hint": "Si saprà se questo interruttore vale qui dopo il primo controllo degli aggiornamenti, poco dopo l’avvio.",
         "gateway_auto_update_mandatory_note": "Una policy richiede una versione più recente di questa; quando ce n’è una disponibile, viene installata qualunque sia questa impostazione.",
         "gateway_auto_update_description": "Installa una nuova versione quando non ci sono attività in corso e riavvia il gateway, se questa installazione può aggiornarsi da sola.",
+
+        "gateway_updates_heading": "Aggiornamenti gateway",
+
+        "gateway_auto_update_desktop_context": "Il gateway esegue i tuoi agenti e le chat. È installato separatamente da {{productName}}, quindi questo interruttore aggiorna il gateway. Disattivato: il gateway rimarrà sulla sua versione attuale.",
         "automatic_updates_are_unavailable_in_this_build": "Gli aggiornamenti automatici non sono disponibili in questa build",
         "automatic_updates_unavailable_dev_build": "Gli aggiornamenti automatici non sono disponibili in questa build (build di sviluppo).",
         "automatic_updates_unavailable_channel": "Gli aggiornamenti automatici non sono disponibili perché questo canale di rilascio non ha ancora build per la tua piattaforma. Cambia canale qui sopra per ricevere gli aggiornamenti.",
