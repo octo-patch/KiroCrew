@@ -28,11 +28,6 @@ function writeListenerSecret(home, port, address, secret) {
   fs.writeFileSync(file, secret);
 }
 
-// A live child handle as this app holds one for a gateway it spawned.
-const LIVE_CHILD = Object.freeze({ pid: 4242, exitCode: null, signalCode: null });
-// The kernel's answer when that child is the port's only listener.
-const ONLY_CHILD_LISTENS = async () => [LIVE_CHILD.pid];
-
 // Helper: a long-lived child. ignoreSigterm=true => only SIGKILL can stop it.
 // Prints "ready" once its signal handler is registered so tests don't send
 // signals during the child's startup window (before the handler exists).
@@ -82,97 +77,24 @@ test("postShutdown sends the listener entry for the dialed address", async () =>
   const { server, port, seen } = await startServer({ secret: "listener", status: 200 });
   writeListenerSecret(home, port, "127.0.0.1", "listener");
   try {
-    const ok = await postShutdown({
-      backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, spawnedChild: LIVE_CHILD,
-    });
+    const ok = await postShutdown({ backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home });
     assert.strictEqual(ok, true);
     assert.deepStrictEqual(seen, ["listener"], "the home-wide secret must not be sent");
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test("postShutdown sends nothing without a listener entry or a spawned child", async () => {
-  // The listener on the port is not shown to be ours -- a tunnel's local end, or
-  // another gateway on this data home -- so the home-wide secret must not go to it.
+test("postShutdown never sends .local_secret when no listener entry is published", async () => {
+  // An older gateway publishes no entry. Nothing the app can observe proves the
+  // port reaches only its own child (an unprivileged lsof hides another user's
+  // sockets), so the home-wide secret stays home and the caller uses signals.
   const home = tmpHomeWithSecret("home-wide");
   const { server, port, seen } = await startServer({ secret: "home-wide", status: 200 });
   try {
-    const ok = await postShutdown({ backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home });
-    assert.strictEqual(ok, false);
+    for (const backendUrl of [`http://127.0.0.1:${port}`, `http://localhost:${port}`]) {
+      const ok = await postShutdown({ backendUrl, kirocrewHome: home });
+      assert.strictEqual(ok, false, backendUrl);
+    }
     assert.deepStrictEqual(seen, [], "no request may carry a secret");
-  } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
-});
-
-test("postShutdown sends nothing for a child handle whose process has exited", async () => {
-  const home = tmpHomeWithSecret("home-wide");
-  const { server, port, seen } = await startServer({ secret: "home-wide", status: 200 });
-  try {
-    for (const spawnedChild of [
-      { pid: 4242, exitCode: 0, signalCode: null },
-      { pid: 4242, exitCode: null, signalCode: "SIGKILL" },
-      { pid: undefined, exitCode: null, signalCode: null },
-    ]) {
-      const ok = await postShutdown({
-        backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, spawnedChild,
-      });
-      assert.strictEqual(ok, false);
-    }
-    assert.deepStrictEqual(seen, []);
-  } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
-});
-
-test("postShutdown falls back to .local_secret for a live spawned child that alone holds the port", async () => {
-  // An older gateway publishes no listener entry. The child handle proves this
-  // app started it and the kernel names it as the only listener, so its
-  // home-wide secret keeps the graceful flush.
-  const home = tmpHomeWithSecret("home-wide");
-  const { server, port, seen } = await startServer({ secret: "home-wide", status: 200 });
-  const probed = [];
-  try {
-    const ok = await postShutdown({
-      backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, spawnedChild: LIVE_CHILD,
-      listenerPidsFn: async (p) => { probed.push(p); return [LIVE_CHILD.pid]; },
-    });
-    assert.strictEqual(ok, true);
-    assert.deepStrictEqual(seen, ["home-wide"]);
-    assert.deepStrictEqual(probed, [port]);
-  } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
-});
-
-test("postShutdown keeps .local_secret back unless the kernel names the child as the only listener", async () => {
-  // A live child proves it runs, not that it answers: during startup a tunnel
-  // can hold the port before the child binds, or hold the other loopback family.
-  const home = tmpHomeWithSecret("home-wide");
-  const { server, port, seen } = await startServer({ secret: "home-wide", status: 200 });
-  try {
-    for (const listenerPidsFn of [
-      null,
-      async () => null,
-      async () => [],
-      async () => [9999],
-      async () => [LIVE_CHILD.pid, 9999],
-      async () => { throw new Error("lsof missing"); },
-    ]) {
-      const ok = await postShutdown({
-        backendUrl: `http://localhost:${port}`, kirocrewHome: home, spawnedChild: LIVE_CHILD,
-        listenerPidsFn,
-      });
-      assert.strictEqual(ok, false);
-    }
-    assert.deepStrictEqual(seen, []);
-  } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
-});
-
-test("postShutdown re-checks the child is alive after the listener probe", async () => {
-  const home = tmpHomeWithSecret("home-wide");
-  const { server, port, seen } = await startServer({ secret: "home-wide", status: 200 });
-  const child = { pid: 4242, exitCode: null, signalCode: null };
-  try {
-    const ok = await postShutdown({
-      backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, spawnedChild: child,
-      listenerPidsFn: async () => { child.exitCode = 1; return [4242]; },
-    });
-    assert.strictEqual(ok, false);
-    assert.deepStrictEqual(seen, []);
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -181,40 +103,20 @@ test("postShutdown does not reach for .local_secret when listener entries are re
   const { server, port, seen } = await startServer({ secret: "home-wide", status: 200 });
   writeListenerSecret(home, port, "127.0.0.1", "stale");
   try {
-    const ok = await postShutdown({
-      backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, spawnedChild: LIVE_CHILD,
-    });
+    const ok = await postShutdown({ backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home });
     assert.strictEqual(ok, false);
     assert.deepStrictEqual(seen, ["stale"]);
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test("postShutdown keeps .local_secret from localhost when the child covers one family only", async () => {
-  // The child published v4 but not v6 (another process holds [::1]:<port>), so
-  // `localhost` may reach that other process. The child handle proves only the
-  // v4 listener, so it must not unlock the home-wide secret for the name.
+test("postShutdown sends nothing to localhost when the entries cover one family only", async () => {
+  // v4 is published but not v6 (another process holds [::1]:<port>), so
+  // `localhost` may reach that other process.
   const home = tmpHomeWithSecret("home-wide");
   const { server, port, seen } = await startServer({ secret: "home-wide", status: 200 });
   writeListenerSecret(home, port, "127.0.0.1", "v4-only");
   try {
-    const ok = await postShutdown({
-      backendUrl: `http://localhost:${port}`, kirocrewHome: home, spawnedChild: LIVE_CHILD,
-      listenerPidsFn: ONLY_CHILD_LISTENS,
-    });
-    assert.strictEqual(ok, false);
-    assert.deepStrictEqual(seen, []);
-  } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
-});
-
-test("postShutdown treats a blanked listener entry as present, not as an older build", async () => {
-  const home = tmpHomeWithSecret("home-wide");
-  const { server, port, seen } = await startServer({ secret: "home-wide", status: 200 });
-  writeListenerSecret(home, port, "127.0.0.1", "");
-  try {
-    const ok = await postShutdown({
-      backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, spawnedChild: LIVE_CHILD,
-      listenerPidsFn: ONLY_CHILD_LISTENS,
-    });
+    const ok = await postShutdown({ backendUrl: `http://localhost:${port}`, kirocrewHome: home });
     assert.strictEqual(ok, false);
     assert.deepStrictEqual(seen, []);
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
@@ -226,7 +128,7 @@ test("postShutdown refuses a target that is not an http loopback origin", async 
   const httpMod = { request: (opts) => { requests.push(opts); throw new Error("must not dial"); } };
   try {
     for (const backendUrl of ["http://192.0.2.1:5476", "https://127.0.0.1:5476", "not a url", ""]) {
-      const ok = await postShutdown({ backendUrl, kirocrewHome: home, spawnedChild: LIVE_CHILD, httpMod });
+      const ok = await postShutdown({ backendUrl, kirocrewHome: home, httpMod });
       assert.strictEqual(ok, false, backendUrl);
     }
     assert.deepStrictEqual(requests, []);
@@ -235,9 +137,7 @@ test("postShutdown refuses a target that is not an http loopback origin", async 
 
 test("postShutdown returns false when no secret is published at all", async () => {
   const home = tmpHomeWithSecret(null);
-  const ok = await postShutdown({
-    backendUrl: "http://127.0.0.1:1", kirocrewHome: home, spawnedChild: LIVE_CHILD,
-  });
+  const ok = await postShutdown({ backendUrl: "http://127.0.0.1:1", kirocrewHome: home });
   assert.strictEqual(ok, false);
   fs.rmSync(home, { recursive: true, force: true });
 });
@@ -256,43 +156,35 @@ test("postShutdown tries each listener entry -- a stale exact entry does not blo
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test("stopGatewayGracefully hands postShutdown the child it is stopping as spawn evidence", async () => {
+test("stopGatewayGracefully hands postShutdown no caller-supplied secret", async () => {
   const proc = spawnDummy();
   await waitReady(proc);
   const calls = [];
-  const listenerPidsFn = async () => [proc.pid];
   try {
     await stopGatewayGracefully(proc, {
       backendUrl: "http://127.0.0.1:1",
       kirocrewHome: "/unused",
       timeoutMs: 5000,
-      listenerPidsFn,
       postShutdownFn: async (opts) => { calls.push(opts); return false; },
     });
     assert.strictEqual(calls.length, 1);
-    assert.strictEqual(calls[0].spawnedChild, proc);
-    assert.strictEqual(calls[0].listenerPidsFn, listenerPidsFn);
     assert.strictEqual("secrets" in calls[0], false, "no caller-supplied secret list");
   } finally { if (proc.exitCode === null) proc.kill("SIGKILL"); }
 });
 
-test("stopGatewayGracefully: happy path — endpoint exits process, no signal needed", async () => {
-  const home = tmpHomeWithSecret("s3cr3t");
-  const proc = spawnDummy({ ignoreSigterm: true }); // proves SIGTERM was NOT used
+test("stopGatewayGracefully: a gateway with no listener entry is stopped by signal, never sent .local_secret", async () => {
+  // The GPT 6.1 case on #20026: a listener the lsof probe cannot see answers the
+  // port. The home-wide secret must not reach it; SIGTERM stops our child.
+  const home = tmpHomeWithSecret("home-wide");
+  const proc = spawnDummy();
   await waitReady(proc);
-  // Server kills the child on 200, simulating the gateway exiting itself.
-  const { server, port, seen } = await startServer({
-    secret: "s3cr3t", status: 200, onShutdown: () => proc.kill("SIGKILL"),
-  });
+  const { server, port, seen } = await startServer({ secret: "home-wide", status: 200 });
   try {
-    // An older gateway with no listener entry: the kernel names our child as the
-    // port's only listener, so the home-wide secret is its own.
     await stopGatewayGracefully(proc, {
       backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, timeoutMs: 10000,
-      listenerPidsFn: async () => [proc.pid],
     });
     assert.notStrictEqual(proc.exitCode === null && proc.signalCode === null, true, "process should be gone");
-    assert.deepStrictEqual(seen, ["s3cr3t"], "the endpoint, not a signal, stopped it");
+    assert.deepStrictEqual(seen, [], "the home-wide secret must not be sent");
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
