@@ -87,7 +87,9 @@ which is the agent's own ceiling.
 may start a guide or propose a card. A turn started by a loop, cron, app
 injection, `session_send` or a subagent completion gets 403 `not_user_turn`.
 Channel turns are refused. Those non-user dashboard turns can still use the
-read tools.
+read tools. (Amended 2026-10-13: in a crewmate's own thread, its own goal,
+milestones and check-ins cards are admitted from any turn; see
+[rfc-crewmate-goals.md](rfc-crewmate-goals.md) § 3.5.)
 
 **Where the rules live.** The safety rules live in each tool's description and
 in the server's `next` hints, not in an agent prompt. They hold for every

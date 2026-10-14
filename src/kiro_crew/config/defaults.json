@@ -53,7 +53,12 @@
     "@kirocrew-mate/update_self",
     "@kirocrew-mate/set_model",
     "@kirocrew-mate/set_approval_mode",
-    "@kirocrew-mate/request_capabilities"
+    "@kirocrew-mate/request_capabilities",
+    "@kirocrew-mate/goal_read",
+    "@kirocrew-mate/set_goal",
+    "@kirocrew-mate/set_key_results",
+    "@kirocrew-mate/key_result_progress",
+    "@kirocrew-mate/save_goal_report"
   ],
   "resources": [
     "file://.kiro/steering/**/*.md"

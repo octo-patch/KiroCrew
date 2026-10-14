@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import TYPE_CHECKING
 
@@ -145,6 +146,35 @@ def _reclaim_deleted_member_crew_log(name: str, cfg: KiroCrewConfig) -> None:
         logger.info("crew delete: removed the crew log of %r", slug)
     else:
         logger.info("crew delete: the crew log of %r was not removed (%s)", slug, status)
+
+
+async def _remove_goal_check_ins(request: web.Request, name: str, cfg: KiroCrewConfig) -> None:
+    """Remove a deleted crewmate's goal check-in schedules. Never raises.
+
+    Each check-in is a gateway-owned job keyed ``goal-<cadence>:<slug>``
+    (``goal_reminder.MANAGED_PREFIXES``) and listed nowhere but its Goals tab,
+    so with the crewmate gone nothing would ever turn it off. *cfg* is the config
+    captured while the record was still in it, which the slug is resolved from;
+    a slug another live crew still derives keeps its schedules. The goal record
+    itself stays, like the rules file beside it.
+    """
+    state = request.app.get("state")
+    crons = getattr(state, "crons", None) if state is not None else None
+    if crons is None:
+        return
+    try:
+        from kiro_crew.dashboard import goal_reminder
+        from kiro_crew.members import member_slug
+
+        slug = member_slug(name, cfg)
+        if await asyncio.to_thread(_member_slug_is_claimed, slug):
+            return
+        for job in await goal_reminder.reminder_jobs(crons, slug):
+            await crons.remove_job_async(job.id, actor="dashboard", source="agent.delete")
+    except Exception:
+        logger.warning(
+            "crew delete: could not remove the goal check-ins of %r", name, exc_info=True
+        )
 
 
 def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:
@@ -371,6 +401,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
         # same-name recreation has already uploaded and committed a new
         # picture under the same digest stem.
         await _drained_to_thread(_remove_avatar_files, name)
+        await _remove_goal_check_ins(request, name, cfg)
         # Likewise the crew's private template copy: a copy the sidecar marks
         # private to THIS crew, and that the crew was bound to, has no reader
         # left once the record is gone — kept, it lists in the Agent Templates

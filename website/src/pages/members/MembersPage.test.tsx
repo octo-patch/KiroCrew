@@ -67,6 +67,16 @@ vi.mock('../../api/client', () => ({
     // The crew webview drawer. The Dashboard tab no longer reads it (the tab is
     // the crewmate's dynamic dashboard, mocked out below), but other surfaces on
     // this page still open it, and an unstubbed read rejects into a red alert.
+    // The goal record behind the Profile card's About. "No goal yet" is the
+    // state every case here wants: a failed read says so in an alert.
+    memberGoals: {
+      get: vi.fn(() => Promise.resolve({
+        slug: '', member: '', goals: [],
+        key_results: [], reports: [], removed_key_result: null, removed_goal: null,
+        schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1 },
+        limits: { goal_text_max_chars: 2000, key_result_text_max_chars: 200, key_result_value_max_chars: 40, key_result_reading_max_chars: 120 },
+      })),
+    },
     // The panel's session-status frame reads the crewmate's automatic dashboard
     // card. "Waiting, nothing published" is the state every case here is about;
     // an unstubbed read rejects and the frame raises the same red alert, which
@@ -1553,6 +1563,43 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // The face is IN the card now: the pill keeps its slot but paints no face.
     expect(screen.getByTestId('member-pill-face')).toHaveStyle({ visibility: 'hidden' })
     expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
+  })
+
+  it("Goals' track row sends a visible message to the crewmate and closes the floating card", async () => {
+    const sendMock = api.sendChat as ReturnType<typeof vi.fn>
+    sendMock.mockClear()
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('side-panel-root')
+    fireEvent.click(await screen.findByTestId('member-identity-pill'))
+    await screen.findByTestId('crew-profile-modal')
+    fireEvent.click(screen.getByRole('tab', { name: 'Goals' }))
+    fireEvent.click(await screen.findByTestId('crew-goals-track'))
+    fireEvent.change(await screen.findByTestId('crew-goals-track-input'), { target: { value: 'The release date' } })
+    fireEvent.click(screen.getByTestId('crew-goals-track-send'))
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1))
+    const [message, slot, , , meta] = sendMock.mock.calls[0]
+    // The ordinary send path: the user's own words, no hidden nudge.
+    expect(message).toBe('Please track this for me: The release date')
+    expect(slot).toBe('member-oncall')
+    expect(meta).toBeUndefined()
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-modal')).toBeNull(), { timeout: 3000 })
+  })
+
+  it("Goals' track row leaves the docked card open", async () => {
+    const sendMock = api.sendChat as ReturnType<typeof vi.fn>
+    sendMock.mockClear()
+    localStorage.setItem(PANEL_OPEN_KEY, '0')
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    fireEvent.click(await screen.findByTestId('member-identity-pill'))
+    await screen.findByTestId('crew-profile-docked')
+    fireEvent.click(screen.getByRole('tab', { name: 'Goals' }))
+    fireEvent.click(await screen.findByTestId('crew-goals-track'))
+    fireEvent.change(await screen.findByTestId('crew-goals-track-input'), { target: { value: 'The release date' } })
+    fireEvent.click(screen.getByTestId('crew-goals-track-send'))
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1))
+    expect(screen.getByTestId('crew-profile-docked')).toBeInTheDocument()
   })
 
   it('with the side panel open, the pill face flies into the floating card and back on close', async () => {
@@ -6444,7 +6491,7 @@ describe('MembersPage warm greeting (a return in the middle of a goal)', () => {
     vi.mocked(api.crewBoard).mockRejectedValue(Object.assign(new Error('ledger needs repair'), { status: 409 }))
     await renderPage([row()])
     fireEvent.click(await rosterRow('oncall'))
-    expect(await screen.findByTestId('member-resume-error', undefined, PANE_READY)).toHaveTextContent("Could not read where oncall's goal stands.")
+    expect(await screen.findByTestId('member-resume-error', undefined, PANE_READY)).toHaveTextContent("Could not read where oncall's task stands.")
     expect(screen.queryByTestId('member-resume-card')).toBeNull()
   })
 

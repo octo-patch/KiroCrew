@@ -161,7 +161,26 @@ _USER_TURN_OPERATIONS = frozenset(
 )
 
 
-async def _resolve_agent_caller(request: web.Request, operation: str) -> tuple[str, str]:
+#: Request mark :func:`_resolve_agent_caller` sets when it admitted a turn the
+#: user did not send, because it runs in the calling crewmate's own thread.
+REQ_OWN_GOAL_TURN = "own_goal_turn"
+
+
+def _is_crewmate_thread(slot: Any) -> bool:
+    """Whether *slot* is a crewmate's own pinned thread (its DM slot)."""
+    from kiro_crew import members as members_mod
+
+    agent = getattr(slot, "agent", "")
+    return (
+        getattr(slot, "mode", "") == members_mod.DM_SLOT_MODE
+        and isinstance(agent, str)
+        and bool(agent)
+    )
+
+
+async def _resolve_agent_caller(
+    request: web.Request, operation: str, *, own_goal: bool = False
+) -> tuple[str, str]:
     """The verified caller's ``(slot_key, session_key)``. Raises :class:`GuideError`.
 
     The session the request names must be one the transport attests
@@ -182,6 +201,14 @@ async def _resolve_agent_caller(request: web.Request, operation: str) -> tuple[s
     injection, a ``session_send`` and a sub-agent completion are refused with
     403 ``not_user_turn``, and so is a user's turn once any text that is not the
     user's was steered into it (``chat_delivery.steer_into_running_turn``).
+
+    *own_goal* lets one caller (``member.propose_self``) also admit a turn
+    the user did not send when it runs in the crewmate's own thread (a check-in,
+    a sub-agent's result coming back, a goal-setup nudge): a card only proposes
+    and the user's button decides, so the crewmate may put its own goal,
+    milestones and check-ins in front of the user whenever its work calls for
+    it. It then marks the request (:data:`REQ_OWN_GOAL_TURN`) so the route keeps
+    that turn to those cards.
     """
     from kiro_crew.dashboard.handlers._shared import _read_session_key
     from kiro_crew.dashboard.session_control import (
@@ -247,6 +274,9 @@ async def _resolve_agent_caller(request: web.Request, operation: str) -> tuple[s
             "this message came from a messaging channel, not the dashboard",
         )
     if operation in _USER_TURN_OPERATIONS and getattr(slot, "_turn_user_sent", False) is not True:
+        if own_goal and _is_crewmate_thread(slot):
+            request[REQ_OWN_GOAL_TURN] = True
+            return slot_key, sk
         _audit(sk, operation, "denied", "not a user turn")
         raise GuideError(
             403,

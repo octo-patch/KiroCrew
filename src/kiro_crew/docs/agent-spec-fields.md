@@ -792,11 +792,14 @@ Slack or another channel included; `find_ui` and `search_docs` still answer
 there.
 
 The same specs mount the crewmate's own-record server `kirocrew-mate`, on the
-same terms: always emitted, no `autoApprove`, and exactly the four tools in
+same terms: always emitted, no `autoApprove`, and exactly the tools in
 `agent._MATE_AUTO_GRANTS` as exact `allowedTools` grants (`update_self`, which
 writes the calling crewmate's name, description or ghost face on the user's word
-and leaves one undoable row in its chat; `set_model`, `set_approval_mode` and
-`request_capabilities`, which only offer a change card). An existing spec gains
+and leaves one undoable row in its chat; `set_model`, `set_approval_mode`,
+`request_capabilities`, `set_goal` and `set_key_results`, which only offer a
+change card; `goal_read`, `key_result_progress` and `save_goal_report`, which
+read and write the calling
+crewmate's own goal record directly). An existing spec gains
 the ref and those grants once
 (`mate_platform_granted.json`). Every tool acts on the calling crewmate alone
 and refuses outside its own dashboard turn.

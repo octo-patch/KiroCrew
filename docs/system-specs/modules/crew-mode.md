@@ -1275,9 +1275,12 @@ same "no transcript row" dispatch, with the hidden kickoff
 two short sentences of everyday words, a hello with its name and then a question
 asking what its goal is, with no plan until they answer. The user chose a name
 and a look, not a template, so the kickoff also keeps its template, role and
-agent type out of that message. When the record carries a `description`,
-the kickoff appends it as a first draft of the goal, which the crewmate restates
-and asks the user to confirm or change. Once the goal is clear, a crewmate whose
+agent type out of that message. When the record carries a `description`, or
+failing that the crewmate's goal record already holds goals (what a
+`crewmate.create` card writes), the kickoff appends it as a first draft of the
+goal, which the crewmate restates and asks the user to confirm or change. An
+unreadable goal record only means the kickoff asks for the goal. Once the goal
+is clear, a crewmate whose
 work should run on its own may offer a schedule in plain words, and sets one up
 with its schedule tool only after the user says yes.
 
@@ -1717,7 +1720,7 @@ description, and only omits the no-description claim when no cached description
 exists. Memory and
 Workspace sit side by side, but Memory is a flat readout — a solid `border-border`
 hairline, transparent background, no hover and no pointer; never dashed, which is
-this card's empty / coming-soon language (Sessions empty, Goals) and would make a
+this card's empty language (Sessions empty) and would make a
 set binding read as not set up — while Workspace keeps the filled clickable-card
 treatment with its hover. Notes, Permissions, and Model follow.
 The pencil, Permissions, and Model entries open the existing `CrewEditorDialog`;
@@ -1823,9 +1826,275 @@ page — advances the Profile open nonce and remounts the card at the requested
 initial tab. The nonce advances only inside the action admitted by the schedule
 draft guard, so a veto neither remounts the card nor loses its pushed form.
 
-**Goals** is a coming-soon placeholder with no input. Goals need a record the
-crewmate can read and act on; a browser-local list it never sees would promise
-the opposite, so none is offered until that record exists.
+**Goals** (`CrewGoals.tsx`, `CrewGoalsPane`) is the crewmate's goal record
+(`member_goals.py`), shared by the user and the crewmate, never written to
+`member-rules/`:
+
+- the **goals**, a list with no cap on its length (`goals: [{id, text,
+  created_at, updated_at, updated_by}]`, each id `g` and 8 hex digits, each
+  text up to `GOAL_TEXT_MAX_CHARS`). The user adds one (`PUT
+  /api/members/{slug}/goals/long-term` without `goal_id`; `expected: ""` means
+  "no goal yet" and is refused once there is one), replaces one (`goal_id` plus
+  a compare-and-set on `expected`), and removes one (an empty text with its
+  `goal_id`, or `DELETE .../goals/items/{goal_id}`, which keeps it and which
+  milestones served it as `removed_goal` for one inline **Undo**, `POST
+  .../goals/items/{goal_id}/restore`). Two goals with the same text are refused
+  (`duplicate_goal`). A goal is numbered by its place in the list, and that
+  number is what the tab, the card and the crewmate's context all show. The
+  crewmate only proposes one (`set_goal` -> a `crewmate.goal` card: add, or a
+  new text for one goal by id). A record written before goals were a list holds
+  one `long_term` string: it reads as a one-goal list under
+  `member_goals.LEGACY_GOAL_ID` and is written in the list shape on its next
+  write;
+- **key results**, one shared set with no cap on its length, `{id, text,
+  target, current, updated_at, readings[], goal_ids[]}`, labelled
+  **Milestones** on the tab (the code, API and tools keep `key_results`).
+  `goal_ids` names the goals a milestone serves, none, one or several, set by
+  the crewmate when it proposes the set (`set_key_results` items carry optional
+  `goal_ids`); an id that is not one of the record's goals is refused
+  (`unknown_goal`), an item without `goal_ids` keeps the links of the key result
+  it matches, and removing a goal strips its id from every milestone. Each row
+  shows the text and the numbered circles of its goals, the latest reading in
+  the crewmate's
+  own words, the target and when it was last read; a reading is free text of up
+  to `member_goals.KR_READING_MAX_CHARS` (120) characters, a target of up to
+  `KR_VALUE_MAX_CHARS` (40). Opening a row (a button with `aria-expanded`) shows
+  its earlier readings and its edit and remove actions.
+  The crewmate proposes the whole set (`set_key_results` -> a
+  `crewmate.key_results` card) and records readings directly
+  (`key_result_progress`); readings are kept 90 days (at most 200). The user
+  edits one by replacing the set (`PUT .../goals/key-results`) and removes one
+  with `DELETE .../goals/key-results/{kr_id}`, which keeps it, readings and
+  place, as `removed_key_result` for one inline **Undo**
+  (`POST .../goals/key-results/{kr_id}/restore`); any later write to the set
+  ends that Undo. An Undo that can no longer apply (no goal, or the same key
+  result back) is refused `stale_undo` and cleared on disk in the
+  same write, so the next click answers `undo_unavailable`. A key result is
+  known by its text and target, so a set
+  holding two with the same pair is refused (`duplicate_key_result`, and the
+  card's params too). An edit keeps its draft on the key result's id and saves
+  every item with its `id`, so a reworded key result keeps its id, reading and
+  readings; an `id` outside the stored set is refused (`unknown_key_result`).
+  A card's set carries no ids and matches by text and target. The edit saves
+  against the set as it read when editing began, as a goal's edit
+  saves against the text it started from, so a change made meanwhile is refused
+  rather than overwritten. A row never read shows only its title and its
+  **Aiming for** line, with no placeholder. Neither list has a count cap: the
+  crewmate is guided toward a small set instead (the `set_goal` and
+  `set_key_results` descriptions, the goal-setup nudge and its own context say
+  that a few goals and milestones are easier to track, and to suggest merging
+  as the list grows), and the whole record stays inside its 64 KiB byte bound;
+- the tab has **two pages**. The first only shows state, one card each with its
+  icon after its label: the goals (the card itself is not a button: one row per
+  goal, its number on a coloured circle then its text, each row a door to that
+  goal's page; a **+** icon button, labelled "Add a goal", at the label's right
+  opens that page with an empty editor and is always shown), the milestones
+  (each row a door to its own page: the latest reading large, every earlier
+  update, Edit milestone and Remove milestone), the check-ins as three tiles
+  saying on or off and when they run (the card is a door to the switches and
+  pickers), a full-width **Add something {name} should track** row, and the reports. The
+  goal colours are five theme tile hues (`--tile-blue`, `--tile-purple`,
+  `--tile-pink`, `--tile-teal`, `--tile-indigo`), never the ok/warn green and
+  yellow, picked by list position and cycling past five; a goal's number always
+  goes with its colour. A goal's page edits, saves and removes it and lists the
+  milestones that serve it, read-only. Every edit happens on a page pushed over the profile card
+  (`ProfilePagePushContext` in `CrewProfilePanel`, the same slide and back
+  control as About and Notes); outside the card the page replaces the first
+  page with its own back control. A removed milestone or goal returns to the
+  first page, where its Undo row is. Error notices offer the existing agent
+  hand-off for draft-free check-in, Undo and milestone-removal failures, but
+  keep it off while a goal, milestone or tracking form holds unsaved text.
+  Goal, milestone and tracking drafts publish dirty/busy state into Profile's
+  existing leave and automatic-placement guards. Close, Back, Cancel, leaving
+  Goals, route/browser navigation and member switches ask before dropping a
+  dirty draft; an in-flight save or tracking send refuses those exits. Automatic
+  narrow-viewport relocation and a cross-tab panel reveal keep the same Profile
+  mounted while either state is at stake. A successful save clears its draft;
+  failed saves preserve it. Writes are serialized while one is pending;
+- **Add something {name} should track** opens a page with a text box; Send
+  posts what the user typed as their own message (`"Please track this for me:
+  <text>"`, localized) into the crewmate's thread through the
+  ordinary send path (`chat-core/transport/sendTurn`), so it shows in the
+  transcript as anything they typed would; no hidden nudge. Only a `dispatched`
+  or `queued` receipt clears the input and closes a floating profile card so
+  the reply is in view; a docked one stays. A refusal retains the input with
+  the failure notice. `unknown`, `response-late` and `transport-error` retain
+  it with the shared unconfirmed-delivery notice: check the conversation before
+  resending. No outcome automatically resends. What the crewmate
+  then tracks is an item in its work ledger (the Crew board's items): the
+  crewmate's own context teaches it to record what it is asked to track there
+  and to call it tracking, never a ledger, when it talks to the user. The Goals
+  tab shows no tracked item;
+- three **check-ins**, each its own switch, off by default and disabled without
+  a goal, sharing one time of day: **Daily Goal Reminder**, **Weekly
+  report** (a weekday) and **Monthly review** (a day of the month, 1-28)
+  (`PUT .../goals/schedules`); each row is its label and its toggle, and the
+  weekday and day-of-month pickers show under their switch only while it is on
+  (disabled with no goal). Each switch keeps exactly one gateway schedule of
+  its own (`managed_by` `goal-<cadence>:<slug>`, `dashboard/goal_reminder.py`),
+  removed when it turns off or the last goal is removed. A save leaves a cadence
+  whose job already matches (enabled, same cron expression, timezone and name)
+  untouched, so its id and run history survive another switch's save; only a
+  changed cadence is removed and added again. A save and a goal clear hold
+  one per-crewmate lock (`handlers.member_goals._schedule_lock`) across the
+  record write and the reconciliation, which reads the record again inside it,
+  so concurrent saves never remove each other's schedule. When one fires the gateway's
+  cron callback first runs the same fire-time governance gate as a message job
+  (`_await_cron_fire_time_gate`, audited as `cron_goal_checkin`), so a tightened
+  `capabilities.cron` ceiling denies it with no turn started; otherwise it
+  runs it as one hidden gateway-authored turn in the crewmate's
+  thread built from the current record, which lists every goal by number and
+  each milestone with the goals it serves: the daily turn takes fresh readings and
+  then continues with the crewmate's next task; the weekly turn writes a report
+  from the readings' movement and the tasks the crewmate finished in the week;
+  the monthly turn reviews the same, and
+  whether the goal and key results still fit and, when they no longer do,
+  proposes the replacement in that turn as a `crewmate.goal` or
+  `crewmate.key_results` card (nothing changes until the user presses it). Any
+  turn in the crewmate's own pinned thread may raise its `goal`, `key_results`
+  and `check_ins` cards through `member.propose_self`, whether or not the user
+  sent it (`handlers.guide.REQ_OWN_GOAL_TURN`; a channel turn is refused);
+  every other card, and `propose_change`, stays user-turn only.
+- the **goal-setup nudge** (`dashboard/goal_setup.py`): adding a goal or really
+  changing one's text (the Goals tab or an applied `crewmate.goal` card; not an
+  Undo, not a removal, not an edit at or above 0.9 similarity) sends the
+  crewmate one hidden turn once its thread is idle (waiting at most ten
+  minutes; a newer save, of that goal or another, replaces a waiting nudge).
+  It names the goal that changed by number and id, lists every goal, and asks
+  the crewmate to say back that goal in a sentence, research it in ONE
+  background `spawn_run` sub-agent and end the turn so the chat stays free,
+  then propose milestones with `set_key_results` (each linked with `goal_ids`)
+  when the result comes back, keeping the set small and suggesting merges as it
+  grows. A goal removed before the turn would run sends nothing. Applying that
+  `crewmate.key_results` card (its Apply step sets
+  `REQ_CARD_KEY_RESULTS_APPLY`; a Goals-tab edit and an Undo do not) always
+  sends a second hidden turn, `[Milestones confirmed]`, the same way, listing
+  each milestone with the goals it serves: with no
+  check-in on it offers them with `set_check_ins`, otherwise it says what the
+  crewmate works on first.
+- the **`crewmate.check_ins` card** (`set_check_ins`): turns the Daily Goal
+  Reminder, Weekly report and Monthly review on or off and sets `weekday`,
+  `month_day` and `time`, writing through the schedules route, which is a
+  card-hooked route (`change_card_catalog.HOOKED_ROUTES`) like the goal and
+  key-results routes, so the card finishes and offers Undo; Undo puts each
+  field it changed back and leaves the other check-in fields as they are.
+  Apply carries the preview's values for the fields it writes as `expected`;
+  Undo carries the values its Apply wrote, never a post-admission read. Both
+  compare those values inside `member_goals.set_schedules`' locked mutation
+  and refuse `changed_meanwhile` if another write won. Expectations must be
+  valid schedule fields covering every field being written. Same-value saves
+  are allowed, and a supplied no-op field is neither written nor undone.
+  Ordinary owner requests without `expected` keep their partial-update behavior.
+  If schedule synchronization fails, switching the requested cadences back off
+  also compares against the complete schedule values that write returned, so
+  rollback cannot erase a later schedule edit.
+  A switch turned on with no goal is refused (`no_goal`). Weekly and monthly reports are saved with
+  `save_goal_report` as Markdown artifacts under `Crewmates/<name>/Reports`, the
+  user gets one notification linking it, and the thread carries one short line.
+  A check-in that fires with the thread not open or busy does nothing that time;
+  the weekly and monthly ones check again after reading the work ledger, so a
+  turn that started meanwhile never carries the review mark.
+  The check-in jobs are not listed on the Schedule page or in the crewmate's
+  Schedules tab (`GET /api/crons` drops them through
+  `goal_reminder.is_reminder_job`); the switches are their only control;
+- the latest **reports**, each linking its artifact.
+
+What the crewmate is doing now is its work ledger, not the goal record: the tab
+holds no short-term list and no link to the ledger. The weekly and monthly
+prompts read finished tasks through `goal_reminder.finished_tasks`, which lists
+the thread's own ledger through the Crew board's reader
+(`work_ledger_board.closed_items` on `session_ledger.ledger_key(slot_key)`; the
+goal reminder does not import the store itself), keeps the
+items closed (`is_terminal`) inside the window by `closed_at`, at most 30, each
+`{title, state, summary}` scrubbed; a thread with no ledger lists none, and the
+prompt then asks the crewmate to summarise from its own work log and say so in
+the report. A record written while short-term goals existed still carries
+`short_term` and `last_crewmate_change`: `_normalize` reads past them and the
+next write drops them.
+
+The record lives at `trust/member-goals/<slug>.json` and has the same
+protection as `member-rules/`: the tool gate (the sensitive-path floor covers
+`trust/`, so the crewmate's file-write and edit tools are refused there), not an
+OS seal (`trust/` is a read-write leaf of the crew sandbox, so a sandboxed shell
+command can still write it). Because that shell can also plant a symlink there
+and the gateway writing the record is not sandboxed, the record is never reached
+through a link: `trust`, `member-goals` and the record are each opened relative
+to the one before with `O_NOFOLLOW` and written inside that pinned directory
+(`member_goals._open_goals_dir`); a link at any of them is refused as
+`GoalsUnreadable`, so the gateway cannot be pointed at `profiles/` or another
+sealed leaf. The record itself is opened `O_NONBLOCK` and must be a regular
+file, so a FIFO planted there is refused instead of hanging the read and the
+per-member lock. Without `openat` (Windows) each component is checked with `lstat`
+first. It is name-scoped like the rules file. Crewmates created before this
+change start with no goal and every check-in off.
+
+The record is held to `member_goals._RECORD_MAX_BYTES` (64 KiB) at write time,
+measured on the exact UTF-8 payload written, which is also the read cap: the
+oldest readings are dropped until it fits, and a write that still does not fit
+is refused `record_too_large`, so a record is never too large to read. Every
+goal string leaves the record through the dashboard's exfiltration-URL and
+credential scrubbers (`member_goals.scrub_text`): the Goals tab and `goal_read`
+view (`public_view`) and the saved report's title and Markdown. The goal
+and key-results compare-and-sets accept the scrubbed form the page was shown as
+`expected`, and a saved string that is exactly the scrubbed form of the stored one
+keeps the stored text (`member_goals.keep_unscrubbed`), so saving one milestone
+never replaces another's real text with redaction placeholders. Deleting a crewmate removes its check-in schedules
+(`crew_removal._remove_goal_check_ins`) unless another live crew still derives
+the slug; the goal record stays, like the rules file.
+
+Since such a crewmate has a goal and no description, the Profile card's About
+shows its first goal, marked **From the goal**, while the description is
+empty; every other reader takes an empty description as it always has. A goal
+record that cannot be read says so there (`ErrorNotice`), instead of reading as
+"no goal".
+
+A `crewmate.create` card writes its `goal` here as the new crewmate's first
+goal, never as `description` (the `POST /api/agents` step sends none). The goal
+is its own apply step after the create (`CREWMATE_CREATE_GOAL_STEP`): a `PUT
+.../goals/long-term` with `expected: ""`, its path segment filled from the
+`member_id` step 0 returned and its `member` from step 0's `name`. Its optional
+`schedule` is the crewmate's work schedule and follows as the last step
+(`CREWMATE_CREATE_SCHEDULE_STEP`), unchanged: the same job name and message, never
+a goal check-in. A failed step stops the plan, so a goal write that fails leaves
+the card `partial` saying the goal (and any schedule) was not saved, and its Undo
+removes only the crewmate.
+A card persisted before goal records (goal in `description`, schedule at step 1,
+`change_card_catalog.legacy_create_apply`) still rebuilds, in either shape a
+released build wrote: with step 0's `first_greeting: true`, or from the builds
+before it without that key (`first_greeting=False`). Unstarted, it runs
+the current plan; started, it keeps its plan and evidence indexes, and its Undo
+finds the schedule by the step-1 evidence `id` (`_create_schedule_index`), as
+does the after-read its Undo compares (`change_cards.read_state`).
+
+A `crewmate.key_results` card snapshots the full records too
+(`key_results_records`; `change_cards.comparable_state` compares the
+`{text, target}` shape, the records' ids and the goals each serves, never their
+readings). Apply sends that preview's ids and links as `expected_ids` and
+`expected_links` alongside its `expected` wording; `set_key_results` validates
+these expectations and compares all three inside the same locked mutation that
+writes the set. A links-only edit or same-wording recreation after the card's
+early snapshot check is therefore refused, while a fresh reading or same-value
+save is not a conflict. Its Undo
+sends them as `restore`, with the ids its Apply wrote (that step's evidence
+`ids`) as `expected_ids` and the goals each served (evidence `links`) as
+`expected_links`, which `member_goals.restore_key_results` compares under
+the record's lock. A set recreated since with the same wording carries new ids,
+and a newer card that changed only which goals a milestone serves changes
+`links`, so a stale Undo is refused rather than replacing it and its readings. The plan
+is public (`CardStore.public`), so every string in it, the replaced set and the
+restored records with their readings, goes through `member_goals.scrub_text`.
+What goes back is the raw text: the card's Undo step hands the routes its private
+`before` snapshot (`change_cards.REQ_CARD_RAW_RESTORE`), and a value in the body
+that is exactly the scrubbed form of the snapshot's is restored raw.
+The restore keeps every key result the card kept exactly as it is now, readings
+recorded since the card included, and brings back from `restore` only the ones
+the card removed, with their ids, readings and current value. A card's goal
+text and key results are cleaned as the record stores them
+(`member_goals.clean_text`), so its after-read shows the write.
+
+The side panel's **Dashboard** tab shows no goal summary: it is the crewmate's
+own page, and the goal, its milestones and the reports are on the Goals tab
+only.
 
 The chat SidePanel has two standing entries on this page: the leading
 **Dashboard** tab and pinned **Files**. Dashboard renders the crewmate's dynamic

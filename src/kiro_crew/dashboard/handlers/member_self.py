@@ -8,7 +8,10 @@ Two halves, split the way the guide and the change cards are:
   body -- and every route admits only a turn running in that dashboard slot
   that the user sent (:func:`handlers.guide._resolve_agent_caller`, with the
   operation in its ``_USER_TURN_OPERATIONS``). A channel message, a schedule,
-  a subagent or an app cannot change anyone.
+  a subagent or an app cannot change anyone. ``propose`` also admits a turn the
+  user did not send when it runs in this crewmate's own thread (a check-in, a
+  sub-agent's result, the goal-setup nudge), and only for
+  :data:`OWN_GOAL_PROPOSALS`: each is still a card the user decides.
 
   - ``POST /api/member/self/update`` writes the presentation fields a crewmate
     owns (:data:`kiro_crew.members.SELF_EDITABLE_FIELDS`) at once, records the
@@ -38,6 +41,7 @@ from kiro_crew.dashboard import chat_cards, member_self_changes
 from kiro_crew.dashboard.guide_runs import GuideError
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.guide import (
+    REQ_OWN_GOAL_TURN,
     _audit,
     _deny,
     _json_body,
@@ -59,7 +63,20 @@ SELF_PROPOSALS: dict[str, str] = {
     "model": "crewmate.update",
     "approval_mode": "crewmate.update",
     "capabilities": "crewmate.capabilities",
+    # A goal added or changed (``set_goal``): the user asked the crewmate to work
+    # toward its goals, so only the user's button changes one.
+    "goal": "crewmate.goal",
+    # The key results the crewmate worked out for that goal (``set_key_results``),
+    # replacing the whole set once the user confirms.
+    "key_results": "crewmate.key_results",
+    # Which check-ins run and when (``set_check_ins``), once the user confirms.
+    "check_ins": "crewmate.check_ins",
 }
+
+#: The requests a crewmate may make in its own thread from a turn the user did
+#: not send (``handlers.guide.REQ_OWN_GOAL_TURN``): its own goal, milestones
+#: and check-ins, each still a card the user decides.
+OWN_GOAL_PROPOSALS = frozenset({"goal", "key_results", "check_ins"})
 
 
 def _caller_member(request: web.Request, slot_key: str) -> tuple[str, str] | None:
@@ -166,14 +183,14 @@ async def api_member_self_propose(request: web.Request) -> web.Response:
     ``request`` is a key of :data:`SELF_PROPOSALS`; ``params`` are that
     request's own fields (``model``: ``{"model"?, "reasoning_effort"?}``;
     ``approval_mode``: ``{"approval_mode": mode}``; ``capabilities``:
-    ``{"draft": {...}}``). The member is always the caller's
+    ``{"draft": {...}}``; ``goal``: ``{"long_term": text, "goal_id"?: id}``). The member is always the caller's
     own. The card is proposed exactly as ``propose_change`` would propose it and
     the answer is the card's public record.
     """
     from kiro_crew.dashboard.handlers.change_cards import propose_for_caller
 
     try:
-        slot_key, sk = await _resolve_agent_caller(request, OP_PROPOSE_SELF)
+        slot_key, sk = await _resolve_agent_caller(request, OP_PROPOSE_SELF, own_goal=True)
         body = await _json_body(request)
     except GuideError as exc:
         return _refusal(exc)
@@ -192,10 +209,33 @@ async def api_member_self_propose(request: web.Request) -> web.Response:
     if not isinstance(raw, dict):
         _audit(sk, OP_PROPOSE_SELF, "denied", "invalid_params")
         return _deny(400, "invalid_params", "'params' must be an object")
+    if request.get(REQ_OWN_GOAL_TURN) is True and name not in OWN_GOAL_PROPOSALS:
+        _audit(sk, OP_PROPOSE_SELF, "denied", "not a user turn")
+        return _deny(
+            403, "not_user_turn", "only a message the user sent in the dashboard can start this"
+        )
     kind = SELF_PROPOSALS[name]
     params: dict[str, Any]
     if name == "capabilities":
         params = {"member": member, "draft": raw.get("draft")}
+    elif name == "goal":
+        if "long_term" not in raw or set(raw) - {"long_term", "goal_id"}:
+            _audit(sk, OP_PROPOSE_SELF, "denied", "invalid_params")
+            return _deny(400, "invalid_params", "'goal' takes long_term and an optional goal_id")
+        params = {"member": member, **raw}
+    elif name == "key_results":
+        if set(raw) != {"items"}:
+            _audit(sk, OP_PROPOSE_SELF, "denied", "invalid_params")
+            return _deny(400, "invalid_params", "'key_results' takes only items")
+        params = {"member": member, "items": raw.get("items")}
+    elif name == "check_ins":
+        allowed_ci = {"daily", "weekly", "monthly", "weekday", "month_day", "time"}
+        if not raw or set(raw) - allowed_ci:
+            _audit(sk, OP_PROPOSE_SELF, "denied", "invalid_params")
+            return _deny(
+                400, "invalid_params", "'check_ins' takes only " + ", ".join(sorted(allowed_ci))
+            )
+        params = {"member": member, **raw}
     else:
         allowed = {"model", "reasoning_effort"} if name == "model" else {"approval_mode"}
         fields = {k: v for k, v in raw.items() if k in allowed}

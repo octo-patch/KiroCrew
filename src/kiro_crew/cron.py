@@ -2074,6 +2074,20 @@ class CronService:
         logger.info("Added managed cron job '%s' (%s) for %s", job.name, job.id, managed_by)
         return job
 
+    async def add_managed_job_async(self, managed_by: str, **kwargs: Any) -> CronJob:
+        """Event-loop-native :meth:`add_managed_job`: same key check, off-loop disk work."""
+        validate_managed_by(managed_by)
+        job = self._build_job(**kwargs)
+        job.managed_by = managed_by
+        persisted = await asyncio.to_thread(
+            self._persist_add_if_absent_locked, lambda j: j.managed_by == managed_by, job
+        )
+        if not persisted:
+            raise ValueError(f"a job is already managed by {managed_by!r}")
+        self._arm_timer()
+        logger.info("Added managed cron job '%s' (%s) for %s", job.name, job.id, managed_by)
+        return job
+
     def _persist_add_if_absent_locked(
         self,
         predicate: Callable[[CronJob], bool],

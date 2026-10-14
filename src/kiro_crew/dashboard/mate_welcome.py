@@ -140,17 +140,39 @@ _GOAL_KNOWN = (
 )
 
 
-def goal_kickoff(entry: object, member: str) -> str:
+def _recorded_goal(slug: str, member: str) -> str:
+    """*member*'s goals from its goal record, one per line, or ``""``.
+
+    Total: an unreadable record only means the kickoff asks for the goal.
+    """
+    if not slug:
+        return ""
+    from kiro_crew import member_goals
+
+    try:
+        goals = member_goals.read_goals(slug, member).get("goals") or []
+    except Exception:
+        logger.debug("goal record unreadable for %r; asking for the goal", slug, exc_info=True)
+        return ""
+    return "\n".join(
+        g["text"].strip() for g in goals if isinstance(g.get("text"), str) and g["text"].strip()
+    )
+
+
+def goal_kickoff(entry: object, member: str, slug: str = "") -> str:
     """The hidden kickoff for crewmate *member*'s first turn; *entry* is its row.
 
     Names the crewmate by its label (its key when unlabelled) and, when the
-    create carried a description, asks it to confirm that goal.
+    create carried a description or the crewmate's goal record (under *slug*)
+    already holds goals, asks it to confirm them.
     """
     label = getattr(entry, "display_name", "") or ""
     label = label.strip() if isinstance(label, str) else ""
     text = GOAL_WELCOME.format(name=label or member)
     description = getattr(entry, "description", "") or ""
     description = description.strip() if isinstance(description, str) else ""
+    if not description:
+        description = _recorded_goal(slug, member)
     return text + _GOAL_KNOWN.format(description=description) if description else text
 
 
@@ -259,7 +281,7 @@ async def maybe_start_first_greeting(state: Any, slug: str) -> str:
     if kind is None:
         return NOT_OWED
     if kind == members_mod.WELCOME_KIND_GOAL:
-        kickoff = goal_kickoff(entry, member)
+        kickoff = await asyncio.to_thread(goal_kickoff, entry, member, slug)
     else:
         kickoff = welcome_kickoff(entry, has_other_crewmates=others)
     if not await asyncio.to_thread(claim_greeting_marker, slug, slot.key):
@@ -274,13 +296,27 @@ async def maybe_start_first_greeting(state: Any, slug: str) -> str:
 
 def _dispatch_greeting(state: Any, slot: Any, kickoff: str) -> None:
     """Run the kickoff as a gateway-authored turn, with no transcript row for it."""
+    # The owner opened this thread, so a human is demonstrably watching it.
+    dispatch_hidden_turn(state, slot, kickoff, human_seen=True)
+
+
+def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool) -> None:
+    """Run *prompt* as one gateway-authored turn in *slot*, with no user row for it.
+
+    Shared by the first welcome and the goal check-ins
+    (:mod:`kiro_crew.dashboard.goal_reminder`). The turn is not one the user
+    sent (``_turn_user_sent`` stays false), so the operations only a user's turn
+    may run (a guide, ``update_self``, most cards) refuse inside it; in a
+    crewmate's own thread its goal, milestones and check-ins cards are still
+    admitted (``handlers.guide.REQ_OWN_GOAL_TURN``).
+    """
     # Deferred: chat_handlers / chat import this package's handlers at load.
     from kiro_crew.dashboard.chat import _run_chat
     from kiro_crew.dashboard.chat_handlers import _sweep_stale_permissions
     from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 
-    # The owner opened this thread, so a human is demonstrably watching it.
-    slot._human_seen = True
+    if human_seen:
+        slot._human_seen = True
     slot._has_reader = False  # delivered over the WebSocket, like a ws send
     slot._file_changes = []
     _sweep_stale_permissions(slot)
@@ -292,7 +328,7 @@ def _dispatch_greeting(state: Any, slot: Any, kickoff: str) -> None:
             _run_chat(
                 state,
                 slot,
-                kickoff,
+                prompt,
                 _synthetic_payload=True,
                 _turn_actor="gateway",
             ),
@@ -300,4 +336,4 @@ def _dispatch_greeting(state: Any, slot: Any, kickoff: str) -> None:
     )
     slot.task = task
     state.push_slots_update()
-    logger.info("first welcome started on %s", slot.key)
+    logger.info("hidden gateway turn started on %s", slot.key)

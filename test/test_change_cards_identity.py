@@ -374,8 +374,9 @@ def _card_headers(card, op="apply", step=0):
 
 def _applied_crewmate_create_card(store: CardStore, service, job_id: str, member_id: str):
     """Build a ``crewmate.create`` card as the apply path leaves it: step 0
-    created the crew (member_id), step 1 created the schedule (job_id), and
-    ``after`` carries both the created id and the live schedule fingerprint."""
+    created the crew (member_id), step 1 wrote its goal, step 2 created the
+    schedule (job_id), and ``after`` carries both the created id and the live
+    schedule fingerprint."""
     params = catalog.validate_params(
         "crewmate.create",
         {"name": "scout", "goal": "watch prod", "schedule": {"cron_expr": "0 9 * * *"}},
@@ -401,7 +402,9 @@ def _applied_crewmate_create_card(store: CardStore, service, job_id: str, member
         rec, op="apply", index=0, evidence={"name": "scout", "member_id": member_id}
     )
     store.begin_step(rec, revision=rec["revision"], op="apply", index=1)
-    store.record_success(rec, op="apply", index=1, evidence={"id": job_id})
+    store.record_success(rec, op="apply", index=1, evidence={})
+    store.begin_step(rec, revision=rec["revision"], op="apply", index=2)
+    store.record_success(rec, op="apply", index=2, evidence={"id": job_id})
     sched = cards.cron_job_revision(service.get_job(job_id))
     after = {
         "exists": True,

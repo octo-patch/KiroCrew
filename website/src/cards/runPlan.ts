@@ -45,6 +45,7 @@ export function fillBody(step: CardPlanStep, inputs: Record<string, string>, res
   if (!step.fill?.length || !step.body || typeof step.body !== 'object') return step.body
   const out = { ...(step.body as Record<string, unknown>) }
   for (const f of step.fill) {
+    if (f.source === 'step' && f.in === 'path') continue
     if (f.source === 'user') out[f.field] = inputs[f.field] ?? ''
     else {
       const res = responses[f.step]
@@ -52,6 +53,26 @@ export function fillBody(step: CardPlanStep, inputs: Record<string, string>, res
     }
   }
   return out
+}
+
+/** A `{{stepN.key}}` token in a planned path: a wire spelling, never copy. */
+const STEP_PLACEHOLDER = /\{\{step(\d+)\.([A-Za-z0-9_]+)\}\}/g
+
+/**
+ * The path a step is sent to: the planned path with each `in: 'path'` fill's
+ * `{{stepN.key}}` placeholder replaced by that earlier step's response value,
+ * encoded as one segment. The gateway checks the value is what that step returned.
+ */
+export function fillPath(step: CardPlanStep, responses: unknown[]): string {
+  let path = step.path
+  for (const f of step.fill ?? []) {
+    if (f.source !== 'step' || f.in !== 'path') continue
+    const res = responses[f.step]
+    const value = res && typeof res === 'object' ? (res as Record<string, unknown>)[f.key] : undefined
+    const filled = encodeURIComponent(typeof value === 'string' ? value : '')
+    path = path.replace(STEP_PLACEHOLDER, (token, n: string, key: string) => (Number(n) === f.step && key === f.key ? filled : token))
+  }
+  return path
 }
 
 const defaultSleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -67,7 +88,7 @@ export async function runCardPlan(card: Card, op: CardOp, opts: RunOptions = {})
     for (;;) {
       let response: unknown
       try {
-        response = await sendCardStep(card, op, i, step, fillBody(step, inputs, responses))
+        response = await sendCardStep(card, op, i, { ...step, path: fillPath(step, responses) }, fillBody(step, inputs, responses))
       } catch (error) {
         return { ok: false, step: i, error }
       }

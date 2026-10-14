@@ -3424,6 +3424,12 @@ async def api_crons(request: web.Request) -> web.Response:
     if app:
         jobs = [j for j in jobs if app_owner_name(j.created_by) == app]
         _audit_app_cron(app, "crons.list", "allowed", f"jobs={len(jobs)}")
+    # A crewmate's goal check-ins are controlled only by its Goals tab switches,
+    # so neither the Schedule page nor a crewmate's Schedules tab lists them;
+    # the store still runs them. Only those: every other managed job stays.
+    from kiro_crew.dashboard.goal_reminder import is_reminder_job
+
+    jobs = [j for j in jobs if not is_reminder_job(j)]
     now = time.time()
     tz_name, _ = get_local_tz()
     # Secret-grant metadata is owner-view only (see the field comment below).

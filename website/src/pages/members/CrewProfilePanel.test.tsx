@@ -22,7 +22,9 @@ vi.mock('../../components/CrewStateAvatar', () => ({
   default: ({ seed }: { seed: string }) => <span data-testid="avatar-stub">{seed}</span>,
 }))
 
-import CrewProfilePanel, { PROFILE_TABS } from './CrewProfilePanel'
+import { useContext } from 'react'
+import { createPortal } from 'react-dom'
+import CrewProfilePanel, { PROFILE_TABS, ProfilePagePushContext } from './CrewProfilePanel'
 
 const member = (overrides: Partial<MemberRosterRow> = {}): MemberRosterRow => ({
   name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall', running: false,
@@ -64,6 +66,7 @@ function setup(overrides: Partial<Parameters<typeof CrewProfilePanel>[0]> = {}):
       newScheduleBody={<div data-testid="host-create-form">host form</div>}
       sessionsBody={<div data-testid="host-sessions">host sessions</div>}
       notesBody={<div data-testid="host-notes">host notes</div>}
+      goalsBody={<div data-testid="host-goals">host goals</div>}
       // Most cases read the Profile tab's body; the card's own default is the
       // strip's first tab (Sessions), which the rail cases assert explicitly.
       initialTab="profile"
@@ -188,6 +191,28 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(screen.queryByTestId('crew-profile-read-more')).toBeNull()
   })
 
+  it('shows the long-term goal under About when there is no description', () => {
+    setup({ description: '', goal: 'Keep the release notes current' })
+    const about = screen.getByTestId('crew-profile-about')
+    expect(screen.getByTestId('crew-profile-goal-fallback')).toHaveTextContent('Keep the release notes current')
+    expect(about).toHaveTextContent('From the goal')
+    expect(about).not.toHaveTextContent(/No description yet/)
+  })
+
+  it('says the goal could not be loaded instead of claiming there is no description', () => {
+    setup({ description: '', goal: '', goalError: true })
+    const notice = screen.getByTestId('crew-profile-goal-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).toHaveTextContent("Couldn't load the goals.")
+    expect(screen.queryByText('No description yet')).toBeNull()
+  })
+
+  it('prefers the description over the goal when both exist', () => {
+    setup({ description: 'Watches the on-call queue', goal: 'Keep the release notes current' })
+    expect(screen.getByTestId('crew-profile-description')).toHaveTextContent('Watches the on-call queue')
+    expect(screen.queryByTestId('crew-profile-goal-fallback')).toBeNull()
+  })
+
   it('shows the shared actionable error when the initial description read fails', () => {
     setup({ description: '', descriptionError: true })
     const notice = screen.getByTestId('crew-profile-description-error')
@@ -264,13 +289,13 @@ describe('CrewProfilePanel Schedules tab', () => {
 })
 
 describe('CrewProfilePanel other tabs', () => {
-  it('Sessions shows the host\'s driving list; Goals is coming soon; there is no Computer tab', () => {
+  it('Sessions shows the host\'s driving list; Goals shows the host\'s goals; there is no Computer tab', () => {
     setup()
     fireEvent.click(tab('Sessions'))
     expect(screen.getByTestId('host-sessions')).toBeInTheDocument()
     fireEvent.click(tab('Goals'))
-    expect(screen.getByTestId('crew-profile-goals-soon')).toHaveTextContent(/coming soon/i)
-    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.getByTestId('host-goals')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-profile-goals-soon')).toBeNull()
     expect(screen.queryByRole('tab', { name: 'Computer' })).toBeNull()
   })
 })
@@ -342,5 +367,30 @@ describe('CrewProfilePanel closing', () => {
     act(() => { proceed() })
     await waitFor(() => expect(screen.queryByTestId('crew-profile-page-new-schedule')).toBeNull())
     expect(screen.getByTestId('crew-profile-pane-schedule')).toBeInTheDocument()
+  })
+})
+
+describe('CrewProfilePanel tab pages', () => {
+  function GoalsStub({ onPop }: { onPop: () => void }) {
+    const push = useContext(ProfilePagePushContext)
+    return (
+      <>
+        <button type="button" onClick={() => push?.open('Milestone A', onPop)}>open page</button>
+        {push?.host ? createPortal(<div data-testid="stub-page">page body</div>, push.host) : null}
+      </>
+    )
+  }
+
+  it('pushes a tab page over the card with its title, and back hands it back to the tab', async () => {
+    const onPop = vi.fn()
+    const h = setup({ initialTab: 'goals', goalsBody: <GoalsStub onPop={onPop} /> })
+    fireEvent.click(screen.getByRole('button', { name: 'open page' }))
+    expect(await screen.findByTestId('stub-page')).toBeInTheDocument()
+    expect(screen.getByTestId('crew-profile-pushed-title')).toHaveTextContent('Milestone A')
+    expect(screen.getByTestId('crew-profile-back')).toHaveTextContent('oncall')
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    expect(h.onRequestBack).toHaveBeenCalledTimes(1)
+    expect(onPop).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-pushed-title')).toBeNull())
   })
 })

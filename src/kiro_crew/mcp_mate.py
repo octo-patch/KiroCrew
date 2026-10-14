@@ -9,13 +9,23 @@ tiers that follow who owns the field:
   nothing waits on a card. Only when the user has just asked for the change:
   the tool description says so, and the gateway admits only a turn the user
   sent (:mod:`kiro_crew.dashboard.handlers.member_self`).
+* **Goals** -- ``goal_read``, ``key_result_progress`` and ``save_goal_report``
+  read the goal, record key-result readings and file a weekly or monthly
+  report at once, with no card: a reading is the crewmate's own measurement
+  and a report its own account. Admitted on any turn in the crewmate's own
+  dashboard thread, including the Daily Goal Reminder's hidden turn
+  (:mod:`kiro_crew.dashboard.handlers.member_goals`).
 * **Card-backed** -- ``set_model``, ``set_approval_mode``,
-  ``request_capabilities``: what the crewmate runs on and what it may do
+  ``request_capabilities``, ``set_goal`` (add or change one goal), ``set_key_results``
+  (how the goals are measured, the whole set at once): what the crewmate
+  works toward, runs on and what it may do
   without asking. These are the user's to grant, so each becomes the
   existing change card (:mod:`kiro_crew.dashboard.change_cards`) for the caller's
   own member, and nothing changes until the user presses it. The crewmate names
   the ask; the gateway fixes the kind and the member. The outcome reaches the
-  crewmate on its next turn, the way every card outcome does.
+  crewmate on its next turn, the way every card outcome does. They need a turn
+  the user sent, except that the gateway's own Monthly review of this crewmate
+  may raise ``set_goal`` and ``set_key_results``.
 
 Why its own server
 ------------------
@@ -37,6 +47,7 @@ import json
 import logging
 from typing import Any
 
+from kiro_crew import member_goals as _goals
 from kiro_crew.mcp_core import (
     _post,
     _resolve_session_key,
@@ -206,6 +217,169 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "goal_read",
+            "description": (
+                "Read your goals: each goal the user set, with its id and number, and "
+                "your key results with the goals each serves, "
+                "each with its id, target, latest reading and reading history. They are "
+                "also in your context at session start; call this when you need fresh "
+                "state or the history."
+            ),
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+        {
+            "name": "set_goal",
+            "description": (
+                "Ask the user to add a goal or to replace one of your goals: what you "
+                "work toward. Use it when the user has told you a goal, or agreed to a "
+                "new one, in their own words, or when your Monthly review finds a goal "
+                "no longer fits the work; pass it as one plain paragraph. Leave goal_id "
+                "out to add a goal; pass the id of one of your goals (goal_read lists "
+                "them) to replace its text. A few goals are easier to keep track of "
+                "than many, so when the list grows, suggest merging goals that overlap "
+                "rather than adding another; the user decides. " + _CARD_NOTE
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "long_term": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": _goals.LONG_TERM_MAX_CHARS,
+                    },
+                    "goal_id": {"type": "string", "pattern": "^g[0-9a-f]{8}$"},
+                    "reason": {"type": "string", "maxLength": 500},
+                },
+                "required": ["long_term"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "set_key_results",
+            "description": (
+                "Ask the user to confirm your key results (milestones): readings that "
+                "show how far you are from your goals, replacing the current set. Work "
+                "them out yourself first: look into the work (the repo, the queue, past "
+                "releases you can read) and pick things you can check and report as a "
+                "number or a plain yes/no; target is that number or word. Link each "
+                "milestone to the goals it serves with goal_ids (the ids goal_read "
+                "lists); which goals, and whether any, is your call. A few milestones "
+                "are easier to track than many, so propose a small set and suggest "
+                "merging when it grows; the user decides. "
+                "When a goal cannot be measured, propose none for it and say so instead "
+                "of inventing a number. Propose a new set when your goals change. " + _CARD_NOTE
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": _goals.KR_TEXT_MAX_CHARS,
+                                },
+                                "target": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": _goals.KR_VALUE_MAX_CHARS,
+                                },
+                                "goal_ids": {
+                                    "type": "array",
+                                    "items": {"type": "string", "pattern": "^g[0-9a-f]{8}$"},
+                                },
+                            },
+                            "required": ["text", "target"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "reason": {"type": "string", "maxLength": 500},
+                },
+                "required": ["items"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "set_check_ins",
+            "description": (
+                "Ask the user to turn your check-ins on or off and set when they run: "
+                "daily is the Daily Goal Reminder (you read your goal and record where "
+                "each milestone stands), weekly the Weekly report (on weekday, 0 = "
+                "Sunday), monthly the Monthly review (on month_day, 1-28); all run at "
+                "time (HH:MM, 24-hour). Give only what changes. Explain in one plain "
+                "sentence what each one you propose does for the user before you call "
+                "it; they need a goal first. " + _CARD_NOTE
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "daily": {"type": "boolean"},
+                    "weekly": {"type": "boolean"},
+                    "monthly": {"type": "boolean"},
+                    "weekday": {"type": "integer", "minimum": 0, "maximum": 6},
+                    "month_day": {"type": "integer", "minimum": 1, "maximum": _goals.MAX_MONTH_DAY},
+                    "time": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+                    "reason": {"type": "string", "maxLength": 500},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "key_result_progress",
+            "description": (
+                "Record a fresh reading for one key result by its id: current is what you "
+                "found, a number in the same form as its target or a short note when the "
+                "progress is not a number. Saved at once, with no sign-off, and shown on "
+                "your Goals tab. Record one whenever you check."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "maxLength": 16},
+                    "current": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": _goals.KR_READING_MAX_CHARS,
+                    },
+                },
+                "required": ["id", "current"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "save_goal_report",
+            "description": (
+                "Save your weekly report or monthly review as a report the user can "
+                "open: kind weekly or monthly, a short title, and the report in "
+                "Markdown. It is filed under Crewmates/<your name>/Reports and the user "
+                "gets a notification linking it. After saving, reply in the chat with "
+                "one short line that points at it; the report itself stays out of the "
+                "chat."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["weekly", "monthly"]},
+                    "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": _goals.REPORT_TITLE_MAX_CHARS,
+                    },
+                    "markdown": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": _goals.REPORT_MAX_CHARS,
+                    },
+                },
+                "required": ["kind", "title", "markdown"],
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
@@ -280,7 +454,46 @@ _PROPOSALS = {
     "set_model": "model",
     "set_approval_mode": "approval_mode",
     "request_capabilities": "capabilities",
+    "set_goal": "goal",
+    "set_key_results": "key_results",
+    "set_check_ins": "check_ins",
 }
+
+
+def _goal_call(name: str, args: dict[str, Any], sk: str) -> str:
+    """``goal_read`` / ``key_result_progress`` / ``save_goal_report``: direct, no card."""
+    if name == "goal_read":
+        d = _post("/api/member/self/goals/read", {}, session_key=sk)
+        refused = _error_for(name, d)
+        return refused or _render(d)
+    if name == "key_result_progress":
+        d = _post(
+            "/api/member/self/goals/key-result",
+            {"id": args.get("id", ""), "current": args.get("current", "")},
+            session_key=sk,
+        )
+        refused = _error_for(name, d)
+        if refused:
+            return f"{refused}\nThe reading was not saved; do not say it was."
+        return _render({**d, "next": "Saved; it shows on your Goals tab."})
+    if name == "save_goal_report":
+        d = _post(
+            "/api/member/self/goals/report",
+            {k: args.get(k, "") for k in ("kind", "title", "markdown")},
+            session_key=sk,
+        )
+        refused = _error_for(name, d)
+        if refused:
+            return f"{refused}\nThe report was not saved; do not say it was."
+        return _render(
+            {
+                **d,
+                "next": "Saved and the user was notified. Reply with one short line "
+                f"pointing at it ([{d.get('title', 'report')}]({d.get('url', '')})); "
+                "keep the report's text out of the chat.",
+            }
+        )
+    return f"Error: unknown tool '{name}'"
 
 
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
@@ -289,6 +502,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     sk, err = _strict_session_key()
     if err:
         return _off_dashboard(name, err)
+
+    if name in (
+        "goal_read",
+        "key_result_progress",
+        "save_goal_report",
+    ):
+        return _goal_call(name, args, sk)
 
     if name == "update_self":
         fields = {k: args[k] for k in ("display_name", "description", "avatar") if k in args}

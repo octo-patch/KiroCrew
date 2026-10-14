@@ -20,6 +20,7 @@ export const FIELD_LABELS: Record<string, () => string> = {
   at: () => i18nT('components.changeCards.field_at'),
   timezone: () => i18nT('components.changeCards.field_timezone'),
   goal: () => i18nT('components.changeCards.field_goal'),
+  key_results: () => i18nT('components.changeCards.field_key_results'),
   auto_approve: () => i18nT('components.changeCards.field_auto_approve'),
   enabled: () => i18nT('components.changeCards.field_enabled'),
   display_name: () => i18nT('components.changeCards.field_display_name'),
@@ -53,6 +54,7 @@ export function changeHint(c: CardChange): string | null {
 
 /** A row's label: the localized field name when known, else the gateway's. */
 export function changeLabel(c: CardChange): string {
+  if (c.field === 'goal' && typeof c.number === 'number') return i18nT('pages.membersPage.goals_goal_number', { number: c.number })
   return (c.field && FIELD_LABELS[c.field]?.()) || c.label
 }
 

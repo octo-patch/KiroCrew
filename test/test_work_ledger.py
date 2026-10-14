@@ -2812,6 +2812,11 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # ``bind`` event text is blanked), liveness is joined server-side so the
         # page never needs the key, and its action route resolves the key from the
         # store rather than accepting one from the body.
+        #
+        # Its ``closed_items`` reader also serves the crewmate goal reports, so
+        # ``dashboard/goal_reminder.py`` reaches the ledger through this seam
+        # instead of importing the store: the slot there is the crewmate's own
+        # goal binding, never a supplied key.
         "dashboard/handlers/work_ledger_board.py",
         # The work-ledger PROBE. A monitor whose subject is a conductor's own
         # ledger has to READ that ledger to observe it — folding its items into a

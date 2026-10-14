@@ -129,6 +129,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # question) must not land on a slot a send has already reserved,
                 # so it reads the reservation, not the turn.
                 ("mate_welcome.py", "maybe_start_first_greeting"),
+                # A goal check-in skips its run rather than land on a slot a send
+                # has already reserved; it asks again after reading the ledger.
+                ("goal_reminder.py", "_idle_thread"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_handlers.py", "_switch_target_busy"),
                 # The palette create's retraction of a newborn whose app-agent
@@ -220,7 +223,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
     assert publishers == {
         # A crewmate's first-open greeting: a gateway-authored turn, started the
         # way api_send_message starts one (spawn_guarded_turn, then slot.task).
-        ("mate_welcome.py", "_dispatch_greeting"),
+        # The Daily Goal Reminder's hidden turn shares the same publisher.
+        ("mate_welcome.py", "dispatch_hidden_turn"),
         ("chat_handlers.py", "api_chat"),
         ("chat_regenerate.py", "api_chat_slot_edit_resend"),
         ("chat_regenerate.py", "api_chat_slot_regenerate"),

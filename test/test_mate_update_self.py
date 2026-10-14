@@ -911,7 +911,9 @@ def _proposed(monkeypatch) -> list[dict[str, Any]]:
 @pytest.mark.parametrize(
     ("body", "code"),
     [
-        ({"request": "goal", "params": {}}, "unknown_request"),
+        ({"request": "rules", "params": {}}, "unknown_request"),
+        ({"request": "goal", "params": {}}, "invalid_params"),
+        ({"request": "goal", "params": {"long_term": "x", "member": "Other"}}, "invalid_params"),
         ({"request": "model"}, "invalid_params"),
         ({"request": "model", "params": {"workspace": "x"}}, "invalid_params"),
         ({"request": "model", "params": {}}, "invalid_params"),

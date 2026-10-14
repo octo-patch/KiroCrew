@@ -127,6 +127,8 @@ import { threadsApi, threadsQueryKey } from '../../api/threads'
 import ThreadPanel from './ThreadPanel'
 import CrewmateSwitcher, { CrewmateUnreadColumn } from './CrewmateSwitcher'
 import CrewProfilePanel, { PROFILE_FACE_PX, type ProfileTab } from './CrewProfilePanel'
+import CrewGoalsPane, { useMemberGoals } from './CrewGoals'
+import { sendTurn } from '../../chat-core/transport/sendTurn'
 import CrewComposer from './CrewComposer'
 import { createPortal } from 'react-dom'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
@@ -2948,6 +2950,10 @@ export default function MembersPage() {
   // Same key and same queryFn as the pane inside (`crewWakeQueryKey` +
   // `api.crons()`), so opening the tab spends no second request and the chip can
   // never disagree with the list it summarizes.
+  // The first goal, for the profile card's About when the crewmate has no
+  // description: a crewmate made from a Create crewmate card starts with a goal
+  // and no description. Same query key as the Goals tab, so no second request.
+  const profileGoalsQuery = useMemberGoals(activeSlug, activeMemberName, !!profile)
   const schedulesCountQuery = useQuery({
     queryKey: crewWakeQueryKey(activeMemberName),
     queryFn: () => api.crons(),
@@ -3043,6 +3049,20 @@ export default function MembersPage() {
   // is being retained: hidden is exactly when the draft has nowhere else to live.
   const schedulesMounted = !!profile
   schedulesMountedRef.current = schedulesMounted
+  const goalsDraft = useRef({ dirty: false, busy: false })
+  const [goalsAtStake, setGoalsAtStake] = useState(false)
+  const onGoalsDraftChange = useCallback((dirty: boolean, busy: boolean) => {
+    goalsDraft.current = { dirty, busy }
+    setGoalsAtStake(dirty || busy)
+  }, [])
+  const mayLeaveGoals = useCallback(async () => {
+    if (goalsDraft.current.busy) return false
+    if (!goalsDraft.current.dirty) return true
+    return confirmSched({
+      title: t('components.markdownPanel.discard_unsaved_changes'),
+      confirmLabel: t('components.markdownPanel.discard_changes_button'),
+    })
+  }, [confirmSched, t])
   schedGuardRef.current = useCallback(async () => {
     // An in-flight editor write must not be abandoned: refuse the leave outright
     // until it settles (the request could still land and persist a "discarded"
@@ -3054,10 +3074,11 @@ export default function MembersPage() {
     // same question the Schedules draft asks.
     if (crewModalAtStakeRef.current && !window.confirm(t('pages.membersPage.edit_leave_draft'))) return false
     if (!schedulesMounted) return true
-    return mayLeaveSchedules()
-  }, [schedulesMounted, mayLeaveSchedules, t])
+    if (schedSaving.current || goalsDraft.current.busy) return false
+    return await mayLeaveGoals() && await mayLeaveSchedules()
+  }, [schedulesMounted, mayLeaveGoals, mayLeaveSchedules, t])
   schedAtStakeRef.current = useCallback(
-    () => schedulesMounted && (schedSaving.current || schedDraftDirty.current),
+    () => schedulesMounted && (schedSaving.current || schedDraftDirty.current || goalsDraft.current.dirty || goalsDraft.current.busy),
     [schedulesMounted],
   )
   // Leaving the ROUTE is the last exit, and the registry that owns it is synchronous, so
@@ -3073,7 +3094,8 @@ export default function MembersPage() {
     // the registry cannot await the app's confirm dialog.
     if (crewModalAtStakeRef.current && !window.confirm(t('pages.membersPage.edit_leave_draft'))) return false
     if (!schedulesMounted) return true
-    if (schedSaving.current) return false
+    if (schedSaving.current || goalsDraft.current.busy) return false
+    if (goalsDraft.current.dirty && !window.confirm(t('components.markdownPanel.discard_unsaved_changes'))) return false
     if (!schedDraftDirty.current) return true
     const ok = window.confirm(t('pages.membersPage.schedules_leave_draft'))
     if (ok) releaseSchedRetention()
@@ -3084,7 +3106,7 @@ export default function MembersPage() {
   // discarded the draft silently while every wired in-app exit asked. The New crewmate
   // dialog on this same page already publishes, which is what made the gap uneven rather
   // than merely absent.
-  const anyDraftAtStake = schedAtStake || crewModalAtStake || crewModalBusy
+  const anyDraftAtStake = schedAtStake || goalsAtStake || crewModalAtStake || crewModalBusy
   usePublishNavigationStake(anyDraftAtStake)
   // A reload or a tab close is not a route change, so the guard above never sees it; the
   // browser's own prompt is the only thing that can. Registered while a Schedules draft,
@@ -5306,6 +5328,18 @@ export default function MembersPage() {
           // The profile card (crewmate-panel IA): the pill's surface. Notes,
           // Schedules and the work log are ITS tabs/pages now, so the three
           // bodies above mount here instead of on the side panel's strip.
+          // The Goals tab's "Track something in chat": the user's own message in
+          // this crewmate's thread, through the ordinary send path, so it shows in
+          // the transcript like anything they typed. A card floating over the
+          // thread closes so the reply is in view; a docked column stays.
+          const trackInChat = async (message: string) => {
+            if (!confirmedSlot) return 'refused' as const
+            return (await sendTurn({ slot: confirmedSlot, message })).status
+          }
+          const onTracked = () => {
+            // CrewGoals clears its delivered draft and busy flag before this exit.
+            if (!profileDocked) requestCloseProfile()
+          }
           const profilePanel = activeView && profile ? (
             <CrewProfilePanel
               key={`${active.name}:${profile.tab}:${profile.openNonce}`}
@@ -5314,6 +5348,8 @@ export default function MembersPage() {
               slotKey={activeSlot || active.slot_key}
               description={profileRegistryQuery.data?.agents.find((a) => a.name === active.name)?.description ?? ''}
               descriptionError={profileRegistryQuery.isError}
+              goal={profileGoalsQuery.data?.goals[0]?.text ?? ''}
+              goalError={profileGoalsQuery.isError}
               memoryLabel={t(PROFILE_MEMORY_KEYS[memberMemoryDisplay(activeView)])}
               // Only a crewmate's OWN (V2) store has a page to manage; the shared
               // global store is not this crewmate's, so that tile stays a readout.
@@ -5330,6 +5366,17 @@ export default function MembersPage() {
               newScheduleBody={schedulesBody}
               sessionsBody={sessionsBody}
               notesBody={notesBody}
+              goalsBody={activeSlug && activeMemberName ? (
+                <CrewGoalsPane
+                  slug={activeSlug}
+                  member={activeMemberName}
+                  name={crewDisplayName(activeView ?? active)}
+                  onTrackInChat={confirmedSlot ? trackInChat : undefined}
+                  onTracked={onTracked}
+                  onDraftStateChange={onGoalsDraftChange}
+                  onRequestLeave={requestProfileBack}
+                />
+              ) : null}
               faceRef={cardFaceRef}
               faceHidden={!!faceFlight}
               settingsBody={<Suspense fallback={null}><CrewProfileSettings member={activeView} slotKey={confirmedSlot || null} waiting={!confirmedSlot} /></Suspense>}

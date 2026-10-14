@@ -648,17 +648,18 @@ class TestVettingHoldsAtClaimTime:
     def test_the_message_arm_has_no_pool_queue_between_vet_and_dispatch(self):
         """Disposition for the third gate site, by measurement not assertion.
 
-        ``gateway.py`` has exactly three fire-time gate sites and exactly two
+        ``gateway.py`` has exactly four fire-time gate sites and exactly two
         execution-pool dispatches. Both dispatches sit in the command/script
-        blocks, which return before the message gate is reached — so the
-        message arm has no queue between its vet and its LLM dispatch and the
-        defect class cannot apply to it. Pinned here so a future dispatch added
+        blocks, which return before the message gate is reached, and the goal
+        check-in gate returns into its hidden turn before either — so neither
+        LLM arm has a queue between its vet and its dispatch and the defect
+        class cannot apply to them. Pinned here so a future dispatch added
         after the message gate fails this test rather than shipping unnoticed.
         """
         source = Path(gw.__file__).read_text(encoding="utf-8")
         gate_sites = source.count("await _await_cron_fire_time_gate(")
         pool_sites = source.count("await run_in_cron_pool(")
-        assert gate_sites == 3, f"gate-site count changed ({gate_sites}); re-audit the sweep"
+        assert gate_sites == 4, f"gate-site count changed ({gate_sites}); re-audit the sweep"
         assert pool_sites == 2, f"pool-dispatch count changed ({pool_sites}); re-audit the sweep"
         message_gate = source.index('tool_name="cron_message_dispatch"')
         assert (
@@ -1285,6 +1286,35 @@ class TestCronMessageDenialAndWiring:
             assert await cb(job) is None
         assert job.fire_time_denied is True
         assert job.consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_goal_checkin_denied_at_fire_time_never_fires(self):
+        """A crewmate's goal check-in passes the same gate as a message job."""
+        from kiro_crew.dashboard import goal_reminder
+
+        orch = _make_orchestrator()
+        job = _job(managed_by=goal_reminder.managed_key("ava", "daily"))
+        fire = AsyncMock(return_value="started")
+        with patch.object(goal_reminder, "fire", fire):
+            async with _cron_cb(orch, gate_reason="capabilities.cron off") as cb:
+                assert await cb(job) is None
+        fire.assert_not_awaited()
+        assert job.fire_time_denied is True
+        assert job.last_status == "error"
+        assert job.consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_goal_checkin_allowed_by_the_gate_fires(self):
+        from kiro_crew.dashboard import goal_reminder
+
+        orch = _make_orchestrator()
+        job = _job(managed_by=goal_reminder.managed_key("ava", "daily"))
+        fire = AsyncMock(return_value="started")
+        with patch.object(goal_reminder, "fire", fire):
+            async with _cron_cb(orch, gate_reason="") as cb:
+                assert await cb(job) == "started"
+        fire.assert_awaited_once()
+        assert job.fire_time_denied is False
 
     @pytest.mark.asyncio
     async def test_reaper_not_started_without_sessions(self):

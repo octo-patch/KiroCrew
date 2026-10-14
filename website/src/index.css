@@ -3484,6 +3484,18 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   --tile-teal: #32ade6;
 }
 
+/* Crewmate goal marks (CrewGoals `goalColor`): the numbered dot that ties a
+ * milestone to the goals it serves. A muted, dusty palette -- periwinkle,
+ * mauve, clay, sea glass, rose -- that reads as identity, not status, so it
+ * stays clear of the ok green and warn yellow. Dark mode lifts each hue;
+ * light mode deepens it so the dot holds against a white card. */
+:root {
+  --goal-1: #9aa8f5; --goal-2: #c6a3d9; --goal-3: #e3a283; --goal-4: #86c3c0; --goal-5: #e79fb4;
+}
+[data-mode="light"] {
+  --goal-1: #5867c9; --goal-2: #8e62a8; --goal-3: #b8674a; --goal-4: #3d8784; --goal-5: #b65a77;
+}
+
 /* Liquid Glass tint (components/ui/liquid-glass.tsx): the fill laid over the
  * blurred backdrop of the composer and the mobile settings search capsule. Read
  * from data-mode polarity like the pane shadow: light themes get a milky

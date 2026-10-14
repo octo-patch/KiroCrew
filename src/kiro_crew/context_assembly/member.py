@@ -352,6 +352,21 @@ _MEMBER_DASHBOARD_ITEM = """
 _MEMBER_HOW_YOU_WORK = _MEMBER_HOW_YOU_WORK_COMMON + _MEMBER_BRIEFING_ITEM + _MEMBER_DASHBOARD_ITEM
 
 
+def _read_goal_block(slug: str, member: str) -> str:
+    """The member's goal block (:func:`member_goals.context_block`), or ``""``.
+
+    Total: a goal is not a safety layer, so an unreadable record degrades to no
+    goal block rather than aborting the turn the way unreadable rules do.
+    """
+    from kiro_crew import member_goals
+
+    try:
+        return member_goals.context_block(member_goals.read_goals(slug, member))
+    except Exception:
+        logger.warning("goal record unreadable for %r; injecting no goal", slug, exc_info=True)
+        return ""
+
+
 def build_member_section(
     member: str,
     *,
@@ -375,6 +390,10 @@ def build_member_section(
     3. ``[PERMANENT RULES]`` — user-owned. Read from the keystone-gated
        ``member-rules/`` subtree, so the member's own file tools cannot rewrite
        it; omitted entirely when the user has not written rules.
+    3b. ``[YOUR GOALS]`` — the goals (user-owned, numbered) and the key results'
+       text, target and linked goal numbers (no readings, so a reading never
+       changes the section), from ``trust/member-goals/``
+       (:mod:`kiro_crew.member_goals`), bounded; omitted when there is none.
     4. ``[CURRENT ASSIGNMENT]`` — member-owned working memory, read
        (capped) from the member's own agent-writable briefing file.
 
@@ -440,6 +459,7 @@ def build_member_section(
     # state — and the file is gateway-written atomically, so corruption
     # is an operator-level event, not a routine one.)
     rules = ctx.read_member_rules(slug, member)
+    goals = _read_goal_block(slug, member)
     # Layer-4 availability decides both the briefing read and the wording
     # around it (item 6 above, the placeholder below): where the pinned
     # briefing read fails closed (Windows — member_briefing_supported),
@@ -470,6 +490,7 @@ def build_member_section(
     triggers = _markers._scrub_member_payload(triggers)
     rules = _markers._scrub_member_payload(rules)
     briefing = _markers._scrub_member_payload(briefing)
+    goals = _markers._scrub_member_payload(goals)
 
     identity = [
         f"[MEMBER IDENTITY]\nYou are {member}. Not a generic assistant, and not an "
@@ -499,7 +520,20 @@ def build_member_section(
             "and it is done, shown in this chat as one line the user can undo. What "
             "you run on, what this chat approves without asking and which tools you "
             "have are the user's to grant: set_model, set_approval_mode and "
-            "request_capabilities each put a card in this chat for them to press."
+            "request_capabilities each put a card in this chat for them to press. "
+            "Your goals are the user's too (set_goal proposes adding one, or a new "
+            "text for one, on a card). Once one is set, work out key results you can "
+            "check yourself and propose them with set_key_results (a card; link each "
+            "to the goals it serves, and propose none when a goal cannot be "
+            "measured), then record readings with key_result_progress (a reading can "
+            "be a number or a short note); the user sees all of it on your Goals tab. "
+            "A few goals and a few milestones are easier to track than many, so keep "
+            "the set small and suggest merging when it grows; the user decides. Your "
+            "check-ins (Daily Goal Reminder, Weekly report, Monthly review) are the "
+            "user's to turn on: set_check_ins proposes them on a card. When the user "
+            "asks you to track something, record it as an item in your work ledger "
+            "and keep it updated as it moves; to the user that is tracking, so call "
+            "it tracking rather than a ledger."
         )
 
     parts = ["\n".join(identity)]
@@ -530,6 +564,11 @@ def build_member_section(
             + outranked
             + "as well as anything you write for yourself.]\n"
             + rules
+        )
+    if goals:
+        parts.append(
+            "\n\n[YOUR GOALS — set by the user; the key results measure how far "
+            "you are from them. Their current readings are in goal_read]\n" + goals
         )
     if briefing_ok:
         parts.append(

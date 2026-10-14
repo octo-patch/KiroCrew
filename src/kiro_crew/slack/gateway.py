@@ -3436,6 +3436,41 @@ class GatewayOrchestrator:
                 logger.warning("Cron '%s': run-failure alert failed", job.name, exc_info=True)
 
         async def _cron_callback(job: CronJob) -> str | None:
+            # A crewmate's Daily Goal Reminder is not an ordinary cron turn: it
+            # runs as one hidden turn in the crewmate's own thread, built from
+            # its current goal record (dashboard.goal_reminder).
+            from kiro_crew.dashboard import goal_reminder
+
+            if goal_reminder.is_reminder_job(job):
+                # It still starts an agent turn, so it passes the same fire-time
+                # governance gate as a message job first: a `capabilities.cron`
+                # ceiling tightened after the switch was turned on must stop it.
+                gate_reason, gate_starved = await _await_cron_fire_time_gate(
+                    job, tool_name="cron_goal_checkin", tool_kind="cron_message"
+                )
+                if gate_starved:
+                    return None
+                if gate_reason:
+                    # No record_failure(), as for the message-job deny below.
+                    job.last_status = "error"
+                    job.last_error = redact(gate_reason)
+                    job.fire_time_denied = True
+                    try:
+                        sel().log_tool_invocation(
+                            session_key=f"cron:{job.id}",
+                            tool_name="cron_goal_checkin",
+                            tool_kind="cron_message",
+                            outcome="denied",
+                        )
+                    except Exception:
+                        logger.debug(
+                            "SEL logging failed in goal check-in fire-time deny path",
+                            exc_info=True,
+                        )
+                    await _alert_cron_failure(job, gate_reason, denied=True)
+                    return None
+                return await goal_reminder.fire(self.dashboard_state, job)
+
             # True once ANY prompt has been handed to the provider this
             # invocation. The whole-callback transient retry below is only
             # safe BEFORE dispatch: after it, tools may have run, so a

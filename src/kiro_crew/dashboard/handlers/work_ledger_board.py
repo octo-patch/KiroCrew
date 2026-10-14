@@ -232,6 +232,36 @@ def _redact_deep(value: Any) -> Any:
     return value
 
 
+def closed_items(slot_key: str) -> list[dict[str, Any]]:
+    """The closed items on thread *slot_key*'s own ledger, as this board reads them.
+
+    The gateway-side reader behind a crewmate's weekly and monthly goal reports:
+    the slot comes from the crewmate's own goal binding, never from a request, so
+    no caller names a ledger here. Each row is ``{closed_at, title, state,
+    summary}`` with ``closed_at`` parsed (rows without one are dropped) and every
+    string through the same egress redactor as the board payload. A thread that
+    owns no ledger, or whose key does not fold, has closed nothing. Blocking file IO.
+    """
+    try:
+        items = work_ledger.list_work_items(session_ledger.ledger_key(slot_key))
+    except (work_ledger.WorkLedgerError, OSError):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        if not item.is_terminal:
+            continue
+        closed = work_ledger.parse_stamp(item.closed_at or "")
+        if closed is None:
+            continue
+        rows.append(
+            {
+                "closed_at": closed,
+                **_redact_deep({"title": item.title, "state": item.state, "summary": item.summary}),
+            }
+        )
+    return rows
+
+
 def _alive_of(state: DashboardState, worker_key: str) -> str:
     """``running`` / ``idle`` / ``closed`` for a worker session key.
 

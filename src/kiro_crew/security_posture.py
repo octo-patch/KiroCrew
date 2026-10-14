@@ -129,6 +129,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "value passes the credential redactor before it reaches the card.",
     ),
     (
+        "Crewmate goals",
+        "member_goals.py",
+        "The goals, key results and their readings a crewmate may write "
+        "about itself, on their way to the Goals tab, the crewmate's tools and its "
+        "saved goal reports. Each string passes the "
+        "exfiltration-URL then the credential redactor before it leaves the record.",
+    ),
+    (
         "The symptom probes",
         "diagnose_probes.py",
         "Evidence strings the read-only `diagnose_settings` probes return to "

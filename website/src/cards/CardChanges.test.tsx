@@ -24,6 +24,10 @@ const listCard = (params: Record<string, unknown>): Pick<Card, 'kind' | 'params'
 })
 
 describe('CardChanges', () => {
+  it('labels a goal row with the number the Goals tab shows', () => {
+    expect(changeLabel({ field: 'goal', label: 'Goal 2', number: 2 })).toBe(i18nT('pages.membersPage.goals_goal_number', { number: 2 }))
+    expect(changeLabel({ field: 'goal', label: 'Goal' })).toBe(FIELD_LABELS.goal())
+  })
   it('formats a string list as a list and an empty one as empty', () => {
     expect(formatCardValue(['a-1', 'b-2'])).toBe(fmtList(['a-1', 'b-2'], { style: 'narrow' }))
     expect(formatCardValue([])).toBe(i18nT('components.changeCards.empty_value'))

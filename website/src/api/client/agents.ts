@@ -97,6 +97,74 @@ export interface MemberRecap {
   recent: { title: string; ts: number }[]
 }
 
+/** One key result: how the crewmate will know its goal is reached. */
+export interface GoalKeyResult {
+  id: string
+  text: string
+  /** A number ("27", "80%") or a word ("yes"). */
+  target: string
+  /** The crewmate's latest reading, free text (a number or a short note); '' until it first reads it. */
+  current: string
+  /** Epoch seconds of the latest reading; 0 when never read. */
+  updated_at: number
+  /** Every reading of the last 90 days, oldest first. */
+  readings?: { value: string; at: number }[]
+  /** The ids of the goals this milestone serves (none, one or several). */
+  goal_ids: string[]
+}
+
+/** One of the crewmate's goals. `number` is its 1-based place in the list. */
+export interface MemberGoal {
+  id: string
+  number: number
+  text: string
+  created_at: number | null
+  updated_at: number | null
+  updated_by: 'user' | 'crewmate' | null
+}
+
+/** The check-in switches and their shared timing. weekday: 0 = Sunday. */
+export interface GoalSchedules {
+  time: string
+  timezone: string
+  daily: boolean
+  weekly: boolean
+  weekday: number
+  monthly: boolean
+  month_day: number
+}
+
+/** A saved weekly report or monthly review (an artifact). */
+export interface GoalReport {
+  kind: 'weekly' | 'monthly'
+  slug: string
+  title: string
+  at: number
+}
+
+/** GET /api/members/{slug}/goals: the crewmate's goal record. */
+export interface MemberGoals {
+  slug: string
+  member: string
+  /** The crewmate's goals, in list order (no cap on how many). */
+  goals: MemberGoal[]
+  key_results: GoalKeyResult[]
+  schedules: GoalSchedules
+  reports: GoalReport[]
+  /** The key result the user removed last, restorable (with its readings) until the set changes again. */
+  removed_key_result: { id: string; text: string; at: number } | null
+  /** The goal the user removed last, restorable (with its milestone links). */
+  removed_goal: { id: string; text: string; at: number } | null
+  /** The goal a write added or changed (write answers only). */
+  goal_id?: string
+  limits: {
+    goal_text_max_chars: number
+    key_result_text_max_chars: number
+    key_result_value_max_chars: number
+    key_result_reading_max_chars: number
+  }
+}
+
 export interface CrewTeam {
   id: string
   name: string
@@ -365,6 +433,30 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
       fetch(
         '/api/members/' + encodeURIComponent(slug) + '/recap?member=' + encodeURIComponent(member),
       ).then(j) as Promise<MemberRecap>,
+    // A crewmate's goals (the Goals tab). Every write is an owner action and
+    // answers the whole record; `member` is the exact crew name (slugs are lossy).
+    memberGoals: (() => {
+      const base = (slug: string) => '/api/members/' + encodeURIComponent(slug) + '/goals'
+      const q = (member: string) => '?member=' + encodeURIComponent(member)
+      return {
+        get: (slug: string, member: string) => fetch(base(slug) + q(member)).then(j) as Promise<MemberGoals>,
+        /** Add a goal (no goal_id) or replace goal `goalId`'s text, `expected` being the text it replaces. */
+        setGoal: (slug: string, member: string, text: string, goalId?: string, expected?: string) =>
+          put(base(slug) + '/long-term', goalId ? { member, long_term: text, goal_id: goalId, expected } : { member, long_term: text }).then(j) as Promise<MemberGoals>,
+        removeGoal: (slug: string, member: string, id: string) =>
+          del(base(slug) + '/items/' + encodeURIComponent(id) + q(member)).then(j) as Promise<MemberGoals>,
+        restoreGoal: (slug: string, member: string, id: string) =>
+          post(base(slug) + '/items/' + encodeURIComponent(id) + '/restore', { member }).then(j) as Promise<MemberGoals>,
+        setKeyResults: (slug: string, member: string, items: { id?: string; text: string; target: string; current?: string; goal_ids?: string[] }[], expected?: { text: string; target: string }[]) =>
+          put(base(slug) + '/key-results', { member, items, expected }).then(j) as Promise<MemberGoals>,
+        removeKeyResult: (slug: string, member: string, id: string) =>
+          del(base(slug) + '/key-results/' + encodeURIComponent(id) + q(member)).then(j) as Promise<MemberGoals>,
+        restoreKeyResult: (slug: string, member: string, id: string) =>
+          post(base(slug) + '/key-results/' + encodeURIComponent(id) + '/restore', { member }).then(j) as Promise<MemberGoals>,
+        setSchedules: (slug: string, member: string, changes: Partial<GoalSchedules>) =>
+          put(base(slug) + '/schedules', { member, ...changes }).then(j) as Promise<MemberGoals>,
+      }
+    })(),
     // Crewmate teams: a name plus an ordered member list, stored by the gateway
     // in the data home's crew-teams directory. Dashboard-only like the members routes; the three
     // writes are owner actions. `remove` rather than `delete`: a reserved word

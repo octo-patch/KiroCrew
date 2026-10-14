@@ -22,6 +22,9 @@ export const CARD_KINDS = [
   'crewmate.create',
   'crewmate.update',
   'crewmate.capabilities',
+  'crewmate.goal',
+  'crewmate.key_results',
+  'crewmate.check_ins',
   'template.update',
   'mcp.install',
   'mcp.add_custom',
@@ -45,14 +48,17 @@ export interface CardChange {
   after?: unknown
   add?: unknown[]
   remove?: unknown[]
+  /** A `goal` row: which goal, by the number the Goals tab shows. */
+  number?: number
 }
 
-/** A body field the gateway cannot know at proposal time. `user` is typed by
- *  the person (a secret's value); `step` is a field an earlier step's real
- *  response returned. The step's body carries a `{{...}}` placeholder there. */
+/** A value the gateway cannot know at proposal time. `user` is typed by the
+ *  person (a secret's value); `step` is a field an earlier step's real response
+ *  returned. The step's body carries a `{{...}}` placeholder there, or, for a
+ *  `step` fill with `in: 'path'`, its path does (one segment). */
 export type CardFill =
   | { field: string; source: 'user' }
-  | { field: string; source: 'step'; step: number; key: string }
+  | { field: string; source: 'step'; step: number; key: string; in?: 'path' }
 
 export interface CardPlanStep {
   method: string

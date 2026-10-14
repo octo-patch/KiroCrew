@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import PureWindowsPath
 from typing import Any, Iterable
 
+from kiro_crew import member_goals as _goals
+
 # The artifact tag rule lives with the store's other field grammar and is read
 # here so the tool gate and the store cannot disagree about a tag. Import-safe:
 # ``artifact_store.rules`` loads the record dataclasses and the slug hash
@@ -5145,6 +5147,51 @@ MCP_MATE_SCHEMAS: dict[str, ToolSchema] = {
         fields=[
             FieldSpec("draft", dict, required=True),
             FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "goal_read": ToolSchema(tool_name="goal_read", fields=[]),
+    "set_goal": ToolSchema(
+        tool_name="set_goal",
+        fields=[
+            FieldSpec("long_term", str, required=True, max_len=_goals.LONG_TERM_MAX_CHARS),
+            FieldSpec("goal_id", str, max_len=9),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "set_key_results": ToolSchema(
+        tool_name="set_key_results",
+        fields=[
+            FieldSpec("items", list, required=True),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "set_check_ins": ToolSchema(
+        tool_name="set_check_ins",
+        fields=[
+            FieldSpec("daily", bool),
+            FieldSpec("weekly", bool),
+            FieldSpec("monthly", bool),
+            FieldSpec("weekday", int),
+            FieldSpec("month_day", int),
+            FieldSpec("time", str, max_len=5),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "key_result_progress": ToolSchema(
+        tool_name="key_result_progress",
+        fields=[
+            FieldSpec("id", str, required=True, max_len=16),
+            FieldSpec("current", str, required=True, max_len=_goals.KR_READING_MAX_CHARS),
+        ],
+    ),
+    "save_goal_report": ToolSchema(
+        tool_name="save_goal_report",
+        fields=[
+            FieldSpec(
+                "kind", str, required=True, max_len=8, allowed=frozenset({"weekly", "monthly"})
+            ),
+            FieldSpec("title", str, required=True, max_len=_goals.REPORT_TITLE_MAX_CHARS),
+            FieldSpec("markdown", str, required=True, max_len=_goals.REPORT_MAX_CHARS),
         ],
     ),
 }

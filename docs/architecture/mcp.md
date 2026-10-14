@@ -1675,7 +1675,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
 | `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates`, `dashboard_fields`, `dashboard_types`, `dashboard_write`, `dashboard_templates`, `dashboard_preview`, `dashboard_apply`, `dashboard_rollback` |
 | `kirocrew-guide` | `kirocrew mcp-guide` (`mcp_guide.py`) | `guide_list_actions`, `guide_start`, `guide_status`, `guide_cancel`, `list_change_kinds`, `find_setting`, `get_member_capabilities`, `diagnose_settings`, `propose_change`, `get_change_status`, `search_docs`, `find_ui` |
-| `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `request_capabilities` |
+| `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `key_result_progress`, `save_goal_report` |
 
 `kirocrew-guide` is a platform capability: it is always emitted (not `opt_in`),
 so the default `kirocrew` template, every crewmate built from it, the worker
@@ -1740,6 +1740,30 @@ turn, as every card outcome does. A `set_approval_mode` for the mode the thread
 already runs in (a record pinning none opens in
 `MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE`) is refused `no_change` rather than
 drawn as a card from an empty value.
+The crewmate's goal (`member_goals.py`, `trust/member-goals/<slug>.json`, never
+`member-rules/`) splits the same way. `set_goal` and `set_key_results` are card
+asks (`crewmate.goal`, `crewmate.key_results`, applied and undone through
+`PUT /api/members/{slug}/goals/long-term|key-results` with an `expected`
+compare-and-set; a goal card adds a goal, or replaces one by `goal_id`, and the
+Undo of an added goal removes exactly that one). `goal_read`, `key_result_progress` and `save_goal_report`
+are direct reads and writes through `/api/member/self/goals/*`
+(`dashboard/handlers/member_goals.py`). `save_goal_report` files a weekly
+report or monthly review as a Markdown artifact under `Crewmates/<name>/Reports`
+and sends one notification linking it. These goal operations are deliberately
+NOT in `_USER_TURN_OPERATIONS`: the check-in turns of
+`dashboard/goal_reminder.py` are gateway-authored hidden turns in the
+crewmate's own thread, and recording readings and filing reports is what they
+are for. Every other admission check below still applies. Three card asks
+are admitted without a turn the user sent: any turn in the crewmate's own
+pinned thread (a check-in, a sub-agent's result coming back, the goal-setup
+nudge of `dashboard/goal_setup.py`) may call `set_goal`, `set_key_results` and
+`set_check_ins`. `_resolve_agent_caller(..., own_goal=True)` (passed only by
+`member.propose_self`) admits such a turn when the slot is a crewmate DM thread
+and marks the request `REQ_OWN_GOAL_TURN`; a channel turn is still refused. The
+route then refuses every other request (`model`, `approval_mode`,
+`capabilities`) with `not_user_turn`. Each is a card: nothing changes until the
+user presses it, so the crewmate may raise its own goal, milestones and
+check-ins whenever its work calls for it.
 The workspace, memory store, member id, key and template are not the
 crewmate's to change or to ask for.
 Its guide and card tools, and every `kirocrew-mate` tool, work only for a turn
@@ -2024,7 +2048,9 @@ innermost middleware, active only on `change_card_catalog.HOOKED_ROUTES`) refuse
 any caller that is not the dashboard owner (internal-secret, app and agent callers
 included), requires method, path and canonical body to equal the step (a
 `user` fill such as a secret's value is never read or stored; a `step` fill must
-equal what an earlier step's real response returned), re-reads the state before
+equal what an earlier step's real response returned, and one marked `in: path`
+replaces its placeholder segment in the path only with a plain identifier,
+`change_card_catalog.PATH_FILL_VALUE`), re-reads the state before
 the first write (`409 changed_since_preview`; `changed_since_apply` for undo),
 runs the handler unchanged and records the step only from its own 2xx. A card
 applies once; undo restores the state before the change, and is refused once the

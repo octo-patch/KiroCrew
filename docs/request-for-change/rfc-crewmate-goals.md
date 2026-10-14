@@ -118,24 +118,30 @@ a card. This replaces #19240's plan to write the goal into the rules file when a
 
 ### 3.3 How the crewmate changes its goals
 
+> **Amended 2026-10-13, Ray:** short-term goals are removed. The crewmate's work
+> ledger (its tasks on the Crew board and the greeting card) already says what it
+> is doing now, so a second list of current steps on the Goals tab only repeated
+> it. `short_goal_add` and `short_goal_update` are gone, with the short-term
+> undo row and the 20-item cap; a record that still holds a `short_term` list is
+> read past and the list is dropped on its next write. A key result's reading is
+> free text, a number or a short qualitative note, of up to 120 characters; a
+> target stays at 40. The Goals tab labels key results **Milestones**; the
+> code, the API and the tool names keep `key_results`.
+
 On the `kirocrew-mate` server from #19258:
 
 | Tool | Does | Sign-off |
 |---|---|---|
-| `goal_read` | returns the long-term and short-term goals | none |
+| `goal_read` | returns the long-term goal and its key results | none |
 | `set_goal(long_term)` | proposes a new long-term goal | a change card the user confirms (#19240) |
 | `set_key_results(items)` | proposes the key results, replacing the current set | a change card the user confirms |
 | `key_result_progress(id, current)` | records a new reading for one key result | none |
-| `short_goal_add(text)` | adds an open short-term goal | none |
-| `short_goal_update(id, status?, text?)` | marks one done or dropped, or rewords it | none |
+| `save_goal_report(kind, title, markdown)` | files a weekly report or monthly review | none |
 
 The long-term goal is what the user asked the crewmate to work toward, so the
-crewmate cannot change it without the user's button. Short-term goals are the
-crewmate's own working plan toward it. Adding one and checking one off should
-feel invisible: the crewmate does it when it is confident, and the user simply
-sees the Goals tab move. Every short-term change records who made it and when, and
-the user can undo it, edit it or uncheck it on the Goals tab. The user edits both
-levels on the Goals tab directly.
+crewmate cannot change it without the user's button. A reading is the crewmate's
+own measurement and is recorded at once. The user edits the goal and the key
+results on the Goals tab directly.
 
 ### 3.3a Key results come from the crewmate
 
@@ -152,7 +158,11 @@ whenever it checks, with no sign-off. When the long-term goal changes, the
 crewmate proposes a new set. The user can edit or remove a key result on the
 Goals tab at any time.
 
-### 3.4 Short-term goals and work-ledger tasks
+### 3.4 Goals and work-ledger tasks
+
+> **Amended 2026-10-13, Ray:** with short-term goals removed (§ 3.3), the work
+> ledger is the one record of what the crewmate is doing now. The Goals tab does
+> not link to it or list it. The vocabulary change below stands.
 
 This section amends [rfc-crewmate-greeting.md](rfc-crewmate-greeting.md)'s
 vocabulary: the "goal in flight" and "goals it left open" that the greeting reads
@@ -160,17 +170,27 @@ are work-ledger **tasks**. The greeting's behaviour is unchanged.
 
 They stay separate. A work-ledger entry (what the Crew board and the greeting
 card in [rfc-crewmate-greeting.md](rfc-crewmate-greeting.md) read) is one concrete
-task the crewmate is running: fix a bug, watch a PR. It ends when the task ends. A
-short-term goal is a step in the crewmate's standing plan and can span many tasks.
+task the crewmate is running: fix a bug, watch a PR. It ends when the task ends.
+The goal is what those tasks add up to.
 
 - The greeting keeps reading the work ledger, and its user-facing copy says
   **task**, not goal, so the two never share a word. Today the only greeting
   string that says goal is `pages.membersPage.resume_failed` ("Could not read
   where {{name}}'s goal stands."); it becomes "…where {{name}}'s task stands."
-- When a task finishes and it completed a short-term goal, the crewmate checks
-  that short-term goal off itself (§ 3.3).
+- The weekly report and the monthly review read the tasks the crewmate finished
+  in their period from its work ledger (§ 3.5).
 
 ### 3.5 Check-ins and reports
+
+> **Amended 2026-10-13, Ray:** the Daily Goal Reminder takes a fresh reading of
+> each key result and then carries on with the crewmate's next task; it no
+> longer edits short-term goals. The Weekly report and Monthly review read the
+> tasks the crewmate finished in the period from its work ledger (the items the
+> Crew board shows); when none are listed there, the prompt asks the crewmate to
+> summarise what it finished from its own work log and to say in the report that
+> it did. The Dashboard side panel no longer shows the live goal picture: the
+> goal, the key results and the reports are on the Goals tab only, and the
+> Dashboard tab is the crewmate's own page.
 
 Three cadences, each with one job, so the user is not told the same thing three
 times. Each has its own switch on the Goals tab, off by default, and none can be
@@ -181,8 +201,8 @@ picks a weekday and the monthly review a day of the month.
 
 | Cadence | For | What happens | Where the user sees it |
 |---|---|---|---|
-| **Daily Goal Reminder** | the crewmate | a hidden turn: take a fresh reading of each key result, check off, drop or add short-term goals, ask only if blocked | one line in the thread, and the Dashboard tab updates |
-| **Weekly report** | the user | how each key result moved this week (from its readings), short-term goals done and added, what is stuck, the plan for next week | a report artifact, linked from one line in the thread and a notification |
+| **Daily Goal Reminder** | the crewmate | a hidden turn: take a fresh reading of each key result, then continue with the next task, ask only if blocked | one line in the thread, and the Goals tab updates |
+| **Weekly report** | the user | how each key result moved this week (from its readings), the tasks finished this week (from the work ledger), what is stuck, the plan for next week | a report artifact, linked from one line in the thread and a notification |
 | **Monthly review** | the user | whether the long-term goal and key results still fit the work; if not, the crewmate proposes new key results or a new goal through a change card, raised from the review turn itself | a report artifact like the weekly one, with any card in the thread |
 
 **Check-ins are not ordinary schedules.** The three schedules live in the
@@ -200,23 +220,27 @@ with it, so it does not overlap a standing goal. A crewmate that already has a
 work schedule and turns the Daily Goal Reminder on gets both: the job, and the
 check-in on how the job is going.
 
-**Which turns may raise a card.** A card normally needs a turn the user sent.
-The Monthly review is the one exception: the turn the gateway itself starts as a
-member's Monthly review may propose that member's `set_goal` and
-`set_key_results` cards, because asking whether the direction still fits is what
-the review is for. The gateway recognises that turn from its own record of
-starting it, never from anything the crewmate or a request says. The Daily
-Goal Reminder and Weekly report turns, and every other scheduled, loop, app or
-subagent turn, still cannot raise a card. As always, nothing changes until the
-user presses it.
+**Which turns may raise a card.**
+
+> **Amended 2026-10-13, Ray:** the Monthly-review-only exception is replaced by
+> the rule below, so that the goal-setup flow (§ 3.8) can propose milestones
+> from the turn its research comes back in.
+
+A card normally needs a turn the user sent. A crewmate's own goal cards are the
+exception: any turn in the crewmate's own pinned thread (a check-in, a
+sub-agent's result coming back, the goal-setup nudge) may propose that
+crewmate's `set_goal`, `set_key_results` and `set_check_ins` cards. A turn that
+came from a messaging channel still cannot, every other card kind stays refused,
+and `propose_change`, which names its crewmate in the request, stays user-turn
+only. As always, nothing changes until the user presses it.
 
 This amends [rfc-crewmate-guides-and-mate.md](rfc-crewmate-guides-and-mate.md)'s
-rule that a turn the user did not send gets `not_user_turn`, for these two card
-kinds on this one turn only. It is acceptable because a card is a proposal, not a
-change: the review may have read untrusted content, but whatever it proposes is
-shown to the user as a before-and-after card and does nothing until they press
-Apply, the card can only name the reviewing crewmate's own goal and key results,
-and every other kind stays refused.
+rule that a turn the user did not send gets `not_user_turn`, for these three card
+kinds in the crewmate's own thread. It is acceptable because a card is a
+proposal, not a change: the turn may have read untrusted content, but whatever it
+proposes is shown to the user as a before-and-after card and does nothing until
+they press Apply, the card can only name the crewmate's own goal, milestones and
+check-ins, and every other kind stays refused.
 
 The weekly report says what moved; the monthly review asks whether the direction
 is still right. Without the monthly step, key results set once would never be
@@ -224,37 +248,125 @@ revisited.
 
 ### 3.5a Where reports are shown
 
-- **Dashboard side panel.** The crewmate's Dashboard tab
-  ([rfc-crewmate-dynamic-dashboard.md](rfc-crewmate-dynamic-dashboard.md)) shows
-  the live picture: the long-term goal, each key result's reading against its
-  target with its trend, and the open short-term goals. These values are read by
-  the host from the goal record, so the page cannot show a number the record
-  does not hold.
+> **Amended 2026-10-13, Ray:** the Dashboard side panel shows no goal summary;
+> reports are listed on the Goals tab only (§ 3.5).
+
+- **Goals tab.** The **Reports** section lists the newest weekly reports and
+  monthly reviews, each linking its artifact.
 - **Report artifacts.** Each weekly report and monthly review is saved as its own
   artifact, filed under `Crewmates/<name>/Reports`, so past reports stay
   browsable and shareable. The thread and the notification link to it; the chat
-  does not carry the report's full text. The Dashboard tab lists the latest
-  reports below the live picture.
+  does not carry the report's full text.
 
 ### 3.6 The goal in the crewmate's context
 
-The long-term goal and the open short-term goals are injected at session start, after the rules and before
-the briefing, so the crewmate always knows what it is working toward without
-calling `goal_read`.
+> **Amended 2026-10-13, Ray:** the block carries the long-term goal and its key
+> results; there are no short-term goals (§ 3.3).
+>
+> **Amended 2026-10-13, Ray:** the block carries each key result's text and
+> target but not its readings, so the goal is not repeated on every turn. The
+> member section is resent only when it changes, and a reading in it would
+> change it on every progress update. The crewmate reads current values with
+> `goal_read`, which each check-in already does first.
+
+The long-term goal and its key results are injected after the rules and before
+the briefing, so the crewmate always knows what it is working toward. The
+section is sent again only after a compaction, on a new session, or when the
+goal or its key results change.
 
 ### 3.7 The Goals tab
 
-- The long-term goal at the top, editable in place.
-- Under it, the key results, each with its reading against the target as a
-  progress bar, and when it was last read. Empty until the crewmate's proposal is
-  confirmed.
-- Under it, the open short-term goals, each with a checkbox, who last changed it
-  and when. Done and dropped ones hide automatically behind a **Show N done**
-  disclosure, collapsed by default, so the list stays the work in front of the
-  crewmate.
-- An add box for a new short-term goal.
-- The **Daily Goal Reminder**, **Weekly report** and **Monthly review** switches,
-  the shared time, the weekday and the day of the month.
+> **Amended 2026-10-13, Ray:** the tab holds the long-term goal, the key results
+> (labelled **Milestones**), the three check-ins and the reports, and nothing
+> else. It has two pages: the first only shows state, and every edit and detail
+> is a page pushed over it, the way the Profile tab's About and Notes open.
+
+- **First page**, one card each, its icon after its label:
+  - the long-term goal; the card opens its editor;
+  - the milestones, each row its latest reading in the crewmate's own words, what
+    it is aiming for and when it was last read; a row opens that milestone's page
+    (the latest reading, every earlier update, Edit and Remove). Empty until the
+    crewmate's proposal is confirmed;
+  - the **Daily Goal Reminder**, **Weekly report** and **Monthly review** as three
+    tiles saying whether each is on and when it runs; the card opens the switches,
+    the shared time, the weekday and the day of the month;
+  - the **Reports**: the newest weekly reports and monthly reviews.
+- A removed milestone comes back to the first page, which offers its Undo.
+
+### 3.8 When the user sets a goal
+
+> **Added 2026-10-13, Ray.** A user should not have to learn what milestones and
+> check-ins are, or where to switch them on.
+
+Saving a new long-term goal (on the Goals tab, or by applying a `crewmate.goal`
+card) sends the crewmate one hidden turn in its own thread. Clearing the goal, an
+Undo putting an older one back, and a small edit (a typo) send nothing. In that
+turn the crewmate:
+
+1. says back what it understands the goal to mean, in a sentence or two;
+2. starts one background sub-agent to research it (what the work looks like
+   today, what could be measured, what is already in place), then ends its turn,
+   so the chat stays free for anything else the user wants;
+3. proposes milestones on a card when the research comes back.
+
+Applying the crewmate's milestones card always sends it a second hidden turn
+(2026-10-13 Ray revision), whether or not a check-in is on, so the conversation
+carries on without the user having to write. When no check-in is on yet, the
+crewmate explains in plain words what each check-in would do and proposes the
+ones that fit, on a `crewmate.check_ins` card; otherwise it says what it will
+work on first. A milestone edit on the Goals tab sends nothing.
+
+It asks about one thing at a time. When the crewmate is busy, the turn waits for
+its thread to go idle (for a bounded time); a newer save replaces a waiting one.
+
+### 3.9 A list of goals, linked milestones, and tracking in chat
+
+> **2026-10-13 Ray revision.** This supersedes "one long-term goal" and "up to
+> three key results" wherever the sections above still say so.
+
+- **A list of goals.** A crewmate holds any number of goals, each with a stable
+  id (`g` and 8 hex digits), its text (the old long-term goal's 2000-character
+  cap), and when and by whom it was created and last changed. The Goals tab
+  numbers them by their place in the list and shows each number on a coloured
+  circle (five theme tile colours, by position, cycling past five; the number
+  always goes with its colour). A record written before this revision holds
+  one `long_term` string; it reads as a one-goal list and is written in the new
+  shape on its next write.
+- **Milestones stay one shared set**, not nested under goals. Each gains
+  `goal_ids`, the goals it serves (none, one or several), which the crewmate
+  chooses when it proposes the set with `set_key_results`. An unknown id is
+  refused, removing a goal strips its id from every milestone, and the card and
+  the Goals tab show each milestone's goals as their numbered circles.
+- **The caps are removed, at Ray's request.** There is no limit on how many
+  goals or milestones a crewmate holds, and the old three-milestone cap is gone
+  too: the user decides what they want tracked, and a hardcoded count would
+  refuse a reasonable choice without explaining why. Instead the crewmate is
+  guided: its tool descriptions, its goal-setup nudge and its own context say
+  that a few goals and a few milestones are easier to track, so it proposes a
+  small set and suggests merging as the list grows, and the user decides. Each
+  text keeps its length cap, and the whole record keeps its 64 KiB storage
+  bound (`record_too_large`), which is a safety bound rather than a count.
+- **Cards by goal id.** `set_goal` adds a goal, or with a `goal_id` replaces that
+  goal's text; Undo of an added goal removes exactly that goal, and Undo of a
+  replacement restores the raw earlier text from the card's private snapshot.
+  Own-thread admission (`REQ_OWN_GOAL_TURN`) is unchanged.
+- **Check-ins and reports** stay one shared set; their prompts list every goal
+  by number and each milestone's goals. The per-turn context block lists every
+  goal numbered and each milestone with its goal numbers, with no readings.
+- **Per-goal nudge.** Saving a new goal, or a real change to one, on the Goals
+  tab sends the existing hidden goal-setup nudge with the same rules (a real
+  change only, waiting for an idle thread up to ten minutes, a newer save
+  replacing a waiting one). It names the goal that changed and lists them all.
+  The `[Milestones confirmed]` nudge stays.
+- **Add something {name} should track.** Below the check-ins, a full-width row
+  opens a text box; Send posts what the user typed as their own visible message
+  ("Please track this for me: <text>") into
+  the crewmate's thread through the ordinary send path, and closes the profile
+  card when it floats over the chat. What the crewmate then tracks is an item in
+  its work ledger, the items the Crew board shows; the Goals tab shows none of
+  them. The user never sees the word "ledger": the crewmate's context teaches
+  it to record what it is asked to track in its work ledger, keep it updated,
+  and call it tracking when it talks to the user.
 
 ## 4. UI mock
 

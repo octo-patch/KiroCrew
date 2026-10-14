@@ -4241,7 +4241,14 @@
       "field_approval_mode": "Approval mode",
       "approval_mode_hint_normal": "Asks you before doing anything.",
       "approval_mode_hint_trust_reads": "Runs read-only shell commands on its own, asks you for everything else.",
-      "approval_mode_hint_trust": "Works in its chat without asking you first."
+      "approval_mode_hint_trust": "Works in its chat without asking you first.",
+      "kind_crewmate_goal": "Crewmate goal",
+      "primary_crewmate_goal": "Set goal",
+      "kind_crewmate_key_results": "Milestones",
+      "primary_crewmate_key_results": "Use these milestones",
+      "kind_crewmate_check_ins": "Check-ins",
+      "primary_crewmate_check_ins": "Turn on these check-ins",
+      "field_key_results": "Milestones"
     },
     "assistantWelcome": {
       "default_name": "Mate"
