@@ -29,6 +29,7 @@ import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { copyWithOutcome } from '../../utils/clipboard'
+import { SECRETS_GUIDE_ROUTING_URL } from '../../utils/docsLink'
 import { recordError, type ErrorReport } from '../../utils/errorReport'
 import { guideAnchor } from '../../uiLocations/targetRegistry'
 async function fetchServers(): Promise<McpServer[]> {
@@ -382,7 +383,13 @@ function mcpStatusVariant(status: string, auth: McpAuthState): 'ok' | 'err' | 'w
  * what the row becomes — waits here, because it is only useful once the sign-in is
  * done, and an always-visible cell in a dense table pays for every sentence.
  */
-function mcpStatusHint(status: string, serverName: string, auth: McpAuthState, probeFailing = false): string | undefined {
+function mcpStatusHint(
+  status: string,
+  serverName: string,
+  auth: McpAuthState,
+  probeFailing = false,
+  reasonOnRow = false,
+): string | undefined {
   // "Online" is the gateway's OWN probe result: it started the server in the
   // gateway process, under the gateway's client identity. It says nothing about
   // whether any particular agent session mounted it, and reading it as if it did
@@ -400,8 +407,14 @@ function mcpStatusHint(status: string, serverName: string, auth: McpAuthState, p
   // Failing badge in the same cell, whose tip says probing stopped and names
   // Reset count, so this badge stays silent there rather than repeat it or
   // send the reader to a refresh that will not work (#15516).
+  //
+  // An `outdated` row that carries an `error` is a probe refused before any
+  // spawn: the server's env holds a `secret://` reference, which resolves only
+  // when the MCP gateway starts the server. The row's text cell states that
+  // reason, and a refresh repeats the same refusal, so the badge stays silent
+  // there too rather than promise that re-probing helps.
   if (status === 'outdated') {
-    return probeFailing ? undefined : i18nT('pages.overview.mcpTab.outdated_help')
+    return probeFailing || reasonOnRow ? undefined : i18nT('pages.overview.mcpTab.outdated_help')
   }
   if (status === 'registry') return i18nT('pages.overview.mcpTab.registry_help', { provider: serverName })
   if (status !== 'needs_auth') return undefined
@@ -756,6 +769,11 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             // server), and the line says so, because "set it to false" is the
             // wrong instruction for a value that already reads "false".
             const invalidValue = disabledByInvalidValue(s)
+            // An `outdated` row with an `error` was not probed at all, and the
+            // error says why. It is the row's one explanation, so it is shown in
+            // words in the text cell; `outdated` rows without an error (an aged
+            // result, or a quarantined server) carry none and show none.
+            const notProbedReason = s.status === 'outdated' && !!s.error
             // The line names the file as a chip that copies its path: the
             // re-enable switch is not in this table (a separate decision), so
             // the line says so and hands over the one thing it can -- the path.
@@ -879,7 +897,8 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        `title`: a native tooltip is unreachable by keyboard,
                        touch, and AT (#3626, #8359). `mcpStatusHint` returns a
                        string only for `ok` (the host-check caveat),
-                       `outdated` when not quarantined (why, and how to re-probe) and
+                       `outdated` when neither quarantined nor carrying a
+                       reason line (why, and how to re-probe) and
                        `needs_auth`; every other status returns undefined and
                        so gets no InfoTip — this stays a named exception rather
                        than a blanket hint on every badge. */
@@ -899,7 +918,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         {invalidValue ? i18nT('pages.overview.mcpTab.status_invalid_value') : mcpStatusLabel(s.status, mcpAuthState(s))}
                       </Badge>
                       {(() => {
-                        const hint = mcpStatusHint(s.status, s.name, mcpAuthState(s), s.probeFailing === true)
+                        const hint = mcpStatusHint(s.status, s.name, mcpAuthState(s), s.probeFailing === true, notProbedReason)
                         return hint ? <InfoTip text={hint} placement="top" /> : null
                       })()}
                     </span>
@@ -967,6 +986,29 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       </div>
                     )
                   ))}
+                  {notProbedReason && (
+                    /* Warn tone, not the error red: no probe ran, so nothing
+                       failed, but the server stays off until the reason is
+                       dealt with. The text is the backend's own, which names
+                       only env keys, never a value. The link is the next step:
+                       the guide section on routing a server through the MCP
+                       gateway, the one place a `secret://` value resolves.
+                       `break-words`, not `break-all`: the line is prose, so it
+                       wraps between words and breaks inside one only when a
+                       single token is wider than the cell. */
+                    <div className="text-warn text-[12px] break-words" data-testid="mcp-not-probed-reason">
+                      <AlertTriangle className="lucide-inline" />{' '}
+                      {s.error}
+                      <a
+                        href={SECRETS_GUIDE_ROUTING_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block mt-0.5 text-accent hover:underline"
+                      >
+                        {i18nT('pages.overview.mcpTab.not_probed_routing_guide')}
+                      </a>
+                    </div>
+                  )}
                   {s.status === 'error' && s.error ? (
                     <span className="text-danger text-[12px]">
                       <AlertTriangle className="lucide-inline" /> {s.error}
@@ -1041,7 +1083,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           : effectivelyEnabled ? i18nT('pages.overview.mcpTab.click_to_disable_pending_until_apply') : i18nT('pages.overview.mcpTab.click_to_enable_pending_until_apply')}
                       ><span className={`w-1.5 h-1.5 rounded-full shrink-0 ${effectivelyEnabled ? 'bg-ok' : 'bg-muted'}`} />{t}</button>
                     })}</div></motion.div>}</AnimatePresence>
-                  </div>) : disabledInConfig ? null : '—'}
+                  </div>) : disabledInConfig || notProbedReason ? null : '—'}
                 </td>
                 {/* Pinned like the header cell, on an OPAQUE `bg-card`. The row
                     states live on the <tr>, which the opaque base would hide, so

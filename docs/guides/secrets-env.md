@@ -49,7 +49,9 @@ rather than starting it with the literal `secret://` text as its credential.
 Routing takes effect at the next gateway start, as any routing change does,
 and the server stays off until then: it counts as routed only once the running
 gateway serves it. Switching the server on in MCP Management, or **Enable
-all**, does not start it before that either. On a platform where the MCP
+all**, does not start it before that either. Its row there reads Outdated and
+states why: the dashboard does not probe it, and the line names the env key that
+holds the `secret://` value. On a platform where the MCP
 gateway does not run, no reference can be resolved: put the credential in the
 server's `env` directly instead.
 An agent file you maintain by hand under `~/.kiro/agents/` is launched as

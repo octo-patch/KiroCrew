@@ -2442,6 +2442,17 @@ class TestProbeCache:
         # an "outdated" row.
         assert probed_at > 0
 
+    def test_cache_expired_error_returns_outdated_without_error(self) -> None:
+        # An aged failure reports no error text: the dashboard reads an error on
+        # an ``outdated`` row as a probe refused before spawn, and an aged
+        # failure is not one.
+        server = McpServerInfo(name="test-srv", command="x", status="error", tools=[], error="boom")
+        _cache_probe(server)
+        _probe_cache["test-srv"].probed_at = time.monotonic() - 2000
+        status, _tools, error, _probed_at, _mode = _get_cached("test-srv")
+        assert status == "outdated"
+        assert error == ""
+
     def test_cache_error_preserved(self) -> None:
         server = McpServerInfo(
             name="err-srv", command="x", status="error", tools=[], error="timeout"
@@ -7018,5 +7029,8 @@ class TestProbeRefusesSecretReferences:
         from kiro_crew.mcp_quarantine import FAILING_STATUSES
 
         assert out.status not in FAILING_STATUSES and out.status != "ok"
+        # The dashboard shows an ``outdated`` row's error as its not-probed
+        # reason, so this refusal is pinned to exactly that shape.
+        assert out.status == "outdated"
         assert "API_TOKEN" in out.error
         assert "NAME" not in out.error.replace("API_TOKEN", "")

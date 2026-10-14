@@ -17,6 +17,14 @@ const DOCS_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_cre
 /** A plain docs filename and nothing else. */
 const DOC_FILENAME_RE = /^[a-z0-9][a-z0-9._-]*\.md$/i
 
+/** The guide to passing secrets to MCP servers, including `secret://` values
+ *  and routing a server through the MCP gateway. It lives in the repository's
+ *  guides tree, not the shipped docs above, so it carries its own full URL. */
+export const SECRETS_GUIDE_URL = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/secrets-env.md'
+
+/** The section of that guide that explains gateway routing for `secret://` values. */
+export const SECRETS_GUIDE_ROUTING_URL = `${SECRETS_GUIDE_URL}#the-encrypted-vault`
+
 /**
  * The public URL for a docs filename, or `null` when the value is not one.
  *
