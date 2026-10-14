@@ -125,9 +125,11 @@ not the instrument that governs it.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp.codex_sqlite import SQLITE_HOME_ENV, seed_private_state
@@ -162,6 +164,110 @@ PROTOCOL_VERSION_CODEX = 1
 
 #: Where ``codex`` keeps its SQLite databases; defaults to ``CODEX_HOME``.
 _SQLITE_HOME_ENV = SQLITE_HOME_ENV
+
+#: The whole codex configuration directory; MCP fleet is started from its config.toml.
+_CODEX_HOME_ENV = "CODEX_HOME"
+
+
+def _read_codex_mcp_server_names(config_file: Path) -> list[str]:
+    """Return ``mcp_servers`` names from a codex ``config.toml``, or ``[]``.
+
+    Tries ``tomllib`` (3.11+) / ``tomli`` for structural accuracy; falls back to
+    a regex scan so the function works on older interpreters without ``tomli``.
+    Server names are returned in config.toml order, deduplicated.
+    """
+    if not config_file.is_file():
+        return []
+    try:
+        text = config_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    # Structural parse (preferred: handles inline tables and dotted keys).
+    try:
+        try:
+            import tomllib  # type: ignore[import-not-found]
+        except ImportError:
+            try:
+                import tomli as tomllib  # type: ignore[no-redef,import-not-found]
+            except ImportError:
+                tomllib = None  # type: ignore[assignment]
+        if tomllib is not None:
+            data = tomllib.loads(text)
+            servers = data.get("mcp_servers", {})
+            if isinstance(servers, dict):
+                return list(servers)
+    except Exception:
+        pass  # fall through to regex
+
+    # Regex fallback for Python < 3.11 without tomli.
+    # Matches [mcp_servers.name], mcp_servers.name = ..., and mcp_servers = { name = ...}
+    import re
+
+    seen: set[str] = set()
+    names: list[str] = []
+    # Pattern 1: [mcp_servers.<name>] section headers
+    for m in re.finditer(r"^\[mcp_servers\.([^\]]+)\]", text, re.MULTILINE):
+        name = m.group(1).strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    # Pattern 2: mcp_servers.<name> = ... dotted keys at top level
+    for m in re.finditer(r"^mcp_servers\.([^=\s\[\.]+)", text, re.MULTILINE):
+        name = m.group(1).strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+def _seed_bg_disable_mcp(env: Mapping[str, str], scratch: Path) -> None:
+    """Seed CODEX_SQLITE_HOME and set CODEX_CONFIG to disable the MCP fleet.
+
+    Background sessions (kirocrew-lite) do not use MCP servers.  The per-session
+    MCP fleet that codex starts from its ``config.toml`` for each ``session/new``
+    accumulates processes that survive after ``session/close`` (codex evicts the
+    session but does not terminate its MCP children).
+
+    Fix: read the operator's ``CODEX_HOME/config.toml``, enumerate ``mcp_servers``
+    keys, and inject ``CODEX_CONFIG = {"mcp_servers": {<name>: {"enabled": false}}}``
+    so that codex skips initializing every configured server for this runtime.
+    ``McpServerConfig.enabled`` is documented in ``codex-rs/config/src/mcp_types.rs``
+    line 234: "When ``false``, Codex skips initializing this MCP server."
+
+    The CODEX_CONFIG JSON deep-merges into the effective session config per
+    ``codex-rs/config/src/merge.rs``; setting an existing server to
+    ``{enabled: false}`` merges cleanly (the existing table gains the key).  Server
+    names that contain dots are safe: they travel as JSON object keys, not as
+    TOML dotted paths.
+
+    Shared ``CODEX_HOME``: no credential copy or symlink.  Auth reaches the
+    background runtime through the ambient environment and ``CODEX_HOME``
+    unchanged.  SQLite is still isolated per process via ``CODEX_SQLITE_HOME``
+    (same as foreground).
+    """
+    # SQLite isolation: same as the foreground path.
+    seed_private_state(env, scratch)
+
+    # Enumerate MCP server names from the operator's config.
+    real_codex_home = Path(env.get(_CODEX_HOME_ENV) or str(Path.home() / ".codex"))
+    config_file = real_codex_home / "config.toml"
+    names = _read_codex_mcp_server_names(config_file)
+    if not names:
+        return  # no servers to disable; no CODEX_CONFIG change needed
+
+    # Build the CODEX_CONFIG override that disables every named server.
+    # Merge with any CODEX_CONFIG already in env so operator overrides survive.
+    env_dict = cast("dict[str, str]", env)
+    existing = env_dict.get("CODEX_CONFIG", "")
+    try:
+        base: dict = json.loads(existing) if existing else {}
+    except (json.JSONDecodeError, TypeError):
+        base = {}
+
+    if "mcp_servers" not in base:
+        base["mcp_servers"] = {name: {"enabled": False} for name in names}
+        env_dict["CODEX_CONFIG"] = json.dumps(base, separators=(",", ":"))
 
 
 def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
@@ -291,13 +397,26 @@ class CodexHarness(MembershipHarness):
         # from a completed SQLite snapshot so a large rollout history does not
         # need rebuilding at every start. Each process still owns its database.
         # An operator-supplied location reaches the child without preparation.
+        #
+        # Background sessions (kirocrew-lite) additionally disable every
+        # configured MCP server via CODEX_CONFIG.  codex starts a per-session
+        # fleet (~44 processes) from config.toml for each session/new; session/close
+        # evicts the session but never terminates those children.  Injecting
+        # CODEX_CONFIG = {"mcp_servers": {<name>: {"enabled": false}, ...}} makes
+        # codex skip initializing every server (McpServerConfig.enabled, documented
+        # in codex-rs/config/src/mcp_types.rs:234).  The inject is done in the seed
+        # so that it runs on the spawn worker thread (disk read of config.toml) and
+        # so that CODEX_HOME stays shared and untouched.
+        sqlite_home_set = bool(ctx.environ.get(_SQLITE_HOME_ENV))
+        from kiro_crew.session import BACKGROUND_AGENT as _bg_agent  # circular at module scope
+        is_background = ctx.agent == _bg_agent
         return SpawnPlan(
             argv=list(argv),
             rss_depth=self.CORE_RSS_DEPTH + wrapper_generations,
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
-            private_state_env=None if ctx.environ.get(_SQLITE_HOME_ENV) else _SQLITE_HOME_ENV,
-            private_state_seed=seed_private_state,
+            private_state_env=None if sqlite_home_set else _SQLITE_HOME_ENV,
+            private_state_seed=_seed_bg_disable_mcp if is_background else seed_private_state,
         )
 
     def apply_spawn_env(
