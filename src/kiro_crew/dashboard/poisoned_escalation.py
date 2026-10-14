@@ -18,11 +18,13 @@ The state crosses turns and is two cells on the slot:
   re-arms it, so a genuine prolonged outage gets one fresh conversation, never a
   discard loop.
 
-The cells stay slot fields because the recovery-replay ledger re-arms the
-one-shot by attribute name when it cancels an image-history or thinking-binding
-replay (``recovery_replays.POLICIES``). Every other transition goes through
-:class:`PoisonedConversationEscalation`; the runner never writes either cell
-itself, which ``test/test_poisoned_escalation.py`` pins.
+The cells stay slot fields, initialised by the slot's constructor. Every
+transition goes through :class:`PoisonedConversationEscalation`, the
+recovery-replay ledger's refund included: its policy asks for the refund
+(``recovery_replays.ReplayPolicy.refunds_discard_one_shot``) and the runner's
+re-arm calls :meth:`~PoisonedConversationEscalation.refund_one_shot`. Nothing
+else in the package writes either cell or names one in a string, which
+``test/test_poisoned_escalation.py`` pins.
 
 The rule, as the runner drives it:
 
@@ -45,6 +47,9 @@ The rule, as the runner drives it:
 5. A landed turn breaks the streak and re-arms the one-shot
    (:meth:`~PoisonedConversationEscalation.record_landed_turn`). A cancelled turn
    never re-arms it: a Stop proves nothing about the conversation's health.
+6. A cancelled image-history or thinking-binding replay re-arms the one-shot and
+   leaves the streak (:meth:`~PoisonedConversationEscalation.refund_one_shot`):
+   the discard spent it, but the turn it was spent for never ran.
 
 Whether the turn's own ``finally`` discards the conversation is that turn's
 decision, so it stays a local of the turn; this object holds what outlives it.
@@ -159,3 +164,12 @@ class PoisonedConversationEscalation:
         self._slot._poisoned_reset_used = True
         if clear_streak:
             self._slot._prestream_exhausted_cycles = 0
+
+    def refund_one_shot(self) -> None:
+        """Re-arm the one-shot for a discard whose replay was cancelled before it ran.
+
+        The recovery-replay ledger asks for this when a Stop, a newer message or a
+        rebind cancels an image-history or thinking-binding replay. The streak is
+        left as it is.
+        """
+        self._slot._poisoned_reset_used = False

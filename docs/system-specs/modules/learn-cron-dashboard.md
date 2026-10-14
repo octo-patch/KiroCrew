@@ -1505,10 +1505,11 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   state machine (`PoisonedConversationEscalation`): the streak of pre-stream
   exhausted cycles and the discard one-shot, kept as two `_ChatSlot` cells, the
   canary's Stop fence, and the seams `_run_chat` calls (record a terminal failure,
-  activity or a landed turn; ask whether a probe is due; arm a discard). Only this
-  module and the slot's constructor write either cell (pinned by
-  `test_poisoned_escalation.py`); the replay ledger re-arms the one-shot by name
-  when it cancels an image-history or thinking-binding replay.
+  activity or a landed turn; ask whether a probe is due; arm a discard; refund the
+  one-shot). The replay ledger's image-history and thinking-binding policies ask
+  for that refund (`refunds_discard_one_shot`) and `chat_turn/recovery.py` calls
+  the owner, so only this module and the slot's constructor write either cell, and
+  nothing else names one in a string (pinned by `test_poisoned_escalation.py`).
 - `slot_projection.py` — read-only source-link indexing/cache and the exact public
   slot-summary projection consumed by REST and WebSocket clients. The source-link
   derivation filters every scanned `SourceRef` against the slot's dismissed

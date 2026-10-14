@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         USAGE_LIMIT_KIND,
         DashboardState,
         KiroCrewConfig,
+        PoisonedConversationEscalation,
         ResetCause,
         _ChatSlot,
         _has_user_queued_followup,
@@ -400,10 +401,18 @@ def _replay_live(state: DashboardState, slot: _ChatSlot) -> LiveSlot:
     )
 
 
-def _rearm_allowances(slot: _ChatSlot, refunds: tuple[tuple[str, Any], ...]) -> None:
-    """Re-arm the one-shot allowances a cancelled replay had spent."""
+def _rearm_allowances(
+    slot: _ChatSlot, refunds: tuple[tuple[str, Any], ...], *, discard_one_shot: bool = False
+) -> None:
+    """Re-arm the one-shot allowances a cancelled replay had spent.
+
+    The poisoned-conversation discard one-shot is refunded by its owner, never by
+    attribute name.
+    """
     for attr, value in refunds:
         setattr(slot, attr, value)
+    if discard_one_shot:
+        PoisonedConversationEscalation(slot).refund_one_shot()
 
 
 def _drop_queued_replay(state: DashboardState, slot: _ChatSlot, queue_id: str) -> None:
@@ -465,7 +474,9 @@ async def _drop_revoked_replays(state: DashboardState, slot: _ChatSlot) -> bool:
             continue
         _drop_queued_replay(state, slot, entry_id)
         replays.disarm(family)
-        _rearm_allowances(slot, policy.drain_refunds)
+        _rearm_allowances(
+            slot, policy.drain_refunds, discard_one_shot=policy.refunds_discard_one_shot
+        )
         slot.append("notice", cancel_notice(family, revocation), "msg msg-info")
         logger.info(policy.drain_log, slot.key, *log_args(family, revocation))
         if not slot._queue:
@@ -505,7 +516,9 @@ async def _replay_vetoed_at_consume(
         if revocation.revoked or not policy.consume_keeps_record:
             replays.disarm(family)
         if revocation.revoked:
-            _rearm_allowances(slot, policy.consume_refunds)
+            _rearm_allowances(
+                slot, policy.consume_refunds, discard_one_shot=policy.refunds_discard_one_shot
+            )
             slot.append("notice", cancel_notice(family, revocation), "msg msg-info")
             logger.info(policy.consume_log, slot.key, *log_args(family, revocation))
             return True

@@ -4,7 +4,9 @@ The streak of pre-stream-exhausted cycles and the discard one-shot cross turns
 and are two cells on a chat slot. Every transition goes through
 ``PoisonedConversationEscalation``; the runner calls its seams instead of writing
 the cells. The first half pins the state machine, the second pins that nothing
-in the package but the escalation (and the slot's constructor) writes a cell.
+in the package but the escalation (and the slot's ``__slots__`` and constructor)
+writes a cell or names one in a string, so the recovery-replay ledger's refund
+goes through the escalation too.
 """
 
 from __future__ import annotations
@@ -132,18 +134,27 @@ def test_the_probe_fence_sees_a_stop_on_either_counter() -> None:
     assert fence.stopped_since(stop_generation=4, session_stop_generation=8)
 
 
-@pytest.mark.parametrize("family", [ReplayFamily.IMAGE_HISTORY, ReplayFamily.THINKING_BINDING])
-def test_a_cancelled_replay_refunds_the_escalations_one_shot(family: ReplayFamily) -> None:
-    """The ledger re-arms by slot attribute name; it must name the escalation's cell."""
-    slot = _slot(cycles=0, spent=True)
+def test_a_refund_rearms_the_one_shot_and_leaves_the_streak() -> None:
+    slot = _slot(cycles=1, spent=True)
     escalation = PoisonedConversationEscalation(slot)
+
+    escalation.refund_one_shot()
+
+    assert (escalation.exhausted_cycles, escalation.one_shot_spent) == (1, False)
+
+
+@pytest.mark.parametrize("family", [ReplayFamily.IMAGE_HISTORY, ReplayFamily.THINKING_BINDING])
+def test_a_cancelled_replay_refunds_the_one_shot_through_the_escalation(
+    family: ReplayFamily,
+) -> None:
+    """The ledger's policy asks for the refund; the runner's re-arm has the owner do it."""
     policy = POLICIES[family]
 
+    assert policy.refunds_discard_one_shot
     for refunds in (policy.drain_refunds, policy.consume_refunds):
-        escalation.arm_discard(clear_streak=True)
-        for attr, value in refunds:
-            setattr(slot, attr, value)
-        assert escalation.one_shot_spent is False
+        slot = _slot(cycles=0, spent=True)
+        cr._rearm_allowances(slot, refunds, discard_one_shot=policy.refunds_discard_one_shot)
+        assert PoisonedConversationEscalation(slot).one_shot_spent is False
 
 
 # ------------------------------------------------------------------- the one owner
@@ -152,22 +163,22 @@ _OWNER = "dashboard/poisoned_escalation.py"
 _CONSTRUCTOR = "dashboard/state.py"
 
 
-def _cell_writes(tree: ast.AST) -> list[tuple[str, int]]:
-    """Every statement in *tree* that stores to a cell, as ``(cell, line)``."""
+def _cell_writes_and_names(tree: ast.AST) -> list[tuple[str, int]]:
+    """Every store to a cell in *tree*, and every string that names one, as ``(cell, line)``.
+
+    A string naming a cell is how a write reaches it with no attribute store in
+    sight: ``setattr(slot, "<cell>", v)``, or a refund table of ``("<cell>", v)``
+    pairs a loop hands to ``setattr``. Outside the slot's ``__slots__`` nothing
+    needs one, so every such string counts, a ``getattr`` read included.
+    """
     found: list[tuple[str, int]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr in _CELLS:
             if isinstance(node.ctx, (ast.Store, ast.Del)):
                 found.append((node.attr, node.lineno))
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in {"setattr", "delattr"}
-            and len(node.args) >= 2
-            and isinstance(node.args[1], ast.Constant)
-            and node.args[1].value in _CELLS
-        ):
-            found.append((node.args[1].value, node.lineno))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value in _CELLS:
+                found.append((node.value, node.lineno))
     return sorted(found)
 
 
@@ -181,41 +192,56 @@ def _cell_writes(tree: ast.AST) -> list[tuple[str, int]]:
         ("x = y = slot._prestream_exhausted_cycles = 0", True),
         ("del slot._poisoned_reset_used", True),
         ("setattr(slot, '_poisoned_reset_used', False)", True),
+        ("refunds = (('_poisoned_reset_used', False),)", True),
+        ("getattr(slot, '_prestream_exhausted_cycles')", True),
         ("if slot._poisoned_reset_used: pass", False),
         ("n = slot._prestream_exhausted_cycles + 1", False),
         ("setattr(slot, attr, False)", False),
     ],
 )
 def test_the_write_scan_sees_every_spelling(source: str, flagged: bool) -> None:
-    assert bool(_cell_writes(ast.parse(source))) is flagged
+    assert bool(_cell_writes_and_names(ast.parse(source))) is flagged
 
 
-def _constructor_span(tree: ast.Module) -> range:
+def _declaration_lines(tree: ast.Module) -> set[int]:
+    """The lines of ``_ChatSlot.__slots__`` and ``_ChatSlot.__init__``, which declare the cells."""
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == "_ChatSlot":
-            for item in node.body:
-                if isinstance(item, ast.FunctionDef) and item.name == "__init__":
-                    return range(item.lineno, (item.end_lineno or item.lineno) + 1)
-    raise AssertionError("_ChatSlot.__init__ not found")
+            declarations = [
+                item
+                for item in node.body
+                if (isinstance(item, ast.FunctionDef) and item.name == "__init__")
+                or (
+                    isinstance(item, ast.Assign)
+                    and [getattr(t, "id", None) for t in item.targets] == ["__slots__"]
+                )
+            ]
+            assert len(declarations) == 2, "_ChatSlot.__slots__ or __init__ not found"
+            return {
+                line
+                for item in declarations
+                for line in range(item.lineno, (item.end_lineno or item.lineno) + 1)
+            }
+    raise AssertionError("_ChatSlot not found")
 
 
-def test_only_the_escalation_and_the_slot_constructor_write_the_cells() -> None:
+def test_only_the_escalation_and_the_slot_declaration_write_or_name_the_cells() -> None:
     root = src_root()
     strays: list[str] = []
-    scanned = 0
+    scanned: set[str] = set()
     for path, _text, tree in parsed_candidates(
         require_any=tuple(sorted(_CELLS)), skip_syntax_errors=False
     ):
-        scanned += 1
         rel = path.relative_to(root).as_posix()
-        writes = _cell_writes(tree)
+        scanned.add(rel)
+        hits = _cell_writes_and_names(tree)
         if rel == _OWNER:
-            assert writes, "the scan found no write in the escalation itself"
+            assert hits, "the scan found no write in the escalation itself"
             continue
         if rel == _CONSTRUCTOR:
-            span = _constructor_span(tree)
-            writes = [(cell, line) for cell, line in writes if line not in span]
-        strays.extend(f"{rel}:{line} writes {cell}" for cell, line in writes)
+            declared = _declaration_lines(tree)
+            hits = [(cell, line) for cell, line in hits if line not in declared]
+        strays.extend(f"{rel}:{line} writes or names {cell}" for cell, line in hits)
 
-    assert scanned >= 3  # the escalation, the slot and the runner at least
+    assert {_OWNER, _CONSTRUCTOR} <= scanned
     assert strays == []

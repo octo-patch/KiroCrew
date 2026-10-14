@@ -3957,8 +3957,8 @@ class _ChatSlot:
         self._last_turn_model_refused_loop_id: str = ""
         self._last_turn_model_refused_loop_gen: int = 0
         # Poisoned-conversation escalation (cross-cycle). Both cells below are
-        # written only through ``poisoned_escalation.PoisonedConversationEscalation``
-        # (and re-armed by name by the recovery-replay ledger). A cycle that EXHAUSTS
+        # written only through ``poisoned_escalation.PoisonedConversationEscalation``,
+        # the recovery-replay ledger's refund included. A cycle that EXHAUSTS
         # the transient-5xx ladder with ZERO output counts one pre-stream
         # exhaustion; consecutive exhausted cycles indicate the backend is
         # deterministically rejecting this session's persisted conversation
