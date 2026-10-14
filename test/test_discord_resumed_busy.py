@@ -24,9 +24,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
-from test_discord import _prime_live
+from test_discord import _PNG, _prime_live
 from test_discord_sessions import _bind_to_chat1, _dispatcher, _log, _message
 
+import kiro_crew.discord.transport_dispatch as td
 from kiro_crew.dashboard import channel_handoff as ch
 from kiro_crew.dashboard import chat_delivery as cd
 from kiro_crew.dashboard import chat_runner as cr
@@ -34,6 +35,7 @@ from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.testing.wait import await_until
 
 # The refusal every case below either avoids or keeps.
 _REFUSAL = "busy with a turn started elsewhere"
@@ -524,6 +526,338 @@ async def test_a_message_with_attachments_is_never_steered(tmp_path) -> None:
     assert enqueued == []
     assert any("attachment" in t for t in _sent_texts(client)), _sent_texts(client)
     assert any("busy" in t for t in _sent_texts(client)), _sent_texts(client)
+
+
+_CDN = "https://cdn.discordapp.com/attachments/c/m"
+
+
+def _raw_attachment(client, name: str, mimetype: str, body: bytes) -> dict:
+    """A Discord attachment object as the transport receives it, downloadable from the fake."""
+    bodies = getattr(client, "attachment_bodies", None)
+    if bodies is None:
+        bodies = client.attachment_bodies = {}
+
+        async def _download(url: str, dest: str) -> None:
+            with open(dest, "wb") as fh:
+                fh.write(bodies[url])
+
+        client.download_attachment = _download
+    url = f"{_CDN}/{name}"
+    bodies[url] = body
+    return {"filename": name, "content_type": mimetype, "size": len(body), "url": url}
+
+
+def _spy_on_ingest(monkeypatch, after=None) -> list[str]:
+    """Every temp path the busy path's ingest created, so the test can check its
+    cleanup. *after* runs synchronously once the real ingest has returned, before
+    the dispatcher sees the result."""
+    seen: list[str] = []
+    real = td.process_discord_attachments
+
+    async def _spy(client, raw):
+        result = await real(client, raw)
+        seen.extend(result.temp_paths)
+        if after is not None:
+            after()
+        return result
+
+    monkeypatch.setattr(td, "process_discord_attachments", _spy)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_raw_discord_picture_queues_instead_of_steering(tmp_path, monkeypatch) -> None:
+    """The transport hands the busy path raw attachments only (Discord ingests in the
+    idle path's prepare step), so the busy path ingests them itself and the picture
+    reaches the slot's queue instead of the attachments refusal."""
+    from pathlib import Path
+
+    from kiro_crew.dashboard.chat_delivery import attachment_meta
+    from kiro_crew.dashboard.slot_queue_repository import PROMPT_IMAGES_ENTRY_KEY
+
+    uploads = tmp_path / "uploads"
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+    temp_paths = _spy_on_ingest(monkeypatch)
+    steer_client = _steerable()
+    dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
+        tmp_path, steer_client=steer_client
+    )
+    msg = _message("look at this")
+    msg.attachments = [_raw_attachment(client, "photo.png", "image/png", _PNG)]
+    assert msg.prompt_attachments == ()
+
+    await dispatcher.handle_message(msg)
+
+    steer_client.steer.assert_not_awaited()
+    (entry,) = slot._queue
+    (adopted,) = entry[PROMPT_IMAGES_ENTRY_KEY]
+    assert Path(adopted).parent == uploads
+    assert Path(adopted).read_bytes() == _PNG
+    assert entry["meta"]["images"] == attachment_meta({"images": [adopted]})["images"]
+    assert entry["_directive_user_origin"] is True
+    assert entry["_directive_channel_origin"] is True
+    # The text names the adopted copy, not the download the transport deletes.
+    assert adopted in entry["content"]
+    assert temp_paths and not any(Path(p).exists() for p in temp_paths)
+    assert not any(p in entry["content"] for p in temp_paths)
+    assert slot._pending_steers == []
+    assert slot._steer_attachment_meta == {}
+    assert enqueued == []
+    assert sessions.last_key == ""
+    assert any("Queued" in text for text in _sent_texts(client))
+
+
+@pytest.mark.asyncio
+async def test_a_queued_raw_picture_outlives_transport_cleanup_and_reaches_the_turn(
+    tmp_path, monkeypatch
+) -> None:
+    from pathlib import Path
+
+    from kiro_crew.dashboard.slot_queue_repository import PROMPT_IMAGES_ENTRY_KEY
+
+    uploads = tmp_path / "uploads"
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+    temp_paths = _spy_on_ingest(monkeypatch)
+    steer_client = _steerable()
+    dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
+        tmp_path, steer_client=steer_client
+    )
+    msg = _message("!queue look at this")
+    msg.attachments = [_raw_attachment(client, "download.png", "image/png", _PNG)]
+
+    await dispatcher.handle_message(msg)
+
+    # The transport's temp file is gone by the time the reply is sent; the copy stays.
+    assert temp_paths and not any(Path(p).exists() for p in temp_paths)
+    steer_client.steer.assert_not_awaited()
+    (entry,) = slot._queue
+    (adopted,) = entry[PROMPT_IMAGES_ENTRY_KEY]
+    assert Path(adopted).parent == uploads
+    assert Path(adopted).read_bytes() == _PNG
+    state.subagents = None
+    slot.task = None
+    run_chat = MagicMock()
+    monkeypatch.setattr(cr, "_run_chat", run_chat)
+    monkeypatch.setattr(cr, "spawn_guarded_turn", MagicMock(return_value=MagicMock()))
+
+    assert await cr._start_next_queued_turn(state, slot) is True
+    assert run_chat.call_args.kwargs["_prompt_images"] == [adopted]
+    assert Path(adopted).read_bytes() == _PNG
+    assert slot._queue == []
+
+
+@pytest.mark.asyncio
+async def test_a_picture_beside_a_file_the_queue_cannot_adopt_is_refused(
+    tmp_path, monkeypatch
+) -> None:
+    """The queue adopts pictures only. A message that also carries an opaque file
+    (one agent tools would open by its path) would otherwise be reported "Queued"
+    while that path dies with the transport's temp files, so the whole message is
+    refused the way an attachment is. A document's extracted text rides along."""
+    from pathlib import Path
+
+    from kiro_crew.dashboard.channel_handoff import RESUMED_BUSY_ATTACHMENTS_REFUSAL
+
+    uploads = tmp_path / "uploads"
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+    temp_paths = _spy_on_ingest(monkeypatch)
+    steer_client = _steerable()
+    dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
+        tmp_path, steer_client=steer_client
+    )
+    msg = _message("!queue the screenshot and the report")
+    msg.attachments = [
+        _raw_attachment(client, "shot.png", "image/png", _PNG),
+        _raw_attachment(client, "bundle.zip", "application/zip", b"PK\x03\x04 not really a zip"),
+    ]
+
+    await dispatcher.handle_message(msg)
+
+    assert slot._queue == []
+    steer_client.steer.assert_not_awaited()
+    assert enqueued == []
+    assert not uploads.exists() or not any(uploads.iterdir())
+    assert len(temp_paths) == 2 and not any(Path(p).exists() for p in temp_paths)
+    assert RESUMED_BUSY_ATTACHMENTS_REFUSAL in _sent_texts(client)
+
+
+async def _cancel_handler_while_adoption_is_parked(
+    tmp_path, monkeypatch, *, attachments, cancel_after_ingest: bool = False
+):
+    """Run a busy DM through the dispatcher, park the hand-off's copy step on an
+    event, and hand back what the assertions read. The caller cancels the handler
+    while the copy is parked (a transport close), or, with *cancel_after_ingest*,
+    the cancellation is requested the moment the ingest has returned, so it lands
+    at the shield with the hand-off already running. Every await is bounded;
+    nothing sleeps."""
+    uploads = tmp_path / "uploads"
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+    run = SimpleNamespace(handler=None)
+    temp_paths = _spy_on_ingest(
+        monkeypatch, after=(lambda: run.handler.cancel()) if cancel_after_ingest else None
+    )
+    steer_client = _steerable()
+    dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
+        tmp_path, steer_client=steer_client
+    )
+    msg = _message("!queue look at this")
+    msg.attachments = [
+        _raw_attachment(client, name, mimetype, body) for name, mimetype, body in attachments
+    ]
+    parked = asyncio.Event()
+    release = asyncio.Event()
+    real_adopt = ch.adopt_attachment_copies
+
+    async def adopt_once_released(prompt_attachments):
+        parked.set()
+        await await_until(release, what="the copy's release")
+        return await real_adopt(prompt_attachments)
+
+    monkeypatch.setattr(ch, "adopt_attachment_copies", adopt_once_released)
+    run.handler = asyncio.ensure_future(dispatcher.handle_message(msg))
+    run.parked = parked
+    run.release = release
+    run.temp_paths = temp_paths
+    run.uploads = uploads
+    run.slot = slot
+    run.client = client
+    run.steer_client = steer_client
+    run.enqueued = enqueued
+    return run
+
+
+@pytest.mark.asyncio
+async def test_a_handler_cancelled_during_adoption_still_queues_the_picture(
+    tmp_path, monkeypatch
+) -> None:
+    """A transport close cancels the handler while the shielded hand-off is still
+    copying the downloads. The downloads are deleted by the hand-off task itself
+    once the copy and the queueing are done, so the picture queues; deleted by the
+    handler's own unwinding, they would be gone before the copy read them and the
+    adoption would refuse."""
+    from pathlib import Path
+
+    from kiro_crew.dashboard.slot_queue_repository import PROMPT_IMAGES_ENTRY_KEY
+
+    run = await _cancel_handler_while_adoption_is_parked(
+        tmp_path, monkeypatch, attachments=[("closing.png", "image/png", _PNG)]
+    )
+    await await_until(run.parked, what="the copy parking")
+    run.handler.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await await_until(run.handler, what="the handler unwinding")
+    # The handler has unwound; the copy has not run yet and its inputs are intact.
+    assert run.temp_paths and all(Path(p).exists() for p in run.temp_paths)
+    run.release.set()
+    await await_until(
+        asyncio.gather(*ch._HANDOFFS_IN_FLIGHT, return_exceptions=True),
+        what="the in-flight hand-off",
+    )
+
+    (entry,) = run.slot._queue
+    (adopted,) = entry[PROMPT_IMAGES_ENTRY_KEY]
+    assert Path(adopted).parent == run.uploads
+    assert Path(adopted).read_bytes() == _PNG
+    assert not any(Path(p).exists() for p in run.temp_paths)
+    assert ch._HANDOFFS_IN_FLIGHT == set()
+    run.steer_client.steer.assert_not_awaited()
+    assert run.enqueued == []
+    assert not any(
+        "Queued" in text for text in _sent_texts(run.client)
+    ), "no live transport to confirm to"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_handler_whose_message_is_refused_still_deletes_the_downloads(
+    tmp_path, monkeypatch
+) -> None:
+    """The refusal arm keeps the same ownership: a picture beside an opaque file is
+    refused inside the shielded hand-off, and the downloads are deleted after that
+    refusal even though the handler that fetched them is gone."""
+    from pathlib import Path
+
+    run = await _cancel_handler_while_adoption_is_parked(
+        tmp_path,
+        monkeypatch,
+        attachments=[
+            ("shot.png", "image/png", _PNG),
+            ("bundle.zip", "application/zip", b"PK\x03\x04 not really a zip"),
+        ],
+        cancel_after_ingest=True,
+    )
+    # The cancellation was requested the moment the ingest returned; it lands at
+    # the shield, with the hand-off task already created. The refusal precedes
+    # the copy, so the park is never reached.
+    with pytest.raises(asyncio.CancelledError):
+        await await_until(run.handler, what="the handler unwinding")
+    await await_until(
+        asyncio.gather(*ch._HANDOFFS_IN_FLIGHT, return_exceptions=True),
+        what="the in-flight hand-off",
+    )
+
+    assert run.slot._queue == []
+    assert not run.uploads.exists() or not any(run.uploads.iterdir())
+    assert len(run.temp_paths) == 2 and not any(Path(p).exists() for p in run.temp_paths)
+    assert ch._HANDOFFS_IN_FLIGHT == set()
+    assert not run.parked.is_set()
+    assert not any(
+        "busy" in text for text in _sent_texts(run.client)
+    ), "the closed transport gets no refusal receipt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_change", ["moved", "idle", "closing", "full"])
+async def test_picture_adoption_rechecks_the_target(tmp_path, monkeypatch, target_change):
+    from kiro_crew.prompt_attachments import image_attachments
+
+    uploads = tmp_path / "uploads"
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+    picture = tmp_path / "download.png"
+    picture.write_bytes(_PNG)
+    state = _make_state(tmp_path)
+    slot = _busy(state.get_or_create_slot("chat-1"))
+    slot._acp_client = _steerable()
+    adopt = ch.adopt_attachment_copies
+
+    async def adopt_then_change(attachments):
+        copies = await adopt(attachments)
+        if target_change == "moved":
+            state._slots.pop(slot.key)
+        elif target_change == "idle":
+            slot.task = None
+        elif target_change == "closing":
+            slot.begin_close()
+        else:
+            slot._queue[:] = [
+                {"id": str(index), "content": "waiting"}
+                for index in range(ch.MAX_LIVE_QUEUE_ENTRIES)
+            ]
+        return copies
+
+    monkeypatch.setattr(ch, "adopt_attachment_copies", adopt_then_change)
+    outcome = await ch.hand_to_resumed_slot(
+        state,
+        "dashboard:chat-1",
+        "look at the picture",
+        mode="steer",
+        has_attachments=True,
+        prompt_attachments=image_attachments([str(picture)]),
+    )
+
+    assert outcome.kind == ch.HANDOFF_REFUSED
+    assert (
+        outcome.reason
+        == {
+            "moved": ch.REFUSED_MOVED,
+            "idle": ch.REFUSED_IDLE,
+            "closing": ch.REFUSED_CLOSING,
+            "full": ch.REFUSED_QUEUE_FULL,
+        }[target_change]
+    )
+    assert list(uploads.iterdir()) == []
+    assert picture.read_bytes() == _PNG
+    assert all(entry["content"] == "waiting" for entry in slot._queue)
+    slot._acp_client.steer.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -128,9 +128,11 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
     from kiro_crew.context import ContextBuilder
+    from kiro_crew.dashboard.channel_handoff import ResumedBusyOutcome
     from kiro_crew.discord.client import DiscordClient, DiscordInteraction
     from kiro_crew.discord.transport import DiscordTransport
     from kiro_crew.history import ConversationLog
+    from kiro_crew.prompt_attachments import PromptAttachment
     from kiro_crew.session import SessionManager
 
     #: Where a command handler's single reply goes. A ``!`` text command binds
@@ -1116,15 +1118,67 @@ class DiscordDispatcher:
         assert self.client is not None
         # Deferred, like every dashboard import in this module: the dispatcher is on
         # the gateway boot path and the dashboard package is not.
-        from kiro_crew.dashboard.channel_handoff import hand_to_resumed_slot, resumed_busy_reply
+        from kiro_crew.dashboard.channel_handoff import resumed_busy_reply
 
         mode = override_mode or str(self._live_cfg().messaging.queue_mode)
-        outcome = await hand_to_resumed_slot(
+        prompt_attachments = tuple(msg.prompt_attachments or ())
+        temp_paths: list[str] = []
+        unadopted_files = False
+        if msg.attachments and not prompt_attachments:
+            # Discord ingests in the idle path's prepare step, which a busy
+            # hand-off never reaches: fetched here so the slot's queue can adopt
+            # the pictures. The temp files are this method's to delete.
+            try:
+                result = await process_discord_attachments(self.client, msg.attachments)
+            except Exception:
+                # Nothing fetched: the hand-off refuses the attachments below and
+                # the sender is told, instead of a crash that answers nothing.
+                logger.exception(
+                    "discord: attachment ingest failed for busy session %s", session_key
+                )
+            else:
+                temp_paths = list(result.temp_paths)
+                prompt_attachments = result.prompt_attachments()
+                unadopted_files = bool(result.file_paths)
+                text = append_attachment_context(text, result)
+        # The downloads are the hand-off's to delete: it copies the pictures off
+        # them inside its shielded task, so a cancellation of this handler (a
+        # transport close) cannot remove them before the copy.
+        outcome = await self._hand_off_busy(
+            session_key, msg, text, mode, prompt_attachments, unadopted_files, temp_paths
+        )
+        if outcome.refused:
+            logger.info(
+                "discord: message into busy resumed session %s refused (%s)",
+                session_key,
+                outcome.reason,
+            )
+        await self.client.send_message(
+            msg.conversation_id, resumed_busy_reply(outcome, busy_refusal=_RESUMED_BUSY_REFUSAL)
+        )
+
+    async def _hand_off_busy(
+        self,
+        session_key: str,
+        msg: InboundMessage,
+        text: str,
+        mode: str,
+        prompt_attachments: tuple[PromptAttachment, ...],
+        unadopted_files: bool,
+        temp_paths: list[str],
+    ) -> ResumedBusyOutcome:
+        """The hand-off call itself, with the ingested pictures beside the text."""
+        from kiro_crew.dashboard.channel_handoff import hand_to_resumed_slot
+
+        return await hand_to_resumed_slot(
             getattr(self._session_resume, "dashboard_state", None),
             session_key,
             text,
             mode=mode,
             has_attachments=bool(msg.attachments),
+            prompt_attachments=prompt_attachments,
+            unadopted_files=unadopted_files,
+            temp_paths=temp_paths,
             # Where a drop notice goes if the drain later refuses a queued entry,
             # and the principal the outbound recipient check needs. Only a DM route
             # supplies one: this user was authorized against ``allowed_user_ids``
@@ -1139,15 +1193,6 @@ class DiscordDispatcher:
             channel_type=_CHANNEL,
             conversation_id=msg.conversation_id,
             principal=(msg.user_id if not msg.thread_id else ""),
-        )
-        if outcome.refused:
-            logger.info(
-                "discord: message into busy resumed session %s refused (%s)",
-                session_key,
-                outcome.reason,
-            )
-        await self.client.send_message(
-            msg.conversation_id, resumed_busy_reply(outcome, busy_refusal=_RESUMED_BUSY_REFUSAL)
         )
 
     async def _handle_busy(

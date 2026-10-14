@@ -23,20 +23,35 @@ import hashlib
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew.chat_attachments import (
+    AttachmentAdoptionError,
+    adopt_attachment_copies,
+    rewrite_adopted_paths,
+)
 from kiro_crew.dashboard.chat_delivery import (
     MAX_PENDING_STEERS,
     STEER_REQUEUED,
     STEER_STEERED,
     _queued_entry_id,
     _row_has_delivery_id,
+    attachment_meta,
     queue_for_next_turn,
     steer_into_running_turn,
+    with_image_identities,
 )
-from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
+from kiro_crew.dashboard.slot_queue_repository import (
+    IMAGE_ATTACHMENT_META_KEY,
+    MAX_LIVE_QUEUE_ENTRIES,
+)
+from kiro_crew.messaging.attachments import cleanup
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
+
+if TYPE_CHECKING:
+    from kiro_crew.prompt_attachments import PromptAttachment
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +71,7 @@ REFUSED_CLOSING = "closing"
 REFUSED_REMOTE = "remote"
 #: The lease is held, but not by the dashboard turn loop: the slot itself is idle.
 REFUSED_IDLE = "idle"
-#: The message carries attachments, which neither arm can carry.
+#: Attachments without owned copies cannot survive queued delivery.
 REFUSED_ATTACHMENTS = "attachments"
 #: The key stopped resolving to the slot the steer was handed to while the RPC
 #: was suspended: the slot was closed, or closed and recreated under the same key.
@@ -334,6 +349,9 @@ async def hand_to_resumed_slot(
     *,
     mode: str,
     has_attachments: bool,
+    prompt_attachments: tuple[PromptAttachment, ...] = (),
+    unadopted_files: bool = False,
+    temp_paths: Sequence[str] = (),
     channel_type: str = "",
     conversation_id: str = "",
     principal: str = "",
@@ -437,10 +455,10 @@ async def hand_to_resumed_slot(
     channel is told why. It is the one refusal left once the slot has taken the
     message past the admission gate.
 
-    Attachments are refused rather than queued without: ``_session/steer`` carries
-    text only, and the slot's queue cannot carry channel attachment material -- it
-    is downloaded into temp files owned by the consuming turn, and the dashboard
-    drain has no hook to own them. Refusing keeps the files with the user.
+    Only pre-ingested pictures can become owned uploads that survive transport cleanup;
+    *temp_paths* are the transport's downloads, deleted by the hand-off task itself
+    once its adoption and queueing are done, so the caller's own unwinding cannot
+    remove them first.
 
     The whole hand-off -- gate, steer RPC, reconciliation, queue fallback -- runs
     as ONE task, held by a strong reference (``_HANDOFFS_IN_FLIGHT``) and awaited
@@ -466,21 +484,44 @@ async def hand_to_resumed_slot(
     """
     loop = asyncio.get_running_loop()
     task = loop.create_task(
-        _run_handoff(
-            state,
-            session_key,
-            text,
-            mode=mode,
-            has_attachments=has_attachments,
-            channel_type=channel_type,
-            conversation_id=conversation_id,
-            principal=principal,
+        _run_then_cleanup(
+            _run_handoff(
+                state,
+                session_key,
+                text,
+                mode=mode,
+                has_attachments=has_attachments,
+                prompt_attachments=prompt_attachments,
+                unadopted_files=unadopted_files,
+                channel_type=channel_type,
+                conversation_id=conversation_id,
+                principal=principal,
+            ),
+            temp_paths,
         ),
         name=f"channel-handoff:{session_key}",
     )
     _HANDOFFS_IN_FLIGHT.add(task)
     task.add_done_callback(_HANDOFFS_IN_FLIGHT.discard)
     return await asyncio.shield(task)
+
+
+async def _run_then_cleanup(
+    handoff: Awaitable[ResumedBusyOutcome], temp_paths: Sequence[str]
+) -> ResumedBusyOutcome:
+    """Delete the transport's downloads once the hand-off has finished with them.
+
+    The queue arm copies the pictures off these paths. Deleted by the caller
+    instead, a cancellation of the caller (a transport close) runs its cleanup
+    while this shielded task may still be copying, and the adoption then reads
+    files that are gone. Here the deletion is part of the same task, so it
+    cannot run before the copy, whatever happens to the caller.
+    """
+    try:
+        return await handoff
+    finally:
+        if temp_paths:
+            await asyncio.to_thread(cleanup, list(temp_paths))
 
 
 async def _run_handoff(
@@ -490,6 +531,8 @@ async def _run_handoff(
     *,
     mode: str,
     has_attachments: bool,
+    prompt_attachments: tuple[PromptAttachment, ...],
+    unadopted_files: bool,
     channel_type: str,
     conversation_id: str,
     principal: str,
@@ -501,13 +544,17 @@ async def _run_handoff(
         # ``slot is None`` is already ``REFUSED_NO_SLOT`` above; restated so the
         # slot reads as present from here on.
         return _refused(blocked or REFUSED_NO_SLOT)
-    if has_attachments:
+    if has_attachments and not prompt_attachments:
         return _refused(REFUSED_ATTACHMENTS)
 
     # circular import: session_control imports this package's modules at module level.
     from kiro_crew.dashboard.session_control import channel_recipient_meta, containment_meta
 
     recipient = channel_recipient_meta(channel_type, conversation_id, principal)
+    if prompt_attachments:
+        return await _queue_images(
+            state, session_key, slot, text, recipient, prompt_attachments, unadopted_files
+        )
     # The identity this hand-off's text carries through every record the steer
     # leaves (see ``standing_after_move``). Minted here, not inside the steer, so
     # it is known on this side of the RPC.
@@ -624,7 +671,61 @@ async def _run_handoff(
     return _queue_arm(state, slot, text, recipient)
 
 
-def _queue_arm(state: Any, slot: Any, text: str, recipient: dict[str, Any]) -> ResumedBusyOutcome:
+async def _queue_images(
+    state: Any,
+    session_key: str,
+    slot: Any,
+    text: str,
+    recipient: dict[str, Any],
+    attachments: tuple[PromptAttachment, ...],
+    unadopted_files: bool = False,
+) -> ResumedBusyOutcome:
+    """Copies must outlive transport cleanup and stay available for transcript replay.
+
+    Only pictures are adopted. A message that also carries a file the queue
+    cannot adopt is refused whole: queued, its text would name a path that dies
+    with the transport's temp files while the sender is told it was queued.
+    """
+    if unadopted_files:
+        return _refused(REFUSED_ATTACHMENTS)
+    if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:
+        return _refused(REFUSED_QUEUE_FULL)
+    try:
+        adopted = await adopt_attachment_copies(attachments)
+    except AttachmentAdoptionError:
+        return _refused(REFUSED_ATTACHMENTS)
+    copies = [copy for _temp, copy in adopted]
+    # The copies' identities, read off the loop before the live checks below.
+    image_meta = await with_image_identities({IMAGE_ATTACHMENT_META_KEY: copies})
+    queued = False
+    try:
+        if live_dashboard_slot(state, session_key) is not slot:
+            return _refused(REFUSED_MOVED)
+        blocked = slot_unable_to_take(slot)
+        if blocked:
+            return _refused(blocked)
+        outcome = _queue_arm(
+            state,
+            slot,
+            rewrite_adopted_paths(text, adopted),
+            recipient,
+            image_meta=image_meta,
+        )
+        queued = outcome.kind == HANDOFF_QUEUED
+        return outcome
+    finally:
+        if not queued:
+            await asyncio.to_thread(cleanup, copies)
+
+
+def _queue_arm(
+    state: Any,
+    slot: Any,
+    text: str,
+    recipient: dict[str, Any],
+    *,
+    image_meta: dict[str, Any] | None = None,
+) -> ResumedBusyOutcome:
     """Append *text* to the slot's queue, refusing at the live queue's bound.
 
     The bound is read on the object the entry would land on, immediately before
@@ -655,5 +756,7 @@ def _queue_arm(state: Any, slot: Any, text: str, recipient: dict[str, Any]) -> R
         # dashboard turn reaches the drain as the words "/clear", not as the
         # command that wipes the session.
         commands_off=True,
+        attachments=attachment_meta(image_meta) if image_meta else None,
+        prompt_images=list(image_meta[IMAGE_ATTACHMENT_META_KEY]) if image_meta else None,
     )
     return ResumedBusyOutcome(HANDOFF_QUEUED)

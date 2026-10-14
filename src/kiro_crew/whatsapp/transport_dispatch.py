@@ -88,6 +88,10 @@ GUEST_SCOPE_SEGMENT = "guest"
 
 #: The receipt a sender gets while a reply is still streaming into their chat.
 BUSY_NOTE = "Still working on the last message; please resend shortly."
+BUSY_PICTURE_NOTE = (
+    "Still working on the last message; a picture cannot join a reply that is already running. "
+    "Please resend it when this reply finishes."
+)
 
 #: Phase reactions placed on the OPERATOR'S OWN inbound message, which is the
 #: same affordance Slack draws with its status reactions. Reacting to their
@@ -621,6 +625,11 @@ class WhatsAppDispatcher:
         # waiting on. They still get the busy receipt below; they just cannot
         # change what is running.
         may_steer_session = self.transport is not None and self.transport.is_operator(inbound)
+        # A steer carries text only: folding a photo's caption into the running
+        # turn would drop the photo while the receipt claimed otherwise.
+        if getattr(inbound, "prompt_attachments", None):
+            await self._say(inbound.conversation_id, BUSY_PICTURE_NOTE)
+            return
         provider = self.sessions.get_provider(session_key)
         steer = getattr(provider, "steer", None)
         has_active = getattr(provider, "has_active_turn", None)
