@@ -21,6 +21,7 @@ const src = (rel: string) => fs.readFileSync(path.resolve(__dirname, rel), 'utf-
 const CHAT_INPUT = src('../components/ChatInput.tsx')
 const ATTACH = src('../components/chat-input/attach.tsx')
 const BUSY = src('../components/chat-input/busySend.tsx')
+const STOP = src('../components/chat-input/StopControls.tsx')
 const SHELF = src('../components/chat-input/ContextShelf.tsx')
 const COLLAPSE = src('../components/chat-input/collapse.tsx')
 const VOICE = src('../components/chat-input/VoiceControls.tsx')
@@ -59,7 +60,7 @@ const EXPECTED: Record<string, Expect> = {
     requires: [OPEN, EXPANDED, { kind: 'condition', id: 'message_typed' }, { kind: 'condition', id: 'no_response_running' }],
   },
   'composer.stop': {
-    kind: 'button', labelKey: 'components.chatInput.stop_generation', source: BUSY, en: 'Stop generation', zh: '停止生成',
+    kind: 'button', labelKey: 'components.chatInput.stop_generation', source: STOP, en: 'Stop generation', zh: '停止生成',
     parents: ['page.chat'], entry: 'toolbar',
     requires: [OPEN, EXPANDED, { kind: 'condition', id: 'response_running' }, { kind: 'condition', id: 'message_box_empty' }],
   },
@@ -153,7 +154,7 @@ describe('composer area locations', () => {
     it(`${id}: marked exactly once, in the file it claims`, () => {
       const marker = `uiLocation('${id}'`
       expect(e.source.split(marker).length - 1).toBe(1)
-      for (const other of [CHAT_INPUT, ATTACH, BUSY, SHELF, COLLAPSE, VOICE, APPROVAL, AUTOMATION, AUTO_NUDGE].filter(s => s !== e.source)) {
+      for (const other of [CHAT_INPUT, ATTACH, BUSY, STOP, SHELF, COLLAPSE, VOICE, APPROVAL, AUTOMATION, AUTO_NUDGE].filter(s => s !== e.source)) {
         expect(other.includes(marker)).toBe(false)
       }
     })

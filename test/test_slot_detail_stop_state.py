@@ -8,9 +8,14 @@ would look like a first press.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+
+from kiro_crew.dashboard import slot_projection
+from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
 
 
 async def _detail(state, slot_key: str) -> dict:
@@ -31,3 +36,30 @@ async def test_detail_reports_stop_state(tmp_path, monkeypatch, phase):
     body = await _detail(state, "s1")
 
     assert body["stop_state"] == phase
+
+
+# The decline marker's own window, read with the projection's clock frozen at its
+# module binding: armed inside the window, expired at its edge, clear when unset.
+_NOW = 1000.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("declined_at", "armed"),
+    [
+        (_NOW - 1.0, True),
+        (_NOW - STOP_DECLINED_ESCALATION_SECS, False),
+        (0.0, False),
+    ],
+    ids=["armed", "expired", "clear"],
+)
+async def test_detail_reports_stop_declined(tmp_path, monkeypatch, declined_at, armed):
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(slot_projection, "time", SimpleNamespace(monotonic=lambda: _NOW))
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("s1")
+    slot._stop_declined_at = declined_at
+
+    body = await _detail(state, "s1")
+
+    assert body["stop_declined"] is armed

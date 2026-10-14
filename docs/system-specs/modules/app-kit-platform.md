@@ -162,6 +162,54 @@ of correcting it in a second write that a due-scan can beat. The rationale per
 field, the fields still deliberately omitted, and the tests pinning each one are
 in `learn-cron-dashboard.md` under "App SDK create allowlist".
 
+## ChatEmbed Stop
+
+`ChatEmbed` shows the dashboard composer's Stop control (`StopControls`) in the
+send slot while a turn runs and the draft is empty. It drives the same press
+protocol as the chat page (`utils/stopDebounce.handleStopPress`) through the
+scoped API (`POST /api/chat/slots/{slot}/stop[?force=true]`, covered by the
+embed's `/api/chat` grant) rather than the Redux thunk, in
+`website/src/app-sdk/useEmbedStop.ts`. The embed has no WebSocket, so it reads
+the stop phase from the `stop_state` field of `GET /api/chat/slots/{slot}`, and
+it holds its own soft press as an optimistic `soft_pending` until the poll
+reports a phase or the turn ends: otherwise a second press inside the poll lag
+would read as a fresh soft press, which the backend escalates to a hard kill
+with no warning. A request with no HTTP answer keeps the pending state (it may
+have armed the cancel); a definite failure clears it.
+
+A soft press while the session's automatic compaction holds it is DECLINED by
+`stop_slot_turn` (`{ok: true, compacting: true}`, `_stop_state` left `idle`,
+`_stop_declined_at` armed for `STOP_DECLINED_ESCALATION_SECS`). The embed then
+drops the optimistic `soft_pending`, so nothing reads "Stopping", and arms a
+local decline flag that shows the main composer's reset warning
+(`click_again_to_force_stop_resets_session`). The next press is debounced
+against the declined one and sent as a plain stop: the backend's marker is what
+makes it the hard kill while the compaction lasts, and once the compaction has
+ended the backend drops the marker and the same press is an ordinary soft stop.
+The flag is timed from the reply with the backend's 60-second window, so it
+never ends before the marker does; it also clears when the press after it
+lands, when the turn ends (a turn cannot finish while the compaction holds its
+session, and the compaction's end drops the marker), when the slot changes, and
+when the poll reports `soft_pending` or `killing`. A decline answered after its
+turn ended or the slot changed is not armed. A definite failure of that press
+leaves the flag set, because the marker is still armed, and the warning shows
+beside the error notice. The slot-detail read also carries `stop_declined`, the
+same `slot_projection.stop_declined_armed` read the slots frame and the stop
+route use, so an embed that opens or returns inside the window warns before its
+first press; an absent field reads as not armed. The warning is the local flag
+OR that field, withdrawn only by a server-reported `soft_pending`/`killing` or
+the end of the turn, never by the embed's own optimistic `soft_pending`: while
+the press after a decline is unanswered it may still be the reset, so a lost
+request keeps the warning beside its error. Known residual: the local flag is
+not withdrawn when the poll reports the marker gone, because a poll issued
+before the decline can answer after it; so if the compaction ends inside the
+window the embed keeps warning of a reset that the next press will not perform
+(an over-warning, never a silent reset).
+Writers: `website/src/app-sdk/useEmbedStop.ts`, `website/src/app-sdk/ChatEmbed.tsx`,
+`src/kiro_crew/dashboard/chat_api/slot_detail.py` (`stop_declined`).
+Tests: `website/src/test/useEmbedStop.test.ts`, `website/src/test/ChatEmbed.stop.test.tsx`,
+`test/test_slot_detail_stop_state.py`.
+
 ## App Store source selection
 
 Discover's Sources rail filters the catalog shelf by namespaced source identity.

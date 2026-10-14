@@ -131,7 +131,9 @@ describe('ChatEmbed composer is store-free (runtime)', () => {
 
   it('a running turn turns Send into Queue once there is text', async () => {
     await mount(true)
-    expect(sendBtn().dataset.composerSend).toBe('idle')
+    // An empty draft mid-turn holds the Stop control in Send's place.
+    expect(sendBtn()).toBeNull()
+    expect(screen.getByTestId('stop-button-armed')).toBeInTheDocument()
     fireEvent.change(editor(), { target: { value: 'next' } })
     expect(sendBtn().dataset.composerSend).toBe('queue')
     expect(screen.getByRole('button', { name: /queue message/i })).toBe(sendBtn())

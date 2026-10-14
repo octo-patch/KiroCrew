@@ -48,7 +48,7 @@ export const LOCATIONS = {
       ],
     }],
   },
-  // The stop square (busySend.tsx), drawn while a response runs and nothing is
+  // The stop square (chat-input/StopControls.tsx, rendered by busySend.tsx), drawn while a response runs and nothing is
   // waiting to send: typed text OR an attached file turns this place into Queue
   // or Steer (`composerHasDraft`). A referenced session alone does not.
   'composer.stop': {
