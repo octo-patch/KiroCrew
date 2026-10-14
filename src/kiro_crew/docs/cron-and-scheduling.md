@@ -120,7 +120,9 @@ A command cron runs under `sh -c` and is vetted when it is added and again each 
 - `$'...'` ANSI-C quoting;
 - brace expansion such as `{a,b}` or `{1..9}`, including a quoted regex interval like `'[0-9]{1,3}'`. For a basic-regex tool, escape the braces inside double quotes (`grep "[0-9]\{1,3\}"`);
 - positional and special parameters: `$1`, `$@`, `$*`, `$#`;
-- loops and compound commands: `for`, `while`, `until`, `case`.
+- loops and compound commands: `for`, `while`, `until`, `case`;
+- a variable reference (`A=x; cmd $A`, `A=x cmd $A`, `A=x && cmd $A`): the check does not model how the shell scopes or rewrites a value, so any `$NAME` or `${NAME}` read anywhere in the text is refused, comments, quoted values and nested shells included, assigned or not. Only `$HOME` may be read, and `HOME` may appear only as `$HOME` or `${HOME}` (so `read HOME`, `HOME=x` and `export HOME` are refused);
+- a `$` followed by a quote, a backslash or another character that is not an expansion: allowed only at the end of the command or before whitespace or one of `/ | . , : )`, so `sed 's/x$/y/'` passes and `grep "x$" f` does not; `$!`, `$-`, `$?` and `$$` are refused too, because `$!` is empty before a background job and no other rule owns them.
 
 The `command` field is capped at 5000 characters. A command cron needs a working POSIX `/bin/sh` that passes the gateway's probe, so it never runs on Windows. For any of these, use a script cron instead: its body is scanned in full.
 

@@ -164,7 +164,7 @@ Four rules the script gate enforces, so write to them from the start:
 1. A cron script reads its arguments as `ctx.message`, delivers with `ctx.notify()`, and controls the job by raising `Skip()` to retry quietly, `Done(msg)` to deliver and remove the job, or `Report(msg)` to deliver and keep it.
 2. The script body is scanned before it is stored. Never spell a credential directory name or a protected secret environment variable name anywhere in the file, including inside comments and docstrings, because the scan is a plain regex over the source text and a mention in a comment is refused the same as a real read.
 3. Do not reach a third-party host over plain HTTP from the script. Use the tool surface instead.
-4. Prefer a `script` over a `command`. The command gate refuses substitution, brace expansion, positional parameters, loop keywords and unresolved variables, so anything with real logic in it belongs in a script whose body is scanned in full.
+4. Prefer a `script` over a `command`. The command gate refuses substitution, brace expansion, positional parameters, loop keywords and variable references other than `$HOME`, so anything with real logic in it belongs in a script whose body is scanned in full.
 
 ## Reporting back
 
