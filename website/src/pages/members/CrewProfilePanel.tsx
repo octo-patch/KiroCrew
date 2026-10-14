@@ -4,9 +4,11 @@ import { AlarmClock, Brain, ChevronLeft, ChevronRight, FolderOpen, Goal, IdCard,
 import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
-import CrewStateAvatar from '../../components/CrewStateAvatar'
+import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import Tablist, { type TablistTab } from '../../components/Tablist'
+import type { AutomationRecord } from '../../monitoring/automation'
 import type { CronJob } from '../../types'
+import CrewMonitorDetails, { type MonitorReadState } from './CrewMonitorDetails'
 import CrewScheduleList from './CrewScheduleList'
 import { cn } from '../../lib/utils'
 import { Btn } from '../../components/ui'
@@ -31,6 +33,10 @@ export interface CrewProfilePanelProps {
   member: MemberRosterRow
   running: boolean
   slotKey?: string | null
+  /** The one normalized monitor record for this crewmate's own slot. */
+  automation: AutomationRecord | null
+  /** Whether both monitor registries were read, are pending, or failed. */
+  monitorReadState: MonitorReadState
   /** The crewmate's description from its crew config; '' while unread or unset. */
   description: string
   /** The crew registry read failed; retained cached description data may still be shown. */
@@ -283,7 +289,16 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               style={p.faceHidden ? { visibility: 'hidden' } : undefined}
               data-testid="crew-profile-face"
             >
-              <CrewStateAvatar seed={p.member.name} avatar={p.member.avatar} slotKey={p.slotKey} running={p.running} size={PROFILE_FACE_PX} working="full" />
+              <CrewMonitoredAvatar
+                seed={p.member.name}
+                avatar={p.member.avatar}
+                slotKey={p.slotKey}
+                running={p.running}
+                automation={p.automation}
+                indicatorTestId="crew-profile-loop-indicator"
+                size={PROFILE_FACE_PX}
+                working="full"
+              />
             </span>
             {/* Face and name only: the id, the role and the activity line were
                 dropped from the head (they live in the pill and the editor). */}
@@ -367,6 +382,8 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                     <p className="text-[13px] text-muted">{t('pages.membersPage.profile_no_description')}</p>
                   ) : null}
                 </section>
+
+                <CrewMonitorDetails automation={p.automation} readState={p.monitorReadState} nowTs={p.nowTs} />
 
                 <div className="grid grid-cols-2 gap-2.5">
                   <Tile icon={<Brain size={18} />} tone="accent" label={t('pages.membersPage.profile_memory')} value={p.memoryLabel} onClick={p.onOpenMemory} testId="crew-profile-memory" />

@@ -21,6 +21,7 @@ import { serveDist } from './lib/serve-dist.mjs'
 import { stubDashboardApi, logPageProblems } from './lib/stub-dashboard-api.mjs'
 
 const OUT = process.argv[2] || join(process.env.KIROCREW_SCRATCH || '/tmp', 'crewmate-panel-ia')
+const PROFILE_ONLY = process.env.KIROCREW_PROFILE_ONLY === '1'
 mkdirSync(OUT, { recursive: true })
 
 const now = Math.floor(Date.now() / 1000)
@@ -76,6 +77,27 @@ const JOBS = [
   { id: 'cron-babysit', name: 'PR babysit', message: 'Watch the open PR.', enabled: false, schedule: 'every 5m', agent: 'kirocrew', member_id: 'kiro', last_run_ts: now - 540000, last_status: 'ok' },
 ]
 
+const MONITORS = [{
+  id: 'monitor-kiro', slot_key: 'member-kiro', message: '', idle_secs: 300,
+  max_cycles: 0, cycle_count: 0, active: true, last_fire_ts: 0,
+  next_due_ts: now + 180, stopped_reason: '',
+  monitor: {
+    version: 1, config_generation: 1, kind: 'github_pull_request',
+    target: 'https://github.com/kirodotdev/KiroCrew/pull/20026', objective: 'review_ready',
+    created_ts: now - 3600, cadence_secs: 300, wake_instructions: '',
+    budgets: { max_runtime_secs: 14_400, max_agent_turns: 8, max_tokens: 250_000, max_provider_errors: 3 },
+    last_observation_status: 'pending', last_observation_reason_code: 'checks_pending',
+    last_observed_at: now - 20, last_fingerprint: 'capture', last_wake_fingerprint: '',
+    wake_in_flight: false, wake_delivery: null, wake_count: 1,
+    completion_evidence_deadline: 0, last_completion_fingerprint: '',
+    last_completion_disposition: null, last_completed_at: 0, token_usage_known: true,
+    agent_turns: 1, input_tokens: 120, output_tokens: 20, probe_count: 7,
+    provider_error_count: 0, consecutive_provider_errors: 0, last_probe_at: now - 20,
+    last_decision: 'no_change', last_provider_error: null, next_probe_at: now + 180,
+    outcome: null, stopped_reason: '', stopped_at: 0,
+  },
+}]
+
 const seenTreeDirs = []
 const { srv, base } = await serveDist()
 const browser = await chromium.launch()
@@ -124,6 +146,7 @@ const extra = async (path, route) => {
     return true
   }
   if (path === '/api/autonudge') { await json(route, { enabled: true, loops: [] }); return true }
+  if (path === '/api/monitors') { await json(route, { enabled: true, monitors: MONITORS }); return true }
   if (path === '/api/teams') { await json(route, { teams: [] }); return true }
   return false
 }
@@ -152,6 +175,7 @@ const visibleWords = (page) => rail(page).evaluate(el => [...el.querySelectorAll
   const pill = page.getByTestId('member-identity-pill')
   const panel = page.getByTestId('side-panel-root')
   check('roster column is gone while a thread is open', !(await page.getByTestId('member-roster').isVisible()))
+  check('the active monitor marks the header avatar', (await page.getByTestId('member-pill-loop-indicator').count()) === 1)
   check('the page opens on the chat alone (side panel closed)', (await panel.count()) === 0 || !(await panel.isVisible()))
   check('switcher chip carries no count (issue #19045)', (await page.getByTestId('crewmate-switcher-count').count()) === 0)
   const threadBefore = (await page.getByTestId('member-thread-header').boundingBox()).width
@@ -169,11 +193,31 @@ const visibleWords = (page) => rail(page).evaluate(el => [...el.querySelectorAll
   check('exactly one face is on screen (the card head)', (await page.getByTestId('crew-profile-face').count()) === 1)
   check('card names the crewmate', (await page.getByTestId('crew-profile-name').innerText()).trim() === 'Kiro')
   check('card has four tabs', (await rail(page).locator('[role="tab"]').count()) === 4)
-  check('only the selected tab shows its word', (await visibleWords(page)) === 'Profile', await visibleWords(page))
+  check('the card opens on Sessions', (await visibleWords(page)) === 'Sessions', await visibleWords(page))
+  check('the Profile avatar carries the same active monitor mark', (await page.getByTestId('crew-profile-loop-indicator').count()) === 1)
   const cb = await card.boundingBox()
   check(`card is a third of the row (${Math.round(cb.width)}px of 1500)`, cb.width >= 360 && cb.width <= 560)
+  await rail(page).getByRole('tab', { name: 'Profile' }).click()
+  const monitor = page.getByTestId('crew-profile-monitor')
+  await monitor.waitFor({ state: 'visible', timeout: 10000 })
+  const monitorText = (await monitor.innerText()).replace(/\s+/g, ' ').trim()
+  check('Profile shows active state', /State Active/.test(monitorText), monitorText)
+  check('Profile shows exact monitor type', /Type Bounded monitor/.test(monitorText), monitorText)
+  check('Profile shows exact watch subject', monitorText.includes('Watch https://github.com/kirodotdev/KiroCrew/pull/20026'), monitorText)
+  check('Profile shows exact frequency', /Every 5m/.test(monitorText), monitorText)
+  check('Profile shows exact cycle values', /Cycle 7 \/ —/.test(monitorText), monitorText)
+  check('Profile shows exact runtime values', /Runtime 1h \/ 4h/.test(monitorText), monitorText)
+  check('Profile shows a real start time', !/Started —/.test(monitorText), monitorText)
+  check('Profile shows a real next check', !/Next check —/.test(monitorText), monitorText)
+  check('Profile monitor section is read-only', (await monitor.locator('button, input, select, textarea, a').count()) === 0)
   await page.screenshot({ path: join(OUT, '02-profile-card-light.png') })
   await card.screenshot({ path: join(OUT, '02b-card-profile-light.png') })
+  if (PROFILE_ONLY) {
+    await context.close()
+    await browser.close()
+    await new Promise((resolve) => srv.close(resolve))
+    process.exit(failed ? 1 : 0)
+  }
 
   // 02c: Read more → the pushed About page (full description + Edit crewmate).
   await page.getByTestId('crew-profile-read-more').click()

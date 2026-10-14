@@ -97,7 +97,7 @@ function CrewEditorChunkLoading() {
   )
 }
 import { useCrewEditor } from '../../components/crew/useCrewEditor'
-import { AUTONUDGE_LOOPS_QUERY_KEY, type AutoNudgeLoop } from '../../components/autoNudgeLoop'
+import { AUTONUDGE_LOOPS_QUERY_KEY } from '../../components/autoNudgeLoop'
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { timeAgo } from '../../utils/timeAgo'
 import { fmtList } from '../../i18n/format'
@@ -106,14 +106,20 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, reportForError, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
-import { selectSidebarAutomationRunningKeys, selectSlotMessages, selectSlotStreamState, selectSlotTurnFromWake } from '../../store/chatSlice'
+import { selectSlotMessages, selectSlotStreamState, selectSlotTurnFromWake } from '../../store/chatSlice'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { markSlotRead } from '../../store/dashboardSlice'
 import { emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
 import { setViewedThreadSlot, clearViewedThreadSlot } from '../../lib/viewedThread'
 import CrewAvatar from '../../components/CrewAvatar'
-import CrewStateAvatar from '../../components/CrewStateAvatar'
-import CrewLoopIndicator from '../../components/crew/CrewLoopIndicator'
+import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
+import {
+  isAutomationActive,
+  isFullLegacyAutomationRecord,
+  normalizeAutomationRecord,
+  STRUCTURED_AUTOMATIONS_QUERY_KEY,
+  type AutomationRecord,
+} from '../../monitoring/automation'
 import Glass from '../../components/Glass'
 import { Badge } from '../../components/ui'
 import { PILL_ACTIVITY_KEY, type PillActivityKind } from './pillActivity'
@@ -421,6 +427,7 @@ interface FaceFlight {
   avatar: unknown
   slotKey: string
   running: boolean
+  automation: AutomationRecord | null
   from: DOMRect
   to: () => DOMRect | null
 }
@@ -474,7 +481,15 @@ function CrewFaceFlight({ flight, onDone }: { flight: FaceFlight; onDone: () => 
       aria-hidden="true"
       data-testid="crew-face-flight"
     >
-      <CrewStateAvatar seed={flight.seed} avatar={flight.avatar} slotKey={flight.slotKey} running={flight.running} size={PROFILE_FACE_PX} working="full" />
+      <CrewMonitoredAvatar
+        seed={flight.seed}
+        avatar={flight.avatar}
+        slotKey={flight.slotKey}
+        running={flight.running}
+        automation={flight.automation}
+        size={PROFILE_FACE_PX}
+        working="full"
+      />
     </div>,
     document.body,
   )
@@ -589,7 +604,7 @@ function MemberRow({
   isRunning,
   isUnread,
   isNeedsYou,
-  isLoopOn,
+  automationOf,
   reduceMotion,
   scrollActiveRowIntoView,
   slugCollides,
@@ -607,8 +622,8 @@ function MemberRow({
   /** The crewmate's turn is parked on an approval or a question — the same
    *  reading the status filter and the switcher row take (`signalsOf`). */
   isNeedsYou: (m: MemberRosterRow) => boolean
-  /** The crewmate's automation loop is on (`signalsOf().patrolling`). */
-  isLoopOn: (m: MemberRosterRow) => boolean
+  /** The normalized automation record for this crewmate's own slot. */
+  automationOf: (m: MemberRosterRow) => AutomationRecord | null
   reduceMotion: boolean | null
   scrollActiveRowIntoView: (el: HTMLButtonElement | null) => void
   slugCollides: boolean
@@ -655,6 +670,8 @@ function MemberRow({
         last_message: m.last_message || roster.last_message,
       }
     : m
+  const automation = automationOf(view)
+  const loopOn = isAutomationActive(automation)
   // `layout` on the row, so the ONE move the recency re-sort makes is
   // followable: a row relocating to the top on the user's own send is a
   // persistent, already-identified element changing place, and an instant
@@ -701,11 +718,13 @@ function MemberRow({
                 flashes its finished / failed expression on the turn's
                 trailing edge. The dot below stays presence-only — a
                 finished turn is not presence. */}
-            <CrewStateAvatar
+            <CrewMonitoredAvatar
               seed={view.name}
               avatar={view.avatar}
               slotKey={slotKeyOf(view)}
               running={!!isRunning(view)}
+              automation={automation}
+              indicatorTestId="member-loop-indicator"
               size={36}
               working="subtle"
             />
@@ -719,10 +738,8 @@ function MemberRow({
                 data-testid="member-presence-dot"
               />
             )}
-            {/* On watch — the member's own thread has a live monitor or
-                goal loop. Presence only: no nudge text, no cycle count; the
-                drawer's block keeps the details. */}
-            <CrewLoopIndicator on={isLoopOn(view)} testId="member-loop-indicator" />
+            {/* On watch is drawn by CrewMonitoredAvatar from the same record
+                this row uses for its visible label. */}
           </span>
           <span className="min-w-0 flex-1">
             <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{crewDisplayName(view)}</span>
@@ -751,7 +768,7 @@ function MemberRow({
               )}
               {/* The mark's word, so it reads without a tooltip (touch,
                   reduced motion). Accent, like the mark. */}
-              {isLoopOn(view) && (
+              {loopOn && (
                 <Badge
                   variant="muted"
                   className="shrink-0 px-1.5 py-0 text-[11px] font-sans bg-accent-subtle text-accent"
@@ -3259,77 +3276,63 @@ export default function MembersPage() {
     [slotKeyOf, unreadSlots],
   )
 
-  // Auto patrol: the auto-nudge loop (monitor / goal loop) bound to a member's
-  // own DM slot. This is the thing that wakes a standing member without anyone
-  // asking — so a member whose loop has silently stopped, or never armed, is a
-  // member that will not act again until someone notices. The roster badge
-  // and the drawer block both read from here, so the whole registry is read
-  // (the badge needs every member, not just the open drawer's) and filtered
-  // per member at render by slot key — the member's derived slot is
-  // `member-<slug>`, resolved the same way isRunning resolves it.
-  //
-  // One React Query read, not a private fetch + frame merge: the websocket
-  // hook invalidates AUTONUDGE_LOOPS_QUERY_KEY on every `autonudge_state`
-  // frame AND on every (re)connect, so a stop that landed while the socket was
-  // down is re-read the moment it comes back, and a transient mount-time
-  // failure is retried on the next signal rather than freezing the block in
-  // its failed state. The interval is a floor under that: frames fire only on
-  // change, and the one reading this block must never give is a stale
-  // "Patrolling" for a dead patrol.
+  // Auto patrol: one normalized collection for legacy loops and structured
+  // monitors. Both REST lists already exist. The structured list is owner-gated
+  // and is the only source allowed to carry targets or full monitor state.
+  // `automationSeed` uses the same query key and invalidates both lists on every
+  // live frame, so the avatar and Profile details cannot drift.
   const patrolQuery = useQuery({
     queryKey: AUTONUDGE_LOOPS_QUERY_KEY,
     queryFn: () => api.autonudgeList(),
     refetchOnReconnect: true,
   })
-  // `failed` is kept distinct from empty for the same reason the wake-sources
-  // block keeps it: a failed read must never render the affirmative "no patrol
-  // scheduled", which is precisely the false statement this block exists to
-  // prevent. A refetch error after a good read keeps showing the last data.
-  const patrol = useMemo(() => {
-    const data = patrolQuery.data
-    const loops: Record<string, AutoNudgeLoop> = {}
-    for (const lp of data?.loops || []) if (lp?.slot_key) loops[lp.slot_key] = lp
-    return {
-      loaded: data !== undefined || patrolQuery.isError,
-      failed: data === undefined && patrolQuery.isError,
-      loops,
+  const structuredPatrolQuery = useQuery({
+    queryKey: STRUCTURED_AUTOMATIONS_QUERY_KEY,
+    queryFn: () => api.monitorsList(),
+    refetchOnReconnect: true,
+  })
+  // Any failed half makes the collection unknown. Keeping stale rows would show
+  // an active orbit after the server had stopped the monitor, so this fails
+  // closed even when React Query still has older data.
+  const automationReadState = patrolQuery.isError || structuredPatrolQuery.isError
+    ? 'error' as const
+    : patrolQuery.data !== undefined && structuredPatrolQuery.data !== undefined
+      ? 'ready' as const
+      : 'loading' as const
+  const automationsBySlot = useMemo(() => {
+    const records: Record<string, AutomationRecord> = {}
+    if (automationReadState !== 'ready') return records
+    const conflicted = new Set<string>()
+    const add = (raw: unknown, legacy: boolean) => {
+      if (legacy && !isFullLegacyAutomationRecord(raw)) return
+      const record = normalizeAutomationRecord(raw)
+      if (!record || (legacy && record.kind !== 'legacy_goal_loop')) return
+      if (records[record.slotKey]) {
+        delete records[record.slotKey]
+        conflicted.add(record.slotKey)
+        return
+      }
+      if (!conflicted.has(record.slotKey)) records[record.slotKey] = record
     }
-  }, [patrolQuery.data, patrolQuery.isError])
-  const patrolLoopOf = useCallback(
-    (m: MemberRosterRow) => {
+    for (const raw of patrolQuery.data?.loops ?? []) add(raw, true)
+    for (const raw of structuredPatrolQuery.data?.monitors ?? []) add(raw, false)
+    return records
+  }, [automationReadState, patrolQuery.data, structuredPatrolQuery.data])
+  const automationOf = useCallback(
+    (m: MemberRosterRow): AutomationRecord | null => {
       const key = slotKeyOf(m)
-      return key ? patrol.loops[key] : undefined
+      return key && Object.prototype.hasOwnProperty.call(automationsBySlot, key)
+        ? automationsBySlot[key]
+        : null
     },
-    [slotKeyOf, patrol.loops],
+    [slotKeyOf, automationsBySlot],
   )
-  /** Roster-level reading of a member's loop record: the loop while it is
-   *  ACTIVE, nothing otherwise. A stopped record and a member that never
-   *  armed one look the same at the roster — "not patrolling" is the resting
-   *  state of a member, not an incident that needs a placeholder mark; the
-   *  drawer's block is where a stopped loop keeps its reason. The badge's
-   *  presence IS the signal, the way the presence dot and unread dot work. */
-  const activePatrolOf = useCallback(
-    (m: MemberRosterRow): AutoNudgeLoop | undefined => {
-      const lp = patrolLoopOf(m)
-      return lp?.active ? lp : undefined
-    },
-    [patrolLoopOf],
-  )
-  // On watch: the sidebar's live-automation keys (Redux, kept by
-  // `autonudge_state` frames — structured monitors AND goal loops), or the
-  // registry read above.
-  const loopRunningKeys = useAppSelector(selectSidebarAutomationRunningKeys)
   const isLoopOn = useCallback(
-    (m: MemberRosterRow) => {
-      if (activePatrolOf(m)) return true
-      const key = slotKeyOf(m)
-      return !!key && loopRunningKeys.includes(key)
-    },
-    [activePatrolOf, slotKeyOf, loopRunningKeys],
+    (m: MemberRosterRow) => isAutomationActive(automationOf(m)),
+    [automationOf],
   )
-  // The live facts the status filters read, resolved per row the same way the
-  // row's own markers are (isRunning / isUnread / activePatrolOf), so a filter
-  // can never disagree with the dot it filters on.
+  // The live facts the status filters read, resolved per row from the same
+  // automation record as its avatar and Profile details.
   const signalsOf = useCallback(
     (m: MemberRosterRow): MemberSignals => {
       const key = slotKeyOf(m)
@@ -3425,10 +3428,11 @@ export default function MembersPage() {
       avatar: active.avatar,
       slotKey: activeSlot || active.slot_key || '',
       running: !!isRunning(active),
+      automation: automationOf(active),
       from,
       to: () => target.current?.getBoundingClientRect() ?? null,
     })
-  }, [profileOpen, reduceMotion, active, activeSlot, isRunning])
+  }, [profileOpen, reduceMotion, active, activeSlot, isRunning, automationOf])
   const endFaceFlight = useCallback(() => setFaceFlight(null), [])
   // A flight belongs to the crewmate it was measured on. Leaving that crewmate
   // mid-flight (Back, a bare /members, a team open) unmounts the copy before its
@@ -4100,7 +4104,7 @@ export default function MembersPage() {
             whichever drawer happens to be open. Same shared notice as the
             drawer block; a read failure on a page holding no draft is safe
             to hand to the agent. */}
-        {patrol.failed && (
+        {automationReadState === 'error' && (
           <div className="px-4 pb-2">
             <ErrorNotice
               message={t('pages.membersPage.patrol_error_roster')}
@@ -4381,7 +4385,7 @@ export default function MembersPage() {
                       isRunning={isRunning}
                       isUnread={isUnread}
                       isNeedsYou={isNeedsYou}
-                      isLoopOn={isLoopOn}
+                      automationOf={automationOf}
                       // No layout projection under the drawer's compositor-
                       // driven slide (registerDrawerTargets' precondition).
                       reduceMotion={rosterDrawerAvailable ? true : reduceMotion}
@@ -4691,18 +4695,19 @@ export default function MembersPage() {
                   style={faceFlight || (profile && profile.placement === 'floating') ? { visibility: 'hidden' } : undefined}
                   data-testid="member-pill-face"
                 >
-                  <CrewStateAvatar
+                  <CrewMonitoredAvatar
                     seed={active.name}
                     avatar={active.avatar}
                     slotKey={activeSlot || active.slot_key}
                     running={!!isRunning(active)}
+                    automation={automationOf(active)}
+                    indicatorTestId="member-pill-loop-indicator"
                     // Smaller in the shell bar, which is 42px tall: the pill sits
                     // there with no vertical padding, at the height of the 32px
                     // controls beside it, so it does not reach the bar's edges.
                     size={headerInBar ? 26 : 30}
                     working="full"
                   />
-                  <CrewLoopIndicator on={isLoopOn(active)} testId="member-pill-loop-indicator" />
                 </span>
                 {/* The name and activity line stay open at rest: this pill is
                     how the reader knows which crewmate the page is talking to,
@@ -4826,12 +4831,12 @@ export default function MembersPage() {
                 is visible and this wrapper steps aside; below md the roster is
                 hidden regardless of the pin. No hand-off: the Profile card may
                 hold an unsaved schedule draft, and Ask the agent navigates away. */}
-            {(patrol.failed || teamsNoticeShown || starError) && (
+            {(automationReadState === 'error' || teamsNoticeShown || starError) && (
               <div
                 className={`${rosterPinned ? 'md:hidden' : ''} flex flex-col gap-2 px-4 pb-2`}
                 data-testid="member-main-roster-errors"
               >
-                {patrol.failed && (
+                {automationReadState === 'error' && (
                   <ErrorNotice
                     message={t('pages.membersPage.patrol_error_roster')}
                     variant="inline"
@@ -5305,6 +5310,8 @@ export default function MembersPage() {
               member={activeView}
               running={!!isRunning(active)}
               slotKey={activeSlot || active.slot_key}
+              automation={automationOf(active)}
+              monitorReadState={automationReadState}
               description={profileRegistryQuery.data?.agents.find((a) => a.name === active.name)?.description ?? ''}
               descriptionError={profileRegistryQuery.isError}
               memoryLabel={t(PROFILE_MEMORY_KEYS[memberMemoryDisplay(activeView)])}

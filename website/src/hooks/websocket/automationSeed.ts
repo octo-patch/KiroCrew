@@ -12,11 +12,11 @@ import {
   dashboardAutomationSlotKey,
   isFullLegacyAutomationRecord,
   normalizeAutomationRecord,
+  STRUCTURED_AUTOMATIONS_QUERY_KEY,
 } from '../../monitoring/automation'
 import type { FrameData } from './frames'
 
 const LEGACY_AUTOMATION_SEED_QUERY_KEY = ['automation-seed', 'legacy'] as const
-const STRUCTURED_AUTOMATION_SEED_QUERY_KEY = ['automation-seed', 'structured'] as const
 
 export interface AutomationSeed {
   /** Cold-seed the authoritative automation collection. `autonudge_state` only
@@ -84,7 +84,7 @@ export function useAutomationSeed(dispatch: AppDispatch, queryClient: QueryClien
         }
         try {
           structured = queryClient.fetchQuery({
-            queryKey: STRUCTURED_AUTOMATION_SEED_QUERY_KEY,
+            queryKey: STRUCTURED_AUTOMATIONS_QUERY_KEY,
             queryFn: api.monitorsList,
             staleTime: 0,
             retry: false,
@@ -210,6 +210,7 @@ export function useAutomationSeed(dispatch: AppDispatch, queryClient: QueryClien
         if (nudge.event === 'removed') {
           dispatch(removeAutomation(slot))
           queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
+          queryClient.invalidateQueries({ queryKey: STRUCTURED_AUTOMATIONS_QUERY_KEY })
           return
         }
         const record = normalizeAutomationRecord(nudge)
@@ -226,6 +227,7 @@ export function useAutomationSeed(dispatch: AppDispatch, queryClient: QueryClien
       // re-read it in place rather than merging a partial payload — one
       // seed path, not a third copy of the merge.
       queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: STRUCTURED_AUTOMATIONS_QUERY_KEY })
     },
   }), [dispatch, queryClient])
 }

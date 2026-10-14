@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { unregisteredMarkers } from '../../test/guideTargets'
 import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react'
 import type { MemberRosterRow } from '../../api/client'
+import type { LegacyGoalLoop, StructuredMonitor } from '../../monitoring/automation'
 import type { CronJob } from '../../types'
 
 /* The crewmate's profile card (crewmate-panel IA), in isolation from the page
@@ -18,8 +19,10 @@ import type { CronJob } from '../../types'
  *   - Escape pops a pushed page first and closes the card second.
  */
 
-vi.mock('../../components/CrewStateAvatar', () => ({
-  default: ({ seed }: { seed: string }) => <span data-testid="avatar-stub">{seed}</span>,
+vi.mock('../../components/crew/CrewMonitoredAvatar', () => ({
+  default: ({ seed, automation }: { seed: string; automation?: unknown }) => (
+    <span data-testid="avatar-stub" data-monitor-active={automation ? 'true' : 'false'}>{seed}</span>
+  ),
 }))
 
 import CrewProfilePanel, { PROFILE_TABS } from './CrewProfilePanel'
@@ -36,6 +39,24 @@ const JOBS: CronJob[] = [
   { id: 'j1', name: 'triage new issues', message: 'go', enabled: true, schedule: '0 9 * * *', last_status: 'ok', next_run_ts: NOW + 600 } as CronJob,
   { id: 'j2', name: 'weekly digest', message: 'go', enabled: false, schedule: 'every 7d', last_status: '' } as CronJob,
 ]
+
+const ACTIVE_MONITOR: StructuredMonitor = {
+  kind: 'structured_monitor', id: 'monitor-1', slotKey: 'member-oncall', active: true,
+  actionable: true, version: 1, monitorKind: 'github_pull_request', objective: 'review_ready',
+  target: 'https://github.com/kirodotdev/KiroCrew/pull/42', createdAt: NOW - 3600,
+  cadenceSecs: 300, nextProbeAt: NOW + 300, wakeInstructions: '',
+  budgets: { maxRuntimeSecs: 14_400, maxAgentTurns: 8, maxTokens: 250_000, maxProviderErrors: 3 },
+  latest: { classification: 'pending', reasonCode: 'checks_pending', observedAt: NOW - 30, decision: 'no_change' },
+  usage: { probes: 5, wakes: 1, agentTurns: 1, inputTokens: 120, outputTokens: 20, providerErrors: 0, tokenUsageKnown: true },
+  action: { wakeInFlight: false, wakeDelivery: '' }, terminal: null,
+}
+
+const WORK_LEDGER_MONITOR: LegacyGoalLoop = {
+  kind: 'legacy_goal_loop', id: 'ledger-1', slotKey: 'member-oncall', message: '',
+  createdAt: NOW - 1200, idleSecs: 600, maxCycles: 300, cycleCount: 9,
+  active: true, lastFireAt: NOW - 600, nextDueAt: NOW + 600,
+  maxRuntimeSecs: 86_400, stoppedReason: '', monitorOutcome: '', monitorKind: 'work-ledger',
+}
 
 type Handlers = {
   onClose: ReturnType<typeof vi.fn>
@@ -56,6 +77,8 @@ function setup(overrides: Partial<Parameters<typeof CrewProfilePanel>[0]> = {}):
     <CrewProfilePanel
       member={member()}
       running={false}
+      automation={null}
+      monitorReadState="ready"
       description="Watches the on-call queue and files what it finds. Escalates only when a page has gone unanswered."
       memoryLabel="Private to this crewmate"
       schedules={JOBS}
@@ -127,6 +150,48 @@ describe('CrewProfilePanel rail (Tablist labels="active")', () => {
 })
 
 describe('CrewProfilePanel Profile tab', () => {
+  it('shows exact active monitor details and no controls', () => {
+    setup({ automation: ACTIVE_MONITOR })
+    const details = screen.getByTestId('crew-profile-monitor')
+    expect(details).toHaveAttribute('data-monitor-active', 'true')
+    expect(details).toHaveTextContent('Active')
+    expect(details).toHaveTextContent('Bounded monitor')
+    expect(details).toHaveTextContent('https://github.com/kirodotdev/KiroCrew/pull/42')
+    expect(details).toHaveTextContent('5m')
+    expect(details).toHaveTextContent('5 / —')
+    expect(details).toHaveTextContent('1h / 4h')
+    expect(within(details).queryByRole('button')).toBeNull()
+    expect(within(details).queryByRole('textbox')).toBeNull()
+    expect(within(details).queryByRole('link')).toBeNull()
+    expect(screen.getByTestId('avatar-stub')).toHaveAttribute('data-monitor-active', 'true')
+  })
+
+  it('shows exact work-ledger cycle and budget values', () => {
+    setup({ automation: WORK_LEDGER_MONITOR })
+    const details = screen.getByTestId('crew-profile-monitor')
+    expect(details).toHaveAttribute('data-monitor-active', 'true')
+    expect(details).toHaveTextContent('Scheduled loop')
+    expect(details).toHaveTextContent('Work ledger')
+    expect(details).toHaveTextContent('10m')
+    expect(details).toHaveTextContent('9 / 300')
+    expect(details).toHaveTextContent('20m / 24h')
+  })
+
+  it('keeps a stopped legacy loop readable without an active avatar', () => {
+    setup({ automation: { ...WORK_LEDGER_MONITOR, active: false, stoppedReason: 'cycle_cap' } })
+    const details = screen.getByTestId('crew-profile-monitor')
+    expect(details).toHaveAttribute('data-monitor-active', 'false')
+    expect(details).toHaveTextContent('Inactive')
+    expect(details).toHaveTextContent('Cycle limit reached')
+  })
+
+  it('fails closed when monitor state cannot be read', () => {
+    setup({ automation: ACTIVE_MONITOR, monitorReadState: 'error' })
+    const details = screen.getByTestId('crew-profile-monitor')
+    expect(details).toHaveAttribute('data-monitor-active', 'false')
+    expect(details).toHaveTextContent('Monitor status unavailable')
+  })
+
   it('is a summary with doors: description, memory, workspace folder, notes', () => {
     const h = setup()
     expect(screen.getByTestId('crew-profile-name')).toHaveTextContent('oncall')

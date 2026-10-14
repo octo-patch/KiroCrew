@@ -48,6 +48,7 @@ vi.mock('../../api/client', () => ({
     memberProjections: vi.fn(() => Promise.resolve({ asOfSeq: 0, values: {} })),
     memberBriefing: vi.fn(() => Promise.resolve({ slug: '', member: '', supported: true, text: '', updated_ts: null, redacted: false, truncated: false })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
+    monitorsList: vi.fn(() => Promise.resolve({ enabled: true, monitors: [] })),
     // The card's description comes from the crew registry; none of these cases need one.
     kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [], default_agent: 'kirocrew' })),
     // The card's list and the pushed section read one cron list and filter it per

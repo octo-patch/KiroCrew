@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   deriveAutomationStatus,
+  isAutomationActive,
   normalizeAutomationRecord,
   normalizePullRequestMonitorTarget,
   type StructuredMonitor,
@@ -43,7 +44,7 @@ describe('automation transport normalizer', () => {
 
     expect(record).toEqual({
       kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1',
-      message: 'Keep going', idleSecs: 60, maxCycles: 0, cycleCount: 7,
+      message: 'Keep going', createdAt: 0, idleSecs: 60, maxCycles: 0, cycleCount: 7,
       active: true, lastFireAt: 123, nextDueAt: 0, maxRuntimeSecs: 0,
       stoppedReason: '', monitorOutcome: '', monitorKind: '',
     })
@@ -408,5 +409,26 @@ describe('automation transport normalizer', () => {
     }))
 
     expect(deriveAutomationStatus(record!)).toBe('active')
+  })
+})
+
+describe('shared active-monitor predicate', () => {
+  const structured = normalizeAutomationRecord(structuredLoop()) as StructuredMonitor
+
+  it('accepts only proven live records', () => {
+    expect(isAutomationActive(structured)).toBe(true)
+    expect(isAutomationActive({
+      kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1', message: '',
+      createdAt: 0, idleSecs: 60, maxCycles: 24, cycleCount: 2, active: true,
+      lastFireAt: 0, nextDueAt: 0, maxRuntimeSecs: 3600, stoppedReason: '',
+      monitorOutcome: '', monitorKind: 'work-ledger',
+    })).toBe(true)
+  })
+
+  it('fails closed for missing, stopped, terminal, or malformed records', () => {
+    expect(isAutomationActive(null)).toBe(false)
+    expect(isAutomationActive({ ...structured, active: false })).toBe(false)
+    expect(isAutomationActive({ ...structured, terminal: { outcome: 'success', reason: '', stoppedAt: 1 } })).toBe(false)
+    expect(isAutomationActive({ ...structured, actionable: false })).toBe(false)
   })
 })

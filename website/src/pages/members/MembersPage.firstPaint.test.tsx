@@ -35,6 +35,7 @@ vi.mock('../../api/client', () => ({
     webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
     defaultAgent: vi.fn(() => Promise.resolve({ default_agent: '' })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
+    monitorsList: vi.fn(() => Promise.resolve({ enabled: true, monitors: [] })),
   },
 }))
 

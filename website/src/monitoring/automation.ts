@@ -1,5 +1,8 @@
 import monitorContract from './contract.json'
 
+/** Shared full-list key for owner-gated structured monitor snapshots. */
+export const STRUCTURED_AUTOMATIONS_QUERY_KEY = ['automation-seed', 'structured'] as const
+
 export const STRUCTURED_MONITOR_LIMITS = monitorContract.limits
 
 export const STRUCTURED_MONITOR_DEFAULTS = {
@@ -90,6 +93,8 @@ export interface LegacyGoalLoop {
   id: string
   slotKey: string
   message: string
+  /** Epoch seconds when the loop was armed; 0 when an older record omitted it. */
+  createdAt?: number
   idleSecs: number
   maxCycles: number
   cycleCount: number
@@ -138,6 +143,8 @@ export interface StructuredMonitor {
   monitorKind: PullRequestMonitorKind | string
   objective: 'review_ready' | string
   target: string
+  /** Epoch seconds when the monitor was armed; 0 when an older record omitted it. */
+  createdAt?: number
   cadenceSecs: number
   nextProbeAt: number
   wakeInstructions: string
@@ -313,6 +320,7 @@ function structuredFallback(
     monitorKind: text(monitor?.kind, 'unknown'),
     objective: text(monitor?.objective, 'unknown'),
     target: text(monitor?.target),
+    createdAt: finite(monitor?.created_ts),
     cadenceSecs: positive(monitor?.cadence_secs, STRUCTURED_MONITOR_DEFAULTS.cadenceSecs),
     nextProbeAt: finite(monitor?.next_probe_at),
     wakeInstructions: text(monitor?.wake_instructions),
@@ -377,6 +385,7 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       id,
       slotKey,
       message: text(loop.message),
+      createdAt: finite(loop.created_ts),
       idleSecs: count(loop.idle_secs),
       maxCycles: count(loop.max_cycles),
       cycleCount: count(loop.cycle_count),
@@ -485,6 +494,7 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
     monitorKind: text(monitor.kind),
     objective: text(monitor.objective),
     target: text(monitor.target),
+    createdAt: finite(monitor.created_ts),
     cadenceSecs: positive(monitor.cadence_secs, STRUCTURED_MONITOR_DEFAULTS.cadenceSecs),
     nextProbeAt: finite(monitor.next_probe_at) || finite(loop.next_due_ts),
     wakeInstructions: text(monitor.wake_instructions),
@@ -519,6 +529,14 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       stoppedAt: finite(monitor.stopped_at),
     } : null,
   }
+}
+
+export function isAutomationActive(record: AutomationRecord | null | undefined): boolean {
+  if (!record) return false
+  if (record.kind === 'legacy_goal_loop') return record.active
+  // Unsupported/malformed structured records are normalized as non-actionable.
+  // They remain inspectable, but cannot claim a live watch in the UI.
+  return record.active && record.actionable && record.terminal === null
 }
 
 export function deriveAutomationStatus(record: AutomationRecord): MonitorStatus {
