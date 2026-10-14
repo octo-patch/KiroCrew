@@ -554,10 +554,18 @@ the gateway signals. Its TERM trap is what stops that step, so a `cli.sh` that
 ignores SIGTERM past the grace can leave pip running after the arm returns.
 
 **Shutdown starts the stop first.** `_shutdown` cancels any in-flight wheel apply
-and then `_update_check_task`, before the rest of the teardown. The early steps run alongside the stop because they do not
-touch the install. Before the handler and service teardown, `_shutdown` waits
-for the stop until `UPDATE_INSTALLER_STOP_SECS` after the cancel. Without that
-wait, the 10 s cap's force-exit can orphan the installer mid-write.
+and then every installer task: `_update_check_task` and each policy apply the
+dashboard started (`POST /api/update`, read through
+`dashboard.handlers.updates.policy_applies_in_flight()` from `sys.modules`, so
+the stop path never imports a module an update may have replaced). Those run as
+tracked tasks rather than inline in a request handler because aiohttp cancels
+its handlers only after its own shutdown timeout, which the graceful cap exits
+ahead of. The early steps run alongside the stop because they do not touch the
+install. Before the handler and service teardown, `_shutdown` waits for the
+stop until `UPDATE_INSTALLER_STOP_SECS` after the cancel, and a task still
+pending past that is named in the warning (`update-coordinator`,
+`dashboard-policy-apply`). Without that wait, the 10 s cap's force-exit can
+orphan the installer mid-write.
 
 **Once a stop is signalled (`shutdown_event` is set):**
 

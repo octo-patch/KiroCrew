@@ -11742,6 +11742,19 @@ class GatewayOrchestrator:
         """
         return sys.modules.get("kiro_crew.platform.wheel_apply")
 
+    @staticmethod
+    def _dashboard_policy_applies() -> list["asyncio.Task[Any]"]:
+        """Policy applies the dashboard started that are still running. Never imports.
+
+        Same ``sys.modules`` lookup as :meth:`_wheel_apply_module`: an apply can be
+        in flight only in a process whose dashboard update handlers are loaded, so
+        a module that is not resident has nothing to stop.
+        """
+        handlers = sys.modules.get("kiro_crew.dashboard.handlers.updates")
+        if handlers is None:
+            return []
+        return list(handlers.policy_applies_in_flight())
+
     async def _settle_update_work(self, update_task: "asyncio.Task[None] | None") -> None:
         """Wait, bounded, for the update coordinator and the applies it cancelled.
 
@@ -11771,10 +11784,18 @@ class GatewayOrchestrator:
         # alongside the steps below, which do not touch the install, and is
         # awaited before the handler and service teardown, bounded by
         # UPDATE_INSTALLER_STOP_SECS.
+        # A policy apply the dashboard started (``POST /api/update``) is the same
+        # installer shape, so it is stopped and awaited here with the coordinator,
+        # inside the same budget: aiohttp cancels its request handler only after
+        # its own shutdown timeout, which the graceful cap exits ahead of.
         update_task = self._update_check_task
+        installer_tasks: set[asyncio.Task[Any]] = set(self._dashboard_policy_applies())
+        if update_task is not None:
+            installer_tasks.add(update_task)
+        installer_tasks = {task for task in installer_tasks if not task.done()}
         update_stop_deadline = asyncio.get_running_loop().time() + UPDATE_INSTALLER_STOP_SECS
-        if update_task is not None and not update_task.done():
-            update_task.cancel()
+        for task in installer_tasks:
+            task.cancel()
         self._memory_repair_stop.set()
         if self._memory_repair_task is not None:
             self._memory_repair_task.cancel()
@@ -11858,13 +11879,17 @@ class GatewayOrchestrator:
                 logger.debug("Dashboard slot save before shutdown failed", exc_info=True)
             self.dashboard_state.file_indexes.stop_all()
 
-        if update_task is not None:
+        if installer_tasks:
             remaining = update_stop_deadline - asyncio.get_running_loop().time()
-            _done, pending = await asyncio.wait({update_task}, timeout=max(0.0, remaining))
+            _done, pending = await asyncio.wait(installer_tasks, timeout=max(0.0, remaining))
             if pending:
+                # Named, because the stuck task may be the update coordinator or
+                # a dashboard-started policy apply; whoever chases an orphaned
+                # install must be pointed at the right one.
                 logger.warning(
-                    "Update coordinator did not stop within %.0fs; continuing shutdown",
+                    "Update work did not stop within %.0fs (%s); continuing shutdown",
                     UPDATE_INSTALLER_STOP_SECS,
+                    ", ".join(sorted(task.get_name() for task in pending)),
                 )
 
         # The general _background_tasks set is retention, not lifecycle ownership.
@@ -14342,6 +14367,8 @@ class GatewayOrchestrator:
         # Registered so shutdown can cancel a stalled network or installer child.
         print("👻 Checking for updates…")
         self._update_check_task = asyncio.create_task(self._run_update_checks())
+        # Named so the shutdown's did-not-stop warning can say which update task it was.
+        self._update_check_task.set_name("update-coordinator")
         self._background_tasks.add(self._update_check_task)
         self._update_check_task.add_done_callback(self._background_tasks.discard)
 

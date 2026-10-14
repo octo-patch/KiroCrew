@@ -13,8 +13,9 @@ import os
 import re
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 from aiohttp import web
@@ -796,6 +797,48 @@ async def _can_arm_this_install() -> bool:
     except Exception:
         logger.debug("managed-venv probe failed; reporting can_arm False", exc_info=True)
         return False
+
+
+#: Policy applies started from the dashboard (``POST /api/update`` on a host
+#: whose policy names an ``apply_command``) that are still running. Each runs as
+#: its own task rather than inline in the request handler: aiohttp cancels
+#: handlers only after its own shutdown timeout, which the gateway's graceful cap
+#: exits ahead of, so an inline apply would never receive the cancel that stops
+#: its installer with SIGTERM. The gateway's shutdown reads this set through
+#: :func:`policy_applies_in_flight` and cancels + awaits them alongside the
+#: update coordinator, within its installer-stop budget.
+_policy_apply_tasks: set["asyncio.Task[bool | None]"] = set()
+
+
+def policy_applies_in_flight() -> list["asyncio.Task[bool | None]"]:
+    """The dashboard-started policy applies still running, for the shutdown path."""
+    return [task for task in _policy_apply_tasks if not task.done()]
+
+
+class _PolicyApplyStopped(Exception):
+    """The gateway's shutdown cancelled a dashboard-started policy apply."""
+
+
+async def _run_tracked_policy_apply(
+    apply: Callable[[], Coroutine[Any, Any, bool | None]],
+) -> bool | None:
+    """Run ``apply`` as a tracked task the gateway's shutdown can stop.
+
+    A caller that stops waiting (the browser closed the request) still cancels the
+    apply, as an inline await would. A cancel that reaches the apply from the
+    shutdown path, with this caller still waiting, is reported as
+    :class:`_PolicyApplyStopped` so the handler can answer it rather than die.
+    """
+    task = asyncio.create_task(apply(), name="dashboard-policy-apply")
+    _policy_apply_tasks.add(task)
+    task.add_done_callback(_policy_apply_tasks.discard)
+    try:
+        return await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if task.cancelled() and current is not None and not current.cancelling():
+            raise _PolicyApplyStopped from None
+        raise
 
 
 def _release_update_check_task(task: asyncio.Task[None]) -> None:
@@ -1851,7 +1894,17 @@ async def api_update_apply(request: web.Request) -> web.Response:
     from kiro_crew.platform.update_provider import apply_policy_update
     from kiro_crew.platform.wheel_engine import respawn_executable
 
-    applied = await apply_policy_update()
+    # As a tracked task, not inline: the gateway's shutdown cancels it first and
+    # waits for its installer to stop (``policy_applies_in_flight``). Inline, the
+    # handler is cancelled only by aiohttp's own teardown, which the graceful
+    # cap exits ahead of, and the installer would be left running unsupervised.
+    try:
+        applied = await _run_tracked_policy_apply(apply_policy_update)
+    except _PolicyApplyStopped:
+        state.push_update_progress("failed", "Update stopped: the gateway is shutting down")
+        return web.json_response(
+            {"error": "The gateway is shutting down", "code": "shutting_down"}, status=503
+        )
     if applied is not None:
         if not applied:
             # A configured provider's failure is a failure. Falling through to

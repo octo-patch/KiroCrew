@@ -1074,6 +1074,70 @@ class TestApplyRefusals:
         assert json.loads(resp.body.decode())["code"] == "shutting_down"
         applied.assert_not_awaited()
 
+    @staticmethod
+    def _policy_installer(monkeypatch) -> tuple[asyncio.Event, list[str]]:
+        """A policy apply that runs until cancelled and records its cancel arm.
+
+        Stands in for ``CommandProvider.apply``, whose cancel arm stops the
+        installer child with SIGTERM.
+        """
+        from kiro_crew.platform import update_provider
+
+        started = asyncio.Event()
+        hold = asyncio.Event()  # never set: only a cancel ends the apply
+        stopped: list[str] = []
+
+        async def _installer_running() -> bool | None:
+            started.set()
+            try:
+                await hold.wait()
+            except asyncio.CancelledError:
+                stopped.append("installer")
+                raise
+            return True
+
+        monkeypatch.setattr(update_provider, "apply_policy_update", _installer_running)
+        return started, stopped
+
+    @pytest.mark.asyncio
+    async def test_a_running_policy_apply_is_tracked_for_the_shutdown_path(self, monkeypatch):
+        """The apply runs as a task the gateway's shutdown can cancel and await.
+
+        Inline in the handler, it is cancelled only by aiohttp's own teardown,
+        which the gateway's graceful cap exits ahead of, so the installer would
+        keep running unsupervised.
+        """
+        started, stopped = self._policy_installer(monkeypatch)
+        req = _request({})
+        handler = asyncio.create_task(updates.api_update_apply(req))
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        tracked = updates.policy_applies_in_flight()
+        assert len(tracked) == 1
+        tracked[0].cancel()  # what the gateway's shutdown does
+        resp = await asyncio.wait_for(handler, timeout=5)
+
+        assert stopped == ["installer"]
+        assert resp.status == 503
+        assert json.loads(resp.body.decode())["code"] == "shutting_down"
+        assert updates.policy_applies_in_flight() == []
+        step, _detail = req.app["state"].push_update_progress.call_args[0]
+        assert step == "failed"
+
+    @pytest.mark.asyncio
+    async def test_a_caller_that_stops_waiting_still_stops_the_apply(self, monkeypatch):
+        """The tracking changes who else can cancel the apply, not the caller's arm."""
+        started, stopped = self._policy_installer(monkeypatch)
+        handler = asyncio.create_task(updates.api_update_apply(_request({})))
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        handler.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(handler, timeout=5)
+
+        assert stopped == ["installer"]
+        assert updates.policy_applies_in_flight() == []
+
     @pytest.mark.asyncio
     async def test_refuses_when_no_project_dir_is_configured(self):
         resp = await updates.api_update_apply(_request({}))
