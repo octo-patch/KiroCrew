@@ -6256,6 +6256,10 @@
         "install_on_cancel_granted": "Cancelar deixa o “{{app}}” confiável, e a instalação não roda de novo.",
         "install_failed": "O “{{app}}” agora é confiável, mas não foi possível instalá-lo. Escolha Confiar e tentar de novo (isso confirma de novo a confiança que você já deu e depois tenta outra vez), ou abra Configurações → Segurança → Apps de terceiros para remover a confiança.",
         "install_failed_generic": "Não foi possível instalar o “{{app}}” e a confiança não foi salva. Escolha Confiar e tentar de novo, ou confira os logs do {{productName}}.",
+        "update_on_cancel": "Cancelar não muda nada: o “{{app}}” continua como está, na versão que você tem, e não passa a ser confiável.",
+        "update_on_cancel_granted": "Cancelar deixa o “{{app}}” confiável, e a atualização não roda de novo; a versão que você tem continua como está.",
+        "update_failed": "O “{{app}}” agora é confiável, mas não foi possível atualizá-lo. Escolha Confiar e tentar de novo (isso confirma de novo a confiança que você já deu e depois tenta outra vez), ou abra Configurações → Segurança → Apps de terceiros para remover a confiança.",
+        "update_failed_generic": "Não foi possível atualizar o “{{app}}” e a confiança não foi salva. Escolha Confiar e tentar de novo, ou confira os logs do {{productName}}.",
         "failed_desktop_unsupported": "Não é possível instalar o “{{app}}” na versão para desktop do {{productName}}, e nada foi alterado.",
         "failed_desktop_unsupported_help": "Ele precisa de pacotes Python que a versão de desktop não consegue adicionar; peça ao autor do app para incluí-los com o app, ou abra o {{productName}} em um navegador web em vez da versão de desktop."
       },

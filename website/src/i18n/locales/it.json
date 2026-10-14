@@ -6256,6 +6256,10 @@
         "install_on_cancel_granted": "Annulla lascia «{{app}}» autorizzata, e l'installazione non viene ripetuta.",
         "install_failed": "«{{app}}» ora è autorizzata, ma non è stato possibile installarla. Scegli Autorizza e riprova (questo riconferma l'autorizzazione che hai già dato, poi riprova), oppure apri Impostazioni → Sicurezza → App di terze parti per rimuovere l'autorizzazione.",
         "install_failed_generic": "Non è stato possibile installare «{{app}}» e l'autorizzazione non è stata salvata. Scegli Autorizza e riprova, oppure controlla i log di {{productName}}.",
+        "update_on_cancel": "Annulla non cambia nulla: «{{app}}» resta com'è, nella versione che hai, e non viene autorizzata.",
+        "update_on_cancel_granted": "Annulla lascia «{{app}}» autorizzata, e l'aggiornamento non viene ripetuto; la versione che hai resta com'è.",
+        "update_failed": "«{{app}}» ora è autorizzata, ma non è stato possibile aggiornarla. Scegli Autorizza e riprova (questo riconferma l'autorizzazione che hai già dato, poi riprova), oppure apri Impostazioni → Sicurezza → App di terze parti per rimuovere l'autorizzazione.",
+        "update_failed_generic": "Non è stato possibile aggiornare «{{app}}» e l'autorizzazione non è stata salvata. Scegli Autorizza e riprova, oppure controlla i log di {{productName}}.",
         "failed_desktop_unsupported": "Non è possibile installare «{{app}}» nella versione desktop di {{productName}}, e nulla è stato modificato.",
         "failed_desktop_unsupported_help": "Ha bisogno di pacchetti Python che la build desktop non può aggiungere; chiedi all'autore dell'app di includerli con l'app, oppure apri {{productName}} in un browser web invece che nella versione desktop."
       },

@@ -6256,6 +6256,10 @@
         "install_on_cancel_granted": "Annuler laisse «{{app}}» de confiance, et l'installation ne se relance pas.",
         "install_failed": "«{{app}}» est maintenant de confiance, mais elle n'a pas pu être installée. Choisis Faire confiance et réessayer (cela confirme à nouveau la confiance que tu as déjà donnée, puis réessaie), ou ouvre Paramètres → Sécurité → Applications tierces pour retirer la confiance.",
         "install_failed_generic": "«{{app}}» n'a pas pu être installée, et la confiance n'a pas été enregistrée. Choisis Faire confiance et réessayer, ou consulte les journaux de {{productName}}.",
+        "update_on_cancel": "Annuler ne change rien : «{{app}}» reste telle quelle, dans la version que tu as, et n'est pas de confiance.",
+        "update_on_cancel_granted": "Annuler laisse «{{app}}» de confiance, et la mise à jour ne se relance pas ; la version que tu as reste telle quelle.",
+        "update_failed": "«{{app}}» est maintenant de confiance, mais elle n'a pas pu être mise à jour. Choisis Faire confiance et réessayer (cela confirme à nouveau la confiance que tu as déjà donnée, puis réessaie), ou ouvre Paramètres → Sécurité → Applications tierces pour retirer la confiance.",
+        "update_failed_generic": "«{{app}}» n'a pas pu être mise à jour, et la confiance n'a pas été enregistrée. Choisis Faire confiance et réessayer, ou consulte les journaux de {{productName}}.",
         "failed_desktop_unsupported": "«{{app}}» ne peut pas être installée dans la version de bureau de {{productName}}, et rien n'a été modifié.",
         "failed_desktop_unsupported_help": "Elle a besoin de paquets Python que la version de bureau ne peut pas ajouter ; demande à l’auteur de l’app de les livrer avec l’app, ou ouvre {{productName}} dans un navigateur web plutôt que dans la version de bureau."
       },

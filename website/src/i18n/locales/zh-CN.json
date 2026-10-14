@@ -6050,6 +6050,10 @@
         "install_on_cancel_granted": "点击“取消”会让“{{app}}”保持受信任，安装不会再次运行。",
         "install_failed": "“{{app}}”现已受信任，但未能安装。请选择“信任并重试”（这会重新确认你已给予的信任，然后重试），或打开“设置 → 安全 → 第三方应用”移除信任。",
         "install_failed_generic": "“{{app}}”未能安装，且信任未保存。请选择“信任并重试”，或查看 {{productName}} 的日志。",
+        "update_on_cancel": "点击“取消”不会改变任何设置：“{{app}}”保持原样，仍是你现有的版本，也不会受信任。",
+        "update_on_cancel_granted": "点击“取消”会让“{{app}}”保持受信任，更新不会再次运行；你现有的版本保持原样。",
+        "update_failed": "“{{app}}”现已受信任，但未能更新。请选择“信任并重试”（这会重新确认你已给予的信任，然后重试），或打开“设置 → 安全 → 第三方应用”移除信任。",
+        "update_failed_generic": "“{{app}}”未能更新，且信任未保存。请选择“信任并重试”，或查看 {{productName}} 的日志。",
         "failed_desktop_unsupported": "“{{app}}”无法安装到 {{productName}} 桌面版中，且没有做任何更改。",
         "failed_desktop_unsupported_help": "它需要桌面版无法添加的 Python 软件包；请让应用作者将其随应用一同提供，或改为在网页浏览器中打开 {{productName}}，而不是使用桌面版。"
       },

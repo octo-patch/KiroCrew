@@ -2018,6 +2018,10 @@
         "install_on_cancel_granted": "Cancel keeps “{{app}}” trusted, and the install does not run again.",
         "install_failed": "“{{app}}” is now trusted, but it could not be installed. Choose Trust and try again (this re-confirms the trust you already gave, then retries), or open Settings → Security → Third-party apps to remove the trust.",
         "install_failed_generic": "“{{app}}” could not be installed, and trust was not saved. Choose Trust and try again, or check {{productName}}'s logs.",
+        "update_on_cancel": "Cancel changes nothing: “{{app}}” stays as it is, on the version you have, and is not trusted.",
+        "update_on_cancel_granted": "Cancel keeps “{{app}}” trusted, and the update does not run again; the version you have stays as it is.",
+        "update_failed": "“{{app}}” is now trusted, but it could not be updated. Choose Trust and try again (this re-confirms the trust you already gave, then retries), or open Settings → Security → Third-party apps to remove the trust.",
+        "update_failed_generic": "“{{app}}” could not be updated, and trust was not saved. Choose Trust and try again, or check {{productName}}'s logs.",
         "failed_desktop_unsupported": "“{{app}}” can't be installed in the desktop version of {{productName}}, and nothing was changed.",
         "failed_desktop_unsupported_help": "It needs Python packages the desktop build can't add; ask the app's author to ship them with the app, or open {{productName}} in a web browser instead of the desktop version."
       },

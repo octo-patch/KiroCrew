@@ -6153,6 +6153,10 @@
         "install_on_cancel_granted": "Abbrechen behält das Vertrauen in „{{app}}“ bei, und die Installation läuft nicht erneut.",
         "install_failed": "„{{app}}“ wird jetzt vertraut, aber sie konnte nicht installiert werden. Wähle Vertrauen und erneut versuchen (das bestätigt das Vertrauen, das du schon gegeben hast, noch einmal und versucht es dann erneut), oder öffne Einstellungen → Sicherheit → Drittanbieter-Apps, um das Vertrauen zu entfernen.",
         "install_failed_generic": "„{{app}}“ konnte nicht installiert werden, und das Vertrauen wurde nicht gespeichert. Wähle Vertrauen und erneut versuchen, oder sieh in den Logs von {{productName}} nach.",
+        "update_on_cancel": "Abbrechen ändert nichts: „{{app}}“ bleibt, wie sie ist, in der Version, die du hast, und ihr wird nicht vertraut.",
+        "update_on_cancel_granted": "Abbrechen behält das Vertrauen in „{{app}}“ bei, und die Aktualisierung läuft nicht erneut; die Version, die du hast, bleibt, wie sie ist.",
+        "update_failed": "„{{app}}“ wird jetzt vertraut, aber sie konnte nicht aktualisiert werden. Wähle Vertrauen und erneut versuchen (das bestätigt das Vertrauen, das du schon gegeben hast, noch einmal und versucht es dann erneut), oder öffne Einstellungen → Sicherheit → Drittanbieter-Apps, um das Vertrauen zu entfernen.",
+        "update_failed_generic": "„{{app}}“ konnte nicht aktualisiert werden, und das Vertrauen wurde nicht gespeichert. Wähle Vertrauen und erneut versuchen, oder sieh in den Logs von {{productName}} nach.",
         "failed_desktop_unsupported": "„{{app}}“ kann in der Desktop-Version von {{productName}} nicht installiert werden, und es wurde nichts geändert.",
         "failed_desktop_unsupported_help": "Sie braucht Python-Pakete, die der Desktop-Build nicht hinzufügen kann; bitte den Autor der App, sie mit der App auszuliefern, oder öffne {{productName}} statt in der Desktop-Version in einem Webbrowser."
       },

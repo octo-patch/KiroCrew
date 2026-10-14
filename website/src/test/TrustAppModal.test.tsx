@@ -521,20 +521,24 @@ describe('registry install trust gate', () => {
     expect(text).not.toContain(`${K}.on_cancel LaunchDarkly`)
   })
 
-  it('keeps the install sentences off an UPDATE of an app that is already installed (#19645)', async () => {
-    // The Update buttons reach the same consent flow, but the app is there:
-    // "nothing is installed" and "it installs switched off" would be false.
-    getApp.mockResolvedValue({
-      name: THIRD_PARTY.name,
-      version: '1.0.0',
-      displayName: THIRD_PARTY.displayName,
-      enabled: true,
-      origin: 'registry',
-      resources: 'gateway',
-      lifecycle: 'gateway',
-      source: `registry:${THIRD_PARTY.name}`,
-      manifest: { name: THIRD_PARTY.name, version: '1.0.0', displayName: THIRD_PARTY.displayName, description: 'x' },
-    })
+  /**
+   * The Update path: the same consent flow over an app that is already installed
+   * (and here, enabled). Neither the install sentences ("nothing is installed")
+   * nor the enable sentences ("switched off", trusting "turns it on") are true.
+   */
+  const INSTALLED_APP = {
+    name: THIRD_PARTY.name,
+    version: '1.0.0',
+    displayName: THIRD_PARTY.displayName,
+    enabled: true,
+    origin: 'registry',
+    resources: 'gateway',
+    lifecycle: 'gateway',
+    source: `registry:${THIRD_PARTY.name}`,
+    manifest: { name: THIRD_PARTY.name, version: '1.0.0', displayName: THIRD_PARTY.displayName, description: 'x' },
+  }
+  const openUpdateConsent = async () => {
+    getApp.mockResolvedValue(INSTALLED_APP)
     listRegistry.mockResolvedValue({
       apps: [{ ...THIRD_PARTY, installed: true, enabled: true, version: '1.1.0', updateAvailable: true }],
       serverPlatform: { os: 'darwin', arch: 'arm64' },
@@ -542,11 +546,58 @@ describe('registry install trust gate', () => {
     installFromRegistryStream.mockResolvedValue(INSTALL_DENIED())
     renderDetailFromGet(THIRD_PARTY.name, 'update')
     await waitFor(() => expect(modalTitle()).toBeTruthy())
+  }
+
+  it('gives an UPDATE of an installed app its own Cancel line, not the install or enable one (#19645, #19991)', async () => {
+    // The enable path's Cancel line says the app "stays in place, switched off",
+    // but an app being updated may be on; the install path's says nothing is
+    // installed, but it is. The update names what is true: the app and the
+    // version the user has stay as they are.
+    await openUpdateConsent()
 
     const text = screen.getByRole('dialog').textContent ?? ''
+    expect(text).toContain(`${K}.update_on_cancel LaunchDarkly`)
     expect(text).not.toContain(`${K}.install_outcome`)
     expect(text).not.toContain(`${K}.install_on_cancel`)
-    expect(text).toContain(`${K}.on_cancel LaunchDarkly`)
+    expect(text).not.toContain(`${K}.on_cancel LaunchDarkly`)
+  })
+
+  it('keeps the enable copy out of a failed update whose grant did not stay (#19991)', async () => {
+    // The enable path's headline says trusting "is what turns it on"; on an
+    // update the UPDATE is what failed, so the headline and the exit line are the
+    // update ones. The grant did not land here (trustApp rejected), so it is the
+    // generic failure: nothing was saved.
+    await openUpdateConsent()
+    trustApp.mockRejectedValue(apiError(500, { error: 'trust store unavailable' }, 'trust store unavailable'))
+
+    fireEvent.click(confirmBtn())
+
+    await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('alert').textContent)
+      .toContain(`${K}.update_failed_generic LaunchDarkly`))
+    const text = screen.getByRole('dialog').textContent ?? ''
+    expect(text).toContain(`${K}.update_on_cancel LaunchDarkly`)
+    expect(text).not.toContain(`${K}.failed_generic LaunchDarkly`)
+    expect(text).not.toContain(`${K}.install_failed_generic`)
+    expect(text).not.toContain(`${K}.on_cancel LaunchDarkly`)
+  })
+
+  it('keeps the enable copy out of a landed-grant update failure (#19991)', async () => {
+    // The grant lands, the update fails, and the app is still installed, so the
+    // grant stands: the headline says it could not be UPDATED (not "turned on")
+    // and Cancel keeps the trust and the version the user has.
+    await openUpdateConsent()
+    installFromRegistryStream.mockResolvedValue({ ok: false, error: 'clone failed' })
+
+    fireEvent.click(confirmBtn())
+
+    await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('alert').textContent)
+      .toContain(`${K}.update_failed LaunchDarkly`))
+    const text = screen.getByRole('dialog').textContent ?? ''
+    expect(text).toContain(`${K}.update_on_cancel_granted LaunchDarkly`)
+    expect(text).not.toContain(`${K}.failed LaunchDarkly`)
+    expect(text).not.toContain(`${K}.install_failed LaunchDarkly`)
+    expect(text).not.toContain(`${K}.on_cancel_granted`)
+    expect(text).not.toContain(`${K}.install_on_cancel_granted`)
   })
 
   it('drops the outcome line once a failure headline shows (#19645)', async () => {
