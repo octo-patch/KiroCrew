@@ -2390,7 +2390,7 @@ class AcpRuntime:
                 argv=argv,
                 backend=self._acp_backend,
                 sandbox_mode=self._sandbox_mode,
-                extra_env=self._extra_env,
+                extra_env={**self._extra_env, **plan.extra_env},
                 scratch_label="runtime",
                 env_before_scrub=_env_before_scrub,
                 env_after_marker=_env_after_marker,

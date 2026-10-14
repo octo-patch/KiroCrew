@@ -129,7 +129,7 @@ import json
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp.codex_sqlite import SQLITE_HOME_ENV, seed_private_state
@@ -246,28 +246,10 @@ def _seed_bg_disable_mcp(env: Mapping[str, str], scratch: Path) -> None:
     unchanged.  SQLite is still isolated per process via ``CODEX_SQLITE_HOME``
     (same as foreground).
     """
-    # SQLite isolation: same as the foreground path.
+    # SQLite isolation only: same as the foreground seed.
+    # CODEX_CONFIG for per-server disable is in SpawnPlan.extra_env and applied
+    # unconditionally (not gated on CODEX_SQLITE_HOME).
     seed_private_state(env, scratch)
-
-    # Enumerate MCP server names from the operator's config.
-    real_codex_home = Path(env.get(_CODEX_HOME_ENV) or str(Path.home() / ".codex"))
-    config_file = real_codex_home / "config.toml"
-    names = _read_codex_mcp_server_names(config_file)
-    if not names:
-        return  # no servers to disable; no CODEX_CONFIG change needed
-
-    # Build the CODEX_CONFIG override that disables every named server.
-    # Merge with any CODEX_CONFIG already in env so operator overrides survive.
-    env_dict = cast("dict[str, str]", env)
-    existing = env_dict.get("CODEX_CONFIG", "")
-    try:
-        base: dict = json.loads(existing) if existing else {}
-    except (json.JSONDecodeError, TypeError):
-        base = {}
-
-    if "mcp_servers" not in base:
-        base["mcp_servers"] = {name: {"enabled": False} for name in names}
-        env_dict["CODEX_CONFIG"] = json.dumps(base, separators=(",", ":"))
 
 
 def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
@@ -410,6 +392,22 @@ class CodexHarness(MembershipHarness):
         sqlite_home_set = bool(ctx.environ.get(_SQLITE_HOME_ENV))
         from kiro_crew.session import BACKGROUND_AGENT as _bg_agent  # circular at module scope
         is_background = ctx.agent == _bg_agent
+
+        # For background sessions: read config.toml once (off-loop -- we are already
+        # on the spawn worker inside asyncio.to_thread) and build the CODEX_CONFIG
+        # override that disables every configured MCP server.  Using extra_env ensures
+        # the override reaches the child regardless of whether the operator has already
+        # set CODEX_SQLITE_HOME (which would otherwise skip the seed).
+        bg_extra_env: dict[str, str] = {}
+        if is_background and not ctx.environ.get("CODEX_CONFIG"):
+            codex_home = Path(ctx.environ.get(_CODEX_HOME_ENV) or str(ctx.home / ".codex"))
+            names = _read_codex_mcp_server_names(codex_home / "config.toml")
+            if names:
+                bg_extra_env["CODEX_CONFIG"] = json.dumps(
+                    {"mcp_servers": {n: {"enabled": False} for n in names}},
+                    separators=(",", ":"),
+                )
+
         return SpawnPlan(
             argv=list(argv),
             rss_depth=self.CORE_RSS_DEPTH + wrapper_generations,
@@ -417,6 +415,7 @@ class CodexHarness(MembershipHarness):
             extra_expose_files=expose,
             private_state_env=None if sqlite_home_set else _SQLITE_HOME_ENV,
             private_state_seed=_seed_bg_disable_mcp if is_background else seed_private_state,
+            extra_env=bg_extra_env,
         )
 
     def apply_spawn_env(

@@ -193,6 +193,8 @@ async def test_background_codex_asks_for_sqlite_home_with_bg_seed(
     plan = await harness_for(ACP_BACKEND_CODEX).resolve_spawn(_bg_ctx(tmp_path))
     assert plan.private_state_env == SQLITE_HOME
     assert plan.private_state_seed is _seed_bg_disable_mcp
+    # extra_env is a CODEX_CONFIG dict; empty here because no config.toml in tmp_path
+    assert isinstance(plan.extra_env, dict)
 
 
 @pytest.mark.asyncio
@@ -207,10 +209,12 @@ async def test_foreground_codex_still_uses_standard_seed(codex_spawn_stubbed, tm
 async def test_background_codex_with_operator_sqlite_home_asks_for_nothing(
     codex_spawn_stubbed, tmp_path
 ):
-    """Operator-set CODEX_SQLITE_HOME: private_state_env is None for both paths."""
+    """Operator-set CODEX_SQLITE_HOME: private_state_env is None; extra_env still set."""
     ctx = _bg_ctx(tmp_path, environ={SQLITE_HOME: "/operator/sqlite"})
     plan = await harness_for(ACP_BACKEND_CODEX).resolve_spawn(ctx)
     assert plan.private_state_env is None
+    # extra_env carries CODEX_CONFIG regardless of CODEX_SQLITE_HOME operator setting
+    assert isinstance(plan.extra_env, dict)
 
 
 # ── _read_codex_mcp_server_names ──
@@ -254,12 +258,12 @@ def test_read_mcp_server_names_missing_file(tmp_path):
 
 # ── _seed_bg_disable_mcp ──
 
-def test_seed_bg_sets_codex_config_with_disabled_servers(tmp_path):
-    """CODEX_CONFIG is set with enabled:false for each configured server."""
+def test_seed_bg_disable_mcp_is_sqlite_only(tmp_path):
+    """_seed_bg_disable_mcp only does SQLite seeding; CODEX_CONFIG lives in extra_env."""
     real = tmp_path / "codex_home"
     real.mkdir()
     (real / "config.toml").write_text(
-        "[mcp_servers.server1]\ncommand = 'npx'\n[mcp_servers.server2]\ncommand = 'python'\n",
+        "[mcp_servers.server1]\ncommand = 'npx'\n",
         encoding="utf-8",
     )
     scratch = tmp_path / "scratch"
@@ -268,92 +272,99 @@ def test_seed_bg_sets_codex_config_with_disabled_servers(tmp_path):
     env: dict[str, str] = {_CODEX_HOME_ENV: str(real)}
     _seed_bg_disable_mcp(env, scratch)
 
-    import json
-
-    config = json.loads(env["CODEX_CONFIG"])
-    assert config["mcp_servers"]["server1"]["enabled"] is False
-    assert config["mcp_servers"]["server2"]["enabled"] is False
-
-
-def test_seed_bg_no_codex_config_when_no_servers(tmp_path):
-    """No CODEX_CONFIG is set when config.toml has no mcp_servers."""
-    real = tmp_path / "codex_home"
-    real.mkdir()
-    (real / "config.toml").write_text('model = "gpt-4o"\n', encoding="utf-8")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-
-    env: dict[str, str] = {_CODEX_HOME_ENV: str(real)}
-    _seed_bg_disable_mcp(env, scratch)
-
+    # The seed does NOT set CODEX_CONFIG; that is in SpawnPlan.extra_env instead.
     assert "CODEX_CONFIG" not in env
 
 
-def test_seed_bg_no_codex_config_when_missing_file(tmp_path):
-    """No CODEX_CONFIG is set when config.toml is absent."""
-    real = tmp_path / "codex_home"
-    real.mkdir()  # no config.toml
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-
-    env: dict[str, str] = {_CODEX_HOME_ENV: str(real)}
-    _seed_bg_disable_mcp(env, scratch)
-
-    assert "CODEX_CONFIG" not in env
-
-
-def test_seed_bg_preserves_existing_codex_config_other_keys(tmp_path):
-    """Existing CODEX_CONFIG keys that are not mcp_servers are preserved."""
+def test_seed_bg_disable_mcp_never_sets_codex_config(tmp_path):
+    """_seed_bg_disable_mcp is SQLite-only; CODEX_CONFIG is handled by extra_env."""
     real = tmp_path / "codex_home"
     real.mkdir()
     (real / "config.toml").write_text("[mcp_servers.srv]\ncommand='x'\n", encoding="utf-8")
     scratch = tmp_path / "scratch"
     scratch.mkdir()
 
-    import json
-
-    existing = json.dumps({"model": "custom-model"})
-    env: dict[str, str] = {_CODEX_HOME_ENV: str(real), "CODEX_CONFIG": existing}
-    _seed_bg_disable_mcp(env, scratch)
-
-    config = json.loads(env["CODEX_CONFIG"])
-    assert config["model"] == "custom-model"
-    assert config["mcp_servers"]["srv"]["enabled"] is False
-
-
-def test_seed_bg_does_not_override_existing_mcp_servers_in_codex_config(tmp_path):
-    """An existing mcp_servers key in CODEX_CONFIG is left untouched."""
-    real = tmp_path / "codex_home"
-    real.mkdir()
-    (real / "config.toml").write_text("[mcp_servers.srv]\ncommand='x'\n", encoding="utf-8")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-
-    import json
-
-    existing = json.dumps({"mcp_servers": {"custom-srv": {"enabled": True}}})
-    env: dict[str, str] = {_CODEX_HOME_ENV: str(real), "CODEX_CONFIG": existing}
-    _seed_bg_disable_mcp(env, scratch)
-
-    config = json.loads(env["CODEX_CONFIG"])
-    # Operator-set mcp_servers is preserved; config.toml names are NOT injected
-    assert "custom-srv" in config["mcp_servers"]
-    assert "srv" not in config["mcp_servers"]
-
-
-def test_seed_bg_server_names_with_dots_preserved(tmp_path):
-    """Server names containing dots survive JSON round-trip correctly."""
-    real = tmp_path / "codex_home"
-    real.mkdir()
-    (real / "config.toml").write_text("[mcp_servers.my.server]\ncommand='x'\n", encoding="utf-8")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-
-    import json
-
     env: dict[str, str] = {_CODEX_HOME_ENV: str(real)}
     _seed_bg_disable_mcp(env, scratch)
 
-    config = json.loads(env["CODEX_CONFIG"])
-    # The dotted name is preserved as a JSON key, not split on dots
-    assert config["mcp_servers"].get("my.server", {}).get("enabled") is False
+    # CODEX_CONFIG is NOT set by the seed; it lives in SpawnPlan.extra_env instead.
+    assert "CODEX_CONFIG" not in env
+
+
+@pytest.mark.asyncio
+async def test_background_codex_extra_env_contains_codex_config_with_servers(
+    codex_spawn_stubbed, tmp_path, monkeypatch
+):
+    """background spawn includes CODEX_CONFIG in extra_env when servers are configured."""
+    import json
+
+    # Stub home so _read_codex_mcp_server_names finds a real config
+    codex_home = tmp_path / "fake_codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.srv1]\ncommand='npx'\n[mcp_servers.srv2]\ncommand='python'\n",
+        encoding="utf-8",
+    )
+    ctx = _bg_ctx(tmp_path, environ={"CODEX_HOME": str(codex_home)})
+    plan = await harness_for(ACP_BACKEND_CODEX).resolve_spawn(ctx)
+
+    assert "CODEX_CONFIG" in plan.extra_env
+    config = json.loads(plan.extra_env["CODEX_CONFIG"])
+    assert config["mcp_servers"]["srv1"]["enabled"] is False
+    assert config["mcp_servers"]["srv2"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_background_codex_extra_env_empty_when_no_config_toml(
+    codex_spawn_stubbed, tmp_path
+):
+    """No CODEX_CONFIG in extra_env when the CODEX_HOME has no config.toml."""
+    # tmp_path used as CODEX_HOME -- has no config.toml
+    ctx = _bg_ctx(tmp_path, environ={"CODEX_HOME": str(tmp_path)})
+    plan = await harness_for(ACP_BACKEND_CODEX).resolve_spawn(ctx)
+    assert "CODEX_CONFIG" not in plan.extra_env
+
+
+@pytest.mark.asyncio
+async def test_background_codex_skips_extra_env_when_codex_config_set_by_operator(
+    codex_spawn_stubbed, tmp_path
+):
+    """Operator-set CODEX_CONFIG takes precedence; no override is added."""
+    codex_home = tmp_path / "fake_codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.srv1]\ncommand='npx'\n", encoding="utf-8"
+    )
+    ctx = _bg_ctx(
+        tmp_path,
+        environ={"CODEX_HOME": str(codex_home), "CODEX_CONFIG": '{"model":"custom"}'},
+    )
+    plan = await harness_for(ACP_BACKEND_CODEX).resolve_spawn(ctx)
+    # Operator's CODEX_CONFIG is in ambient env; we do not override it in extra_env
+    assert "CODEX_CONFIG" not in plan.extra_env
+
+
+@pytest.mark.asyncio
+async def test_background_codex_extra_env_independent_of_sqlite_home(
+    codex_spawn_stubbed, tmp_path
+):
+    """CODEX_CONFIG in extra_env is set even when the operator has set CODEX_SQLITE_HOME."""
+    import json
+
+    codex_home = tmp_path / "fake_codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.srv1]\ncommand='npx'\n", encoding="utf-8"
+    )
+    ctx = _bg_ctx(
+        tmp_path,
+        environ={"CODEX_HOME": str(codex_home), "CODEX_SQLITE_HOME": "/operator/sqlite"},
+    )
+    plan = await harness_for(ACP_BACKEND_CODEX).resolve_spawn(ctx)
+
+    # CODEX_SQLITE_HOME is set by operator → private_state_env is None (seed skips)
+    assert plan.private_state_env is None
+    # BUT extra_env still carries CODEX_CONFIG unconditionally
+    assert "CODEX_CONFIG" in plan.extra_env
+    config = json.loads(plan.extra_env["CODEX_CONFIG"])
+    assert config["mcp_servers"]["srv1"]["enabled"] is False

@@ -241,6 +241,16 @@ class SpawnPlan:
     state location skips preparation, preserving the operator's override.
     """
 
+    extra_env: Mapping[str, str] = field(default_factory=dict, kw_only=True)
+    """Extra environment variables to inject unconditionally into the child.
+
+    Applied after ``apply_spawn_env`` and the private-state mechanisms, so
+    harness-specific values set here override anything the generic path sets.
+    Intended for per-spawn overrides that must reach the child regardless of
+    operator-set env vars (e.g. feature-flag injections derived from the
+    operator's own config at spawn time).
+    """
+
 
 # ── Seam 3: session/new and session/load extras ──
 
