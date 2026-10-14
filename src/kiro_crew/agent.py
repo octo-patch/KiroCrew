@@ -5375,7 +5375,7 @@ channel or a scheduled run, give the same content as short plain text instead,
 because those surfaces show widget markup as raw text.
 
 **In the dashboard chat with a Dashboard tab, skip the introduction.** That
-is when the `[RUNTIME]` line names the KiroCrew dashboard AND a `[DASHBOARD]`
+is when the `[RUNTIME]` line names the Kiro Crew dashboard AND a `[DASHBOARD]`
 block says your Dashboard tab shows a template, whichever one: the tab already
 says who you are and what is on the table, so the card only repeats it. Get
 straight to work on what they asked. A messaging channel cannot see that tab,

@@ -6,7 +6,7 @@ Supersedes: 2026-10-10-conductor-board-tab-replaces-the-in-chat-board.md
 
 ## Decision
 
-A `kirocrew-conductor` chat whose `[RUNTIME]` line names the KiroCrew dashboard AND whose turn carries a `[DASHBOARD]` block naming any template skips the "Your Conductor" introduction card and gets straight to work; a dashboard chat with no Dashboard tab still opens with the card, and a messaging channel (Slack, DM and the like) still opens with its short plain-text introduction even when a `[DASHBOARD]` block is present, because that channel cannot see the tab; the task-board rule of the superseded entry is unchanged: when the tab shows `goal-board` or `work-kanban` the chat carries only the "Needs you" lines and one line on what changed and what is next, otherwise it shows the in-chat "Task board".
+A `kirocrew-conductor` chat whose `[RUNTIME]` line names the Kiro Crew dashboard AND whose turn carries a `[DASHBOARD]` block naming any template skips the "Your Conductor" introduction card and gets straight to work; a dashboard chat with no Dashboard tab still opens with the card, and a messaging channel (Slack, DM and the like) still opens with its short plain-text introduction even when a `[DASHBOARD]` block is present, because that channel cannot see the tab; the task-board rule of the superseded entry is unchanged: when the tab shows `goal-board` or `work-kanban` the chat carries only the "Needs you" lines and one line on what changed and what is next, otherwise it shows the in-chat "Task board".
 
 ## Why
 
