@@ -270,7 +270,7 @@ def session_manager_plugin_refusal() -> Optional[PluginRefusal]:
     if os.path.isabs(resolved) or not refusals:
         return None
     first = refusals[0]
-    remedy = _plugin_ownership_remedy(first.path)
+    remedy = _plugin_ownership_remedy(first.path, first.reason)
     # With a remedy, name the resolved file: the candidate is often a link from a
     # bin directory, and the command targets the folder the real file sits in.
     return PluginRefusal(
@@ -286,17 +286,26 @@ def session_manager_plugin_refusal() -> Optional[PluginRefusal]:
 #: :func:`_plugin_ownership_remedy` returns "" where there is no ``geteuid``.
 _AWS_PKG_PLUGIN_PREFIX = os.path.join(os.sep, "usr", "local", "sessionmanagerplugin")
 
+#: The provenance check's wording for its relaxed-policy ownership refusal: a path
+#: component owned by an account that is neither root nor the gateway user. It is
+#: the only refusal a root-owned tree clears; a root gateway, the strict policy and
+#: a world-writable component are refused for reasons ``chown`` does not touch.
+_THIRD_ACCOUNT_OWNER_REFUSAL = re.compile(r"\bis owned by another user \(uid \d+\)\Z")
 
-def _plugin_ownership_remedy(candidate: str) -> str:
+
+def _plugin_ownership_remedy(candidate: str, reason: str) -> str:
     """``sudo chown -R root:<group> <prefix>`` when a third account owns AWS's install tree.
 
-    Offered only when the candidate resolves inside :data:`_AWS_PKG_PLUGIN_PREFIX`
-    and some directory or file on the way from that prefix to the binary is owned
-    by an account that is neither root nor the gateway user: exactly the state a
-    stock AWS ``.pkg`` install leaves, and one that making the tree root-owned
-    clears. Anything else returns "" and the caller shows only the reason, rather
-    than a command that would not fix it.
+    Offered only when *reason* is the provenance check's third-account ownership
+    refusal, the candidate resolves inside :data:`_AWS_PKG_PLUGIN_PREFIX`, and some
+    directory or file on the way from that prefix to the binary is owned by an
+    account that is neither root nor the gateway user: exactly the state a stock
+    AWS ``.pkg`` install leaves, and one that making the tree root-owned clears.
+    Anything else returns "" and the caller shows only the reason, rather than a
+    command that would not fix it.
     """
+    if not _THIRD_ACCOUNT_OWNER_REFUSAL.search(reason):
+        return ""
     geteuid = getattr(os, "geteuid", None)
     if geteuid is None:
         return ""

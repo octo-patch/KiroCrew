@@ -380,7 +380,101 @@ class TestSessionManagerPluginProbe:
         monkeypatch.setattr(os, "geteuid", lambda: binary.stat().st_uid + 1)
         monkeypatch.setattr(ssm.platform, "system", lambda: "Darwin")
 
-        assert ssm._plugin_ownership_remedy(str(link)) == f"sudo chown -R root:wheel {prefix}"
+        reason = "executable parent is owned by another user (uid 1501)"
+        assert ssm._plugin_ownership_remedy(str(link), reason) == (
+            f"sudo chown -R root:wheel {prefix}"
+        )
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "provider execution is disabled for a root gateway",
+            "executable is not root-owned",
+            "executable parent is writable by the gateway user",
+            "executable parent is world-writable",
+            "executable hierarchy is not accessible",
+        ],
+    )
+    def test_no_chown_remedy_for_a_refusal_ownership_cannot_clear(
+        self, monkeypatch, tmp_path, reason
+    ):
+        """The tree is in the third-account state the command fixes, but the
+        refusal is for something else, so the command would leave it refused."""
+        prefix = tmp_path / "sessionmanagerplugin"
+        (prefix / "bin").mkdir(parents=True)
+        binary = prefix / "bin" / "session-manager-plugin"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        monkeypatch.setattr(ssm, "_AWS_PKG_PLUGIN_PREFIX", str(prefix))
+        monkeypatch.setattr(os, "geteuid", lambda: binary.stat().st_uid + 1)
+
+        assert ssm._plugin_ownership_remedy(str(binary), reason) == ""
+
+    @staticmethod
+    def _aws_package_install(monkeypatch, tmp_path) -> tuple[Path, Path]:
+        """AWS's package layout with the plugin dir as the resolver's install dir."""
+        from kiro_crew.deploy import engine
+
+        prefix = tmp_path / "sessionmanagerplugin"
+        (prefix / "bin").mkdir(parents=True)
+        binary = prefix / "bin" / "session-manager-plugin"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(prefix / "bin"),))
+        monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+        monkeypatch.setattr(ssm, "_AWS_PKG_PLUGIN_PREFIX", str(prefix))
+        monkeypatch.setattr(ssm.platform, "system", lambda: "Darwin")
+        return prefix, binary
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_the_real_check_third_account_refusal_gets_the_chown_remedy(
+        self, monkeypatch, tmp_path
+    ):
+        """Runs the provenance check itself, so its ownership wording and the
+        remedy's category match cannot drift apart."""
+        from kiro_crew import github_runner
+
+        prefix, binary = self._aws_package_install(monkeypatch, tmp_path)
+        monkeypatch.setattr(github_runner, "strict_provider_bins", lambda: False)
+        monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+        monkeypatch.setattr(os, "geteuid", lambda: binary.stat().st_uid + 1)
+
+        refusal = ssm.session_manager_plugin_refusal()
+        assert refusal is not None
+        assert "is owned by another user (uid " in refusal.reason
+        assert refusal.remedy_command == f"sudo chown -R root:wheel {prefix}"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_the_real_check_root_gateway_refusal_gets_no_chown_remedy(self, monkeypatch, tmp_path):
+        """A root gateway is refused before ownership is read; making the tree
+        root-owned leaves that refusal in place, so no command is offered."""
+        _prefix, binary = self._aws_package_install(monkeypatch, tmp_path)
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+
+        refusal = ssm.session_manager_plugin_refusal()
+        assert refusal is not None
+        assert refusal.reason == "provider execution is disabled for a root gateway"
+        assert refusal.remedy_command == ""
+        assert refusal.path == str(binary)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_the_real_check_strict_policy_refusal_gets_no_chown_remedy(self, monkeypatch, tmp_path):
+        """The strict policy refuses on its own terms (root-owned AND not writable
+        by the gateway user), so the third-account command is not offered."""
+        from kiro_crew import github_runner
+
+        _prefix, binary = self._aws_package_install(monkeypatch, tmp_path)
+        monkeypatch.setattr(github_runner, "strict_provider_bins", lambda: True)
+        monkeypatch.setattr(os, "geteuid", lambda: binary.stat().st_uid + 1)
+
+        refusal = ssm.session_manager_plugin_refusal()
+        assert refusal is not None
+        assert "is owned by another user" not in refusal.reason
+        assert refusal.remedy_command == ""
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
     def test_a_refusal_with_the_chown_remedy_names_the_file_inside_that_folder(
@@ -433,12 +527,13 @@ class TestSessionManagerPluginProbe:
         monkeypatch.setattr(ssm, "_AWS_PKG_PLUGIN_PREFIX", str(prefix))
         monkeypatch.setattr(os, "geteuid", lambda: binary.stat().st_uid)
 
-        assert ssm._plugin_ownership_remedy(str(binary)) == ""
+        reason = "executable is owned by another user (uid 1501)"
+        assert ssm._plugin_ownership_remedy(str(binary), reason) == ""
         # And a binary outside the package prefix never gets the command.
         other = tmp_path / "elsewhere"
         other.write_text("#!/bin/sh\n")
         monkeypatch.setattr(os, "geteuid", lambda: other.stat().st_uid + 1)
-        assert ssm._plugin_ownership_remedy(str(other)) == ""
+        assert ssm._plugin_ownership_remedy(str(other), reason) == ""
 
     def test_open_port_forward_refused_under_agent_session(self, monkeypatch):
         # The streaming tunnel bypasses run_aws, so it carries its own
