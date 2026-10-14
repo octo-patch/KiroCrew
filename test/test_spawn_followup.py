@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -210,6 +211,56 @@ class TestFollowUpDelivery:
         assert len(announced) == 1
         assert announced[0].done and "expired" in announced[0].error
         assert announced[0].parent_session_key == "dash:9"
+
+    @pytest.mark.asyncio
+    async def test_an_expired_watcher_stops_counting_as_its_parents_pending_work(
+        self, monkeypatch
+    ) -> None:
+        """The watcher term of the parent's pending-work signal ends at the
+        watcher's deadline.
+
+        The run is finished but its task entry is never popped, so the watcher is
+        the only work the parent is still owed. The parent reads as owing work
+        while the watcher announces its expiry, and as owing none once the
+        watcher exits. A teardown that defers on this signal is therefore held
+        for at most the watcher's deadline plus the announce.
+        """
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+        mgr._default_timeout = -301  # deadline already in the past
+        parent = "dash:9"
+        announcing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _on_done(i):
+            announcing.set()
+            await release.wait()
+
+        mgr._on_done = _on_done
+        info = SubagentInfo(id="r-held", task="t", parent_session_key=parent, done=True)
+        mgr._agents[info.id] = info
+        finished: asyncio.Future = asyncio.get_running_loop().create_future()
+        finished.set_result(None)
+        mgr._tasks[info.id] = finished  # type: ignore[assignment]
+        info.pending_followups = ["msg"]
+        mgr._arm_followup_watcher(info)
+        watcher = mgr._followup_watchers[info.id]
+        try:
+            await await_until(announcing, what="the watcher's expiry announce")
+            assert mgr.has_in_memory_pending_work_for(parent)
+            assert await mgr.has_pending_work_for_async(parent)
+
+            release.set()
+            await await_until(watcher, what="the watcher to exit at its deadline")
+            assert info.id not in mgr._followup_watchers
+            assert not mgr.has_in_memory_pending_work_for(parent)
+            assert not await mgr.has_pending_work_for_async(parent)
+        finally:
+            release.set()
+            if not watcher.done():
+                watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+            mgr._tasks.pop(info.id, None)
 
     @pytest.mark.asyncio
     async def test_live_timeout_reduction_keeps_run_deadline(self, monkeypatch) -> None:

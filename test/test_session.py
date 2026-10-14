@@ -7713,6 +7713,37 @@ class TestParentEndCancelsItsChildren:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_identity_retire_retires_a_deferred_parent_once_its_owed_work_ends(self, cfg):
+        """The deferral lasts only as long as the work the parent is owed.
+
+        Pending work (a live follow-up watcher, say) keeps the parent through one
+        sweep. Once that work ends, the next sweep retires the parent, so an
+        old-identity parent outlives its owed work by at most one sweep.
+        """
+        key = "dashboard:chat-9"
+        owed = {key: True}
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        snapshotted, seen, cb = self._recorder({key: ()}, pending_work=owed)
+        mgr.set_child_teardown_handler(cb)
+        await mgr.get_or_create(key)
+        mgr.release(key)
+
+        await self._identity_sweep_spares(mgr, cb, key, snapshotted, seen)
+
+        owed[key] = False
+        with patch(
+            "kiro_crew.session._provider_uses_kiro_identity_store",
+            return_value=True,
+        ):
+            retired, complete = await mgr.retire_kiro_identity_sessions(spare_children=True)
+
+        assert retired == [key]
+        assert complete is True
+        assert not mgr.has_session(key)
+        assert mgr.identity_sweep_waiting_on == ()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_identity_retire_defers_on_a_child_admitted_during_the_teardown(self, cfg):
         """A child admitted through /api/spawn while the retire decision runs is
         seen via the teardown fence and the parent is deferred, not retired.

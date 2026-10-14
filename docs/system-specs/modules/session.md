@@ -748,9 +748,12 @@ session keys tagged `busy` or `channel member`, or the runtime that stayed up),
 and the turn gate logs it at WARNING so an operator can find the holdout.
 
 **Live-children deferral** (`spare_children`, decided at the async teardown): an
-idle parent whose stamp does NOT match the live account but which still has a
-child — live or queued in memory, admitted into the teardown fence since it
-opened, or a durable-only row in the task store — is not retired on the per-turn
+idle parent whose stamp does NOT match the live account but which is still owed
+sub-agent work — a child live or queued in memory, admitted into the teardown
+fence since it opened, or a durable-only row in the task store; a finished
+child's terminal report still delivering (`has_unfinished_report_for`); or a
+pending-work term (`has_pending_work_for_async`: a finished child whose report is
+not registered yet, a live follow-up watcher) — is not retired on the per-turn
 sweep. It is deferred the way a busy session is (flagged
 `retire_on_identity_change`, kept in the map, old-account sid cleared, recorded
 `<key> (subagents)` so the sweep reports incomplete). The per-turn gate fires on
@@ -765,11 +768,18 @@ The decision is made at the ASYNC teardown, not from a probe taken earlier: unde
 the registry lock a `spare_children` candidate is NOT retired — its teardown
 fence is opened (the `_teardown_fence_lock` the admission path records a new child
 into before its store write) and it is left registered, so nothing irreversible
-happens for it under the lock. Off the loop the sweep asks whether a child still
-exists (in memory, in the fence, or in the store); a child, or a failed store
-read, defers it, and the next sweep re-checks. Only a childless parent is retired,
-under a re-taken lock that leaves a successor registered under the key alone and
-defers again if a turn took the parent's semaphore during the read. The probe is
+happens for it under the lock. Off the loop the sweep asks whether the parent is
+still owed work (`_parent_owes_child_work`: a child in memory, in the fence or in
+the store, an unfinished report, or a pending-work term); any of them, or a
+failed store read, defers it, and the next sweep re-checks. A terminal report's
+delivery is bounded by `_ON_DONE_TIMEOUT` (queue plus injection), so a report
+deferral ends when that delivery resolves or times out. Only a parent owed
+nothing is retired, under a re-taken lock that leaves a successor registered
+under the key alone and defers again if a turn took the parent's semaphore during
+the read, or if in-memory work appeared meanwhile (`_parent_owes_child_work_now`:
+a live or queued child, an in-memory pending-work term, or a report that began
+delivering). `remove_if_unclaimed` asks the same two readings at the same two
+points. The probe is
 side-effect-free (not the teardown `snapshot_teardown_children`, which arms the
 delivery gate, clears follow-ups and cancels follow-up watchers).
 
