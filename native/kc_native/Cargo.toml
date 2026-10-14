@@ -14,6 +14,10 @@ crate-type = ["cdylib"]
 # which the limited API does not expose. The wheel is therefore per-CPython-minor.
 pyo3 = { version = "=0.29.3", features = ["extension-module"] }
 regex = "=1.13.1"
+memchr = "=2.8.3"
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+serde = "=1.0.229"
+serde_json = "=1.0.154"
 
 [profile.release]
 lto = true

@@ -265,6 +265,165 @@ def count_needle(needle: SearchNeedle, folded_text: str) -> int:
     return total
 
 
+def snippet_from_texts(
+    texts: Iterable[str], needles: Sequence[str], lead: int, trail: int, cap: int
+) -> str:
+    """The excerpt around the first needle hit in the first text that has one.
+
+    Needles are tried in order within each text, so the first TEXT holding any
+    of them wins. *needles* must be casefolded. Returns ``''`` when no text
+    holds any needle. Stops reading *texts* at the first hit.
+    """
+    for text in texts:
+        folded = text.casefold()
+        for needle in needles:
+            pos = folded.find(needle)
+            if pos < 0:
+                continue
+            start = max(0, pos - lead)
+            end = min(len(text), pos + len(needle) + trail)
+            frag = " ".join(text[start:end].split())
+            prefix = "…" if start > 0 else ""
+            suffix = "…" if end < len(text) else ""
+            return (prefix + frag + suffix)[:cap]
+    return ""
+
+
+def _code_tokens(fn: Callable[..., object]) -> list[str]:
+    """*fn*'s source as tokens, without its name, comments, line breaks or docstring."""
+    import ast
+    import inspect
+    import io
+    import textwrap
+    import tokenize
+
+    source = textwrap.dedent(inspect.getsource(fn))
+    node = ast.parse(source).body[0]
+    doc_lines: set[int] = set()
+    body = getattr(node, "body", [])
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        doc_lines = set(range(body[0].lineno, (body[0].end_lineno or body[0].lineno) + 1))
+    out: list[str] = []
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type in (tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE):
+            continue
+        if tok.type == tokenize.STRING and tok.start[0] in doc_lines:
+            continue
+        out.append(f"{tok.type}:{tok.string}")
+    # Drop ``def <name>`` so a rename alone does not count as a change.
+    return out[2:]
+
+
+def _native_search_fingerprint() -> str:
+    """Hash of the Python code the native search primitives reproduce.
+
+    Covers :func:`count_needle`, :func:`snippet_from_texts` and the blob decoder
+    the snippet path reads (as code tokens, so comments and docstrings do not
+    count), the fold separator, and the Unicode version whose ``isdigit`` /
+    ``isspace`` / ``casefold`` the native tables were generated from. Any edit
+    to that code changes the hash and turns the native path off until the
+    module is rebuilt with the new value.
+    """
+    import hashlib
+    import unicodedata
+
+    from kiro_crew.history_index import FOLD_SEPARATOR, decode_raw_texts
+
+    spec = repr(
+        (
+            _code_tokens(count_needle),
+            _code_tokens(snippet_from_texts),
+            _code_tokens(decode_raw_texts),
+            FOLD_SEPARATOR,
+            unicodedata.unidata_version,
+        )
+    )
+    return hashlib.sha256(spec.encode()).hexdigest()[:16]
+
+
+_NATIVE_UNLOADED = object()
+_NATIVE_SEARCH: object = _NATIVE_UNLOADED
+
+
+def _load_native_search():  # type: ignore[no-untyped-def]
+    """The optional ``kc_native`` module, or None (not built, disabled, or out of date)."""
+    if os.environ.get("KIROCREW_NATIVE_SEARCH", "1") == "0":
+        return None
+    try:
+        import kc_native  # type: ignore[import-not-found]
+    except Exception:
+        # A broken optional module must not make the Python search unavailable.
+        return None
+    try:
+        expected = _native_search_fingerprint()
+    except (OSError, TypeError, SyntaxError, ValueError):
+        # Source unavailable (frozen or stripped install): nothing to check against.
+        return None
+    if getattr(kc_native, "SEARCH_FINGERPRINT", None) != expected:
+        logging.getLogger(__name__).debug(
+            "kc_native search fingerprint does not match this interpreter's search code; "
+            "using the Python search path"
+        )
+        return None
+    return kc_native
+
+
+def _native_search():  # type: ignore[no-untyped-def]
+    """The native search module when usable, resolved once per process."""
+    global _NATIVE_SEARCH
+    if _NATIVE_SEARCH is _NATIVE_UNLOADED:
+        _NATIVE_SEARCH = _load_native_search()
+    return _NATIVE_SEARCH
+
+
+def _content_counts(
+    needles: Sequence[SearchNeedle],
+    folded: str,
+    title_counts: Sequence[int],
+    phrase: str | None,
+) -> tuple[list[int], int | None] | None:
+    """Content hit count per needle, plus the phrase's when *phrase* is given.
+
+    ``None`` when a REQUIRED needle is in neither the content nor the title
+    (*title_counts*), which disqualifies the session. The phrase count is
+    ``None`` when it was not computed here; the caller then counts it.
+
+    The native module, when present, does the counting with the GIL released for
+    a large text; otherwise each needle costs one :func:`count_needle`.
+    """
+    native = _native_search()
+    if native is not None and folded:
+        specs = [
+            ((n.text, *n.alts), n.digit_bounded, n.required and not t)
+            for n, t in zip(needles, title_counts)
+        ]
+        if phrase is not None:
+            specs.append(((phrase,), False, False))
+        try:
+            counts = native.count_needles(folded, specs)
+        except Exception:
+            # Optional acceleration cannot change whether search is available.
+            pass
+        else:
+            if counts is None:
+                return None
+            if phrase is not None:
+                return (counts[: len(needles)], counts[-1])
+            return (counts, None)
+    out: list[int] = []
+    for needle, in_title in zip(needles, title_counts):
+        in_content = count_needle(needle, folded)
+        if needle.required and not in_content and not in_title:
+            return None
+        out.append(in_content)
+    return (out, None)
+
+
 # One owner for splitting text into same-script runs. The name stays because
 # `history.py` re-exports it as part of its facade; only the duplicated body is
 # gone. The shared version returns a list instead of yielding, which the single
@@ -1440,15 +1599,14 @@ class SessionCatalogProjection:
             saturated_hits = 0.0
             title_hits = 0.0
             adjacency_hits = 0
-            disqualified = False
-            for needle in needles:
-                in_content = count_needle(needle, folded)
-                in_title = count_needle(needle, title_folded)
-                if needle.required and not in_content and not in_title:
-                    # AND semantics: one absent required needle disqualifies the
-                    # session, so stop counting the rest.
-                    disqualified = True
-                    break
+            title_counts = [count_needle(needle, title_folded) for needle in needles]
+            # AND semantics: one required needle absent from both fields
+            # disqualifies the session, and counting stops there.
+            counted = _content_counts(needles, folded, title_counts, phrase if multi else None)
+            if counted is None:
+                continue
+            content_counts, phrase_hits = counted
+            for needle, in_content, in_title in zip(needles, content_counts, title_counts):
                 if needle.adjacency:
                     adjacency_hits += in_content + in_title
                 if needle.saturate_body:
@@ -1464,7 +1622,7 @@ class SessionCatalogProjection:
                 else:
                     content_hits += in_content * needle.weight
                 title_hits += in_title * needle.weight
-            if disqualified or not (content_hits or saturated_hits or title_hits):
+            if not (content_hits or saturated_hits or title_hits):
                 continue
             if adjacency_floor and not adjacency_hits:
                 # Adjacency floor: a CJK query whose characters ALL appear but
@@ -1481,8 +1639,9 @@ class SessionCatalogProjection:
                 continue
             if multi:
                 # Reward the words appearing together, in order, as typed.
-                if folded:
-                    content_hits += folded.count(phrase) * _PHRASE_BOOST
+                if phrase_hits is None:
+                    phrase_hits = folded.count(phrase) if folded else 0
+                content_hits += phrase_hits * _PHRASE_BOOST
                 title_hits += title_folded.count(phrase) * _PHRASE_BOOST
             score = title_hits * _TITLE_BOOST + content_hits / length_norm + saturated_hits
             # Recency boost: multiplicative and bounded to (1.0, 2.5], so a
@@ -2020,19 +2179,42 @@ class SessionCatalogProjection:
         needles = snippet_needles(query)
         if not needles:
             return ""
+        lead, trail, cap = self._log._SNIPPET_LEAD, self._log._SNIPPET_TRAIL, self._log._SNIPPET_MAX
+        native = _native_search()
+        if native is not None:
+            blob = self._snippet_blob(key)
+            if blob is not None:
+                try:
+                    snippet = native.snippet_from_blob(blob, needles, lead, trail, cap)
+                except Exception:
+                    # The Python reader remains authoritative if acceleration fails.
+                    pass
+                else:
+                    if snippet is not None:
+                        return str(snippet)
         try:
-            for text in self._log._snippet_texts(key):
-                folded = text.casefold()
-                for needle in needles:
-                    pos = folded.find(needle)
-                    if pos < 0:
-                        continue
-                    start = max(0, pos - self._log._SNIPPET_LEAD)
-                    end = min(len(text), pos + len(needle) + self._log._SNIPPET_TRAIL)
-                    frag = " ".join(text[start:end].split())
-                    prefix = "…" if start > 0 else ""
-                    suffix = "…" if end < len(text) else ""
-                    return (prefix + frag + suffix)[: self._log._SNIPPET_MAX]
+            return snippet_from_texts(self._log._snippet_texts(key), needles, lead, trail, cap)
         except OSError:
             return ""
-        return ""
+
+    def _snippet_blob(self, key: str) -> bytes | None:
+        """*key*'s stored raw-texts blob when the index is where its snippet comes from.
+
+        ``None`` when the snippet memo holds the texts (they are already decoded)
+        or the index has no row matching the file's current stat; the caller then
+        reads texts through :meth:`_snippet_texts` as usual.
+        """
+        if self._index is None or not self._index.available:
+            return None
+        try:
+            st = self._log._path(key).stat()
+        except OSError:
+            return None
+        cached = self._log._snippet_cache.get(key)
+        if (
+            cached is not None
+            and cached[0] == self._log._cache_identity(st)
+            and cached[1] == self._log._cache_gen(key)
+        ):
+            return None
+        return self._index.raw_blob(key, st)

@@ -67,7 +67,18 @@ the extracted behavior:
   guarded-publish coordinator. Cache objects and generation state remain on
   the facade owner.
 - `history_search.py` owns query parsing plus the list/search/snippet catalog
-  projection.
+  projection. Its optional `kc_native` scans count needles and extract snippets;
+  Python remains the only query parser and scorer. The source fingerprint must
+  match before native search runs. Missing or stale modules, import failures,
+  scan exceptions and undecodable blobs fall back to the Python path.
+  Native snippets retain the first matching text but validate the entire JSON
+  string array and zlib stream, including its checksum, before returning it.
+  A damaged index blob therefore falls back to rereading the transcript, never
+  to serving a partially validated preview. Inputs fitting a bounded inflated
+  prefix use slice parsing; larger inputs replay that prefix and continue the
+  same stream one string at a time. Both paths validate every string and the
+  complete stream; texts after the first hit are not folded or searched.
+  `KIROCREW_NATIVE_SEARCH=0` explicitly selects that path.
 - `history_projection.py` owns bounded transcript reads, tab-chain/index
   projection, metadata reads and updates, permanent deletion, and previews.
 - `history_rewrite.py` owns locked compaction rewrites and size-based rotation.

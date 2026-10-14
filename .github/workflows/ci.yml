@@ -623,14 +623,14 @@ jobs:
       - name: Type check (mypy)
         run: mypy src/kiro_crew/
 
-  # The optional native credential pre-filter (native/kc_native) is used by
-  # default wherever it is installed, and a wrong False from it would let a
-  # credential skip redaction. Its equivalence suite skips itself when the
-  # module is absent, which is every other job, so this one builds the module
-  # and runs that suite unskipped, plus the Python pre-filter suite with the
-  # native gate live.
+  # The optional native module (native/kc_native) is used by default wherever
+  # it is installed: its credential pre-filter by redaction, where a wrong False
+  # would let a credential skip redaction, and its counting and snippet
+  # primitives by session search, where a wrong count reorders results. Each
+  # equivalence suite skips itself when the module is absent, which is every
+  # other job, so this one builds the module and runs them unskipped.
   native-redaction-gate:
-    name: Native Redaction Gate (kc_native)
+    name: Native Extension (kc_native)
     needs: [changes, await-fast-gate]
     if: needs.changes.outputs.only_frontend != 'true'
     runs-on: ubuntu-latest
@@ -673,6 +673,15 @@ jobs:
           echo "::remove-matcher owner=python::"
           python -c "import kc_native"
           python -m pytest -q test/test_native_redaction_gate.py test/test_native_redaction_fallback.py test/test_credential_prefilter.py
+
+      - name: Equivalence with the Python session search
+        # Over 400 queries end to end plus both primitives; any difference fails.
+        # The loader check proves the module built from this tree is accepted
+        # (its fingerprint matches), not merely importable.
+        run: |
+          echo "::remove-matcher owner=python::"
+          python -c "from kiro_crew import history_search as h; import kc_native; assert h._load_native_search() is kc_native, 'kc_native search fingerprint rejected'"
+          python -m pytest -q test/test_native_search_parity.py test/test_native_search_fallback.py
 
   backend-test:
     name: Backend Tests

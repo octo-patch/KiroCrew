@@ -39,6 +39,9 @@ use regex::bytes::Regex;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
+mod search;
+mod search_tables;
+
 /// sha256(repr(gate spec))[:16], computed by `redaction._native_gate_fingerprint()`.
 const GATE_FINGERPRINT: &str = "58fae81fda994ac9";
 
@@ -259,6 +262,7 @@ fn might_contain_credential(py: Python<'_>, text: &Bound<'_, PyString>) -> PyRes
 fn kc_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("GATE_FINGERPRINT", GATE_FINGERPRINT)?;
     m.add_function(wrap_pyfunction!(might_contain_credential, m)?)?;
+    search::register(m)?;
     Ok(())
 }
 

@@ -146,6 +146,15 @@ def fold_texts(texts: Sequence[str]) -> str:
     return FOLD_SEPARATOR.join(t.replace("\x00", FOLD_SEPARATOR) for t in texts).casefold()
 
 
+def decode_raw_texts(blob: bytes) -> list[str] | None:
+    """The message texts stored in a ``raw_texts`` *blob*, or None when it does not decode."""
+    try:
+        texts = json.loads(zlib.decompress(blob).decode("utf-8"))
+    except Exception:
+        return None
+    return texts if isinstance(texts, list) else None
+
+
 #: Version of the stored term representation. A bump makes existing rows
 #: unreadable rather than subtly mismatched: the store drops and rebuilds
 #: instead of serving rows indexed under different tokenization rules.
@@ -447,6 +456,13 @@ class SessionSearchIndex:
         took — so the file may have moved on in between. A stale answer would
         show a preview line absent from the session's current text.
         """
+        blob = self.raw_blob(key, st)
+        if blob is None:
+            return None
+        return decode_raw_texts(blob)
+
+    def raw_blob(self, key: str, st: os.stat_result) -> bytes | None:
+        """The stored, still-compressed ``raw_texts`` of *key* if its row matches *st*."""
         if not self.available:
             return None
         try:
@@ -470,11 +486,8 @@ class SessionSearchIndex:
             or row[3] != _sqlite_stat_identity(st.st_ino)
         ):
             return None
-        try:
-            texts = json.loads(zlib.decompress(row[4]).decode("utf-8"))
-        except Exception:
-            return None
-        return texts if isinstance(texts, list) else None
+        blob = row[4]
+        return bytes(blob) if isinstance(blob, (bytes, bytearray, memoryview)) else None
 
     def drop(self, keys: Iterable[str]) -> bool:
         """Remove *keys*, reporting whether the removal is known to have happened.
