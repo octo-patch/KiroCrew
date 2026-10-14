@@ -280,7 +280,7 @@ class TestManagedServersFollowTheControlPlane:
 
     def test_nothing_follows_without_core(self) -> None:
         assert _resolve_stub_servers({"stub_servers": ["builder-mcp"]}) == ["builder-mcp"]
-        assert _resolve_stub_servers({}) == []
+        assert _resolve_stub_servers({"stub_servers": []}) == []
 
     def test_nothing_follows_when_core_is_overridden_off(self) -> None:
         assert (
@@ -361,3 +361,76 @@ class TestManagedServersFollowTheControlPlane:
         _record_stub_decisions(section, ["kirocrew-guide"], True)
         assert section["stub_overrides"] == {"kirocrew-guide": True}
         assert "kirocrew-guide" in _resolve_stub_servers(section)
+
+
+class TestTheDefaultRosterSharesTheManagedServers:
+    """A default install stubs and shares all ten managed servers.
+
+    Each opt-out keeps its own scope: one override drops one server, a stored
+    ``enabled: false`` keeps the stubs but un-shares them, and a stored
+    ``stub_servers: []`` removes every stub and the broker with them.
+    """
+
+    def test_the_default_roster_is_every_caller_aware_managed_server(self) -> None:
+        from kiro_crew.config.integration_sections import DEFAULT_STUB_ROSTER
+        from kiro_crew.mcp_discovery import _MANAGED_SERVERS_CALLER_AWARE
+
+        assert len(DEFAULT_STUB_ROSTER) == len(set(DEFAULT_STUB_ROSTER)) == 10
+        assert set(DEFAULT_STUB_ROSTER) == _MANAGED_SERVERS_CALLER_AWARE
+
+    def test_a_silent_section_stubs_all_ten(self) -> None:
+        from kiro_crew.config.integration_sections import DEFAULT_STUB_ROSTER
+
+        assert _resolve_stub_servers({}) == list(DEFAULT_STUB_ROSTER)
+        assert _resolve_stub_roster({}) == list(DEFAULT_STUB_ROSTER)
+
+    def test_a_fresh_install_shares_them(self, tmp_path: Path) -> None:
+        from kiro_crew.config.integration_sections import DEFAULT_STUB_ROSTER
+
+        cfg = _load_from_dict({}, tmp_path)
+        assert cfg.mcp_gateway.enabled is True
+        assert cfg.mcp_gateway.stub_servers == list(DEFAULT_STUB_ROSTER)
+
+    def test_an_empty_roster_is_the_full_opt_out(self, tmp_path: Path) -> None:
+        """Key presence wins: a stored ``[]`` means no stub and no broker."""
+        cfg = _load_from_dict({"mcp_gateway": {"stub_servers": []}}, tmp_path)
+        assert cfg.mcp_gateway.stub_servers == []
+        assert cfg.mcp_gateway.stub_roster == []
+
+    def test_a_stored_false_keeps_backends_private(self, tmp_path: Path) -> None:
+        """``enabled: false`` un-shares; it does not remove the stubs."""
+        from kiro_crew.config.integration_sections import DEFAULT_STUB_ROSTER
+
+        cfg = _load_from_dict({"mcp_gateway": {"enabled": False}}, tmp_path)
+        assert cfg.mcp_gateway.enabled is False
+        assert cfg.mcp_gateway.stub_servers == list(DEFAULT_STUB_ROSTER)
+
+    def test_one_override_drops_one_server(self) -> None:
+        resolved = _resolve_stub_servers({"stub_overrides": {"kirocrew-cron": False}})
+        assert "kirocrew-cron" not in resolved
+        assert len(resolved) == 9
+
+    def test_a_legacy_alias_still_migrates_exactly(self) -> None:
+        """A non-empty ``poolable_servers`` still decides, under its old ``enabled``."""
+        assert _resolve_stub_roster({"poolable_servers": ["fs"]}) == []
+        assert _resolve_stub_roster({"enabled": False, "poolable_servers": ["fs"]}) == []
+        assert _resolve_stub_roster({"enabled": True, "poolable_servers": ["fs"]}) == ["fs"]
+
+    def test_an_empty_alias_names_nothing_to_migrate(self) -> None:
+        """Every file saved since the deprecation materializes ``poolable_servers: []``;
+        an adopted ``stub_servers`` row removes only ``stub_servers``, so the alias
+        left behind must not pin the roster empty."""
+        from kiro_crew.config.integration_sections import DEFAULT_STUB_ROSTER
+
+        assert _resolve_stub_roster({"enabled": False, "poolable_servers": []}) == list(
+            DEFAULT_STUB_ROSTER
+        )
+
+    def test_a_materialized_old_default_is_reported_not_rewritten(self, tmp_path: Path) -> None:
+        from kiro_crew.config.superseded_defaults import superseded_default_drift
+
+        stored = {"mcp_gateway": {"enabled": False, "stub_servers": [], "poolable_servers": []}}
+        drifted = {e.dotted_key for e in superseded_default_drift(stored, acked={})}
+        assert {"mcp_gateway.stub_servers", "mcp_gateway.enabled"} <= drifted
+        cfg = _load_from_dict(stored, tmp_path)
+        assert (cfg.mcp_gateway.enabled, cfg.mcp_gateway.stub_servers) == (False, [])

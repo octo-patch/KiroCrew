@@ -30,6 +30,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS, NO_TOOL_CALLS_NOTE
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.execution_context import read_session_execution
+from kiro_crew.mcp_caller import current_caller
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -904,17 +905,24 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     queued_reasons: dict[str, str] = {}
     errors: list[str] = []
     transport_errors: list[str] = []
-    # Forward this session's own approval_mode (set as an env var at
-    # process spawn -- see gateway.py cron dispatch, mirroring
-    # KIROCREW_SESSION_KEY/KIROCREW_CHANNEL_ID) so a cron running with
-    # approval_mode="auto" deterministically auto-approves its own
-    # spawn_run subagent launches. Without this, SubagentManager.spawn's
-    # only route to auto-approve is its own parent_trusted lookup, which
-    # requires parent_session to resolve back to the cron's session key
-    # -- an identity-plumbing path that can fail silently and leave the
-    # spawn stuck on the interactive approval path a cron has no
-    # responder for.
-    approval_mode = os.environ.get("KIROCREW_APPROVAL_MODE", "")
+    # A cron with approval_mode="auto" auto-approves its spawn_run subagents
+    # by one of two routes, chosen by topology:
+    #
+    # * Per-session launch: forward the mode the cron dispatch set in this
+    #   process's env (gateway.py ``_cron_extra_env``). Here ``parent_session``
+    #   comes from the lenient resolver, which can walk to the wrong slot, so
+    #   SubagentManager's ``parent_trusted`` lookup alone could miss.
+    # * Call gatewayd forwarded: the backend's env is gatewayd's and may serve
+    #   many sessions, so a value found there belongs to none of them and is
+    #   never forwarded. ``parent_session`` is the caller block's key (the
+    #   cron's own), whose session policy is "auto", so ``parent_trusted``
+    #   approves it.
+    _caller = current_caller()
+    approval_mode = (
+        ""
+        if _caller is not None and _caller.from_gateway
+        else os.environ.get("KIROCREW_APPROVAL_MODE", "")
+    )
     # Batch/wave identity: one id per multi-task spawn_run call so the
     # gateway can digest completions (one injection turn per wave instead
     # of N) and emit batch lifecycle events at 60-100-agent scale.

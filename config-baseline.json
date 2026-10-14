@@ -3874,7 +3874,7 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "enabled": false,
+        "enabled": true,
         "apps_enabled": true,
         "forward_declared_env": true,
         "socket_path": "",
@@ -3890,7 +3890,18 @@
         "host_budget_max_procs": 0,
         "host_budget_max_rss_mb": 0,
         "host_budget_max_fds": 0,
-        "stub_servers": [],
+        "stub_servers": [
+          "kirocrew-core",
+          "kirocrew-cron",
+          "kirocrew-computer",
+          "kirocrew-dashboard",
+          "kirocrew-work",
+          "kirocrew-crew-log",
+          "kirocrew-debug",
+          "kirocrew-panel",
+          "kirocrew-guide",
+          "kirocrew-mate"
+        ],
         "poolable_servers": [],
         "stub_overrides": {},
         "pool_identity_env": [],
@@ -3908,10 +3919,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Share MCP Backends",
-      "help": "Let sessions with an identical server configuration share one MCP server process instead of each getting its own. Off, every session gets its own backend — the same process topology as running without the broker. This switch does not start the broker: the broker starts iff some server is stubbed, and this chooses whether stubbed servers share one backend or get one per session; see docs/architecture/design-notes/mcp-stub-decoupling.md. Default False — opt-in.",
+      "help": "Let sessions with an identical server configuration share one MCP server process instead of each getting its own. Off, every stubbed server still gets a stub, but each session gets its own backend. This switch does not start the broker: the broker starts iff some server is stubbed, and this chooses whether stubbed servers share one backend or get one per session; see docs/architecture/design-notes/mcp-stub-decoupling.md. Default True.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "mcp_gateway.apps_enabled",
@@ -4145,10 +4156,21 @@
       "sensitive": false,
       "tags": [],
       "label": "Routed Servers",
-      "help": "MCP server names given a stub. The stub interposes a stub, which is what makes server-authored UI (MCP Apps) and backend sharing possible for that server — so it is the one per-server decision. Empty by default: an unstubbed server is launched by the session itself, the same process topology as running without the broker, and an empty list means no broker runs at all. Whether stubbed servers SHARE one backend is the separate global switch (mcp_gateway.enabled). Managed from MCP Management.",
+      "help": "MCP server names given a stub. The stub interposes a stub, which is what makes server-authored UI (MCP Apps) and backend sharing possible for that server — so it is the one per-server decision. Defaults to Kiro Crew's ten managed servers. An unstubbed server is launched by the session itself, and an empty list means no stub and no broker at all. Whether stubbed servers SHARE one backend is the separate global switch (mcp_gateway.enabled). Managed from MCP Management.",
       "hasChildren": true,
       "enumValues": null,
-      "defaultValue": [],
+      "defaultValue": [
+        "kirocrew-core",
+        "kirocrew-cron",
+        "kirocrew-computer",
+        "kirocrew-dashboard",
+        "kirocrew-work",
+        "kirocrew-crew-log",
+        "kirocrew-debug",
+        "kirocrew-panel",
+        "kirocrew-guide",
+        "kirocrew-mate"
+      ],
       "requiresRestart": true
     },
     {

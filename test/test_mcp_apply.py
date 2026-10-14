@@ -911,7 +911,12 @@ class TestSetStubNameGate:
         from kiro_crew.config.loader import _resolve_stub_servers
 
         assert written["stub_overrides"] == {"auto-improvement:auto-improvement": True}
-        assert _resolve_stub_servers(written) == ["auto-improvement:auto-improvement"]
+        from kiro_crew.config.integration_sections import DEFAULT_STUB_ROSTER
+
+        assert _resolve_stub_servers(written) == [
+            *sorted(DEFAULT_STUB_ROSTER),
+            "auto-improvement:auto-improvement",
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -41,7 +41,7 @@ class TestEnableRebuildsFactory:
 
         with patch.object(type(orch), "_init_mcp_gateway", new_callable=AsyncMock) as mock_init:
             mock_init.return_value = None
-            with patch("kiro_crew.slack.gateway.KiroCrewConfig") as mock_cfg:
+            with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cfg:
                 mock_cfg.load.return_value = MagicMock(mcp_gateway=MagicMock(enabled=True))
                 orch._cfg = mock_cfg.load.return_value
                 result = await orch._apply_mcp_gateway_enabled(True)  # noqa: F841
@@ -62,7 +62,7 @@ class TestEnableRebuildsFactory:
         orch.sessions.refresh_defaults = AsyncMock()
 
         with patch.object(type(orch), "_stop_mcp_broker", new_callable=AsyncMock):
-            with patch("kiro_crew.slack.gateway.KiroCrewConfig") as mock_cfg:
+            with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cfg:
                 mock_cfg.load.return_value = MagicMock(mcp_gateway=MagicMock(enabled=False))
                 orch._cfg = mock_cfg.load.return_value
                 await orch._apply_mcp_gateway_enabled(False)
@@ -80,7 +80,7 @@ class TestEnableRebuildsFactory:
         orch.sessions = None
 
         with patch.object(type(orch), "_init_mcp_gateway", new_callable=AsyncMock):
-            with patch("kiro_crew.slack.gateway.KiroCrewConfig") as mock_cfg:
+            with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cfg:
                 mock_cfg.load.return_value = MagicMock(mcp_gateway=MagicMock(enabled=True))
                 orch._cfg = mock_cfg.load.return_value
                 # Must not raise

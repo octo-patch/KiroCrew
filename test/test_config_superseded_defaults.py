@@ -1045,6 +1045,9 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         "watchdog.tool_stall_hard_cap_secs",
         "watchdog.model_silent_probe_secs",
         "agent.session_start_concurrency",
+        # Both are documented opt-outs, pinned in test_mcp_stub_overrides.
+        "mcp_gateway.stub_servers",
+        "mcp_gateway.enabled",
     }
 
 

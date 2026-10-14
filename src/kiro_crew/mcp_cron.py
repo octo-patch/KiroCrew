@@ -2720,7 +2720,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
         if name == "cron_add" and not args.get("channel"):
             # Preserve the direct runtime's delivery default as an ordinary,
             # server-validated argument; it confers no ownership authority.
-            channel = _caller_channel_id() or os.environ.get("KIROCREW_CHANNEL_ID")
+            channel = _default_delivery_channel()
             if channel:
                 args["channel"] = channel
         # Default the reply thread on the runtime side, ONLY when ``thread_ts``
@@ -2759,7 +2759,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
             # channel -- a model emitting one as a JSON number -- must fall
             # through to schema validation, not raise ``AttributeError`` from a
             # pre-validation ``.strip()`` below.)
-            caller_channel = _caller_channel_id() or os.environ.get("KIROCREW_CHANNEL_ID") or None
+            caller_channel = _default_delivery_channel() or None
             resolved_channel = (channel_arg or "").strip() or None
             if caller_channel and resolved_channel == caller_channel:
                 thread = _caller_thread_id()
@@ -2826,10 +2826,29 @@ def _caller_channel_id() -> str:
     delivery channel to nothing. The caller block carries ``channelId`` alongside
     the session key -- same envelope, same trust, already stripped-and-reinjected
     by gatewayd -- so it is the source that stays correct when pooled. The env var
-    remains the fallback for a non-gateway launch.
+    is read only by :func:`_default_delivery_channel`, and only for a call that
+    did not come through gatewayd.
     """
     ctx = current_caller()
     return ctx.channel_id if ctx is not None else ""
+
+
+def _default_delivery_channel() -> str:
+    """The channel a ``cron_add`` with no ``channel`` defaults to, or ``""``.
+
+    A call gatewayd forwarded (``from_gateway``) answers from its caller block
+    alone. Its backend was spawned from gatewayd's environment and may serve many
+    sessions, so ``KIROCREW_CHANNEL_ID`` there names no caller: reading it would
+    deliver one session's job to whatever channel that variable holds. A caller
+    whose block names no channel (a dashboard tab) gets no default.
+
+    Only a per-session launch, where the process environment belongs to the one
+    session it serves, falls back to ``KIROCREW_CHANNEL_ID``.
+    """
+    ctx = current_caller()
+    if ctx is not None and ctx.from_gateway:
+        return ctx.channel_id
+    return _caller_channel_id() or os.environ.get("KIROCREW_CHANNEL_ID", "")
 
 
 def _caller_thread_id() -> str:
@@ -3399,7 +3418,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         channel = (args.get("channel") or "").strip() or None
         caller_channel = _caller_channel_id() or None
         if channel is None:
-            channel = caller_channel or os.environ.get("KIROCREW_CHANNEL_ID") or None
+            channel = _default_delivery_channel() or None
         if not every and not cron_expr and not at_ts:
             return "Error: provide every, cron_expr, at, delay, or at_time"
         # Validate model BEFORE add_job so an invalid value never leaves an

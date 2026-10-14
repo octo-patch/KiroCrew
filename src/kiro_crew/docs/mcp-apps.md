@@ -48,8 +48,8 @@ For scripted or headless setups:
 }
 ```
 
-`stub_servers` is empty by default, so an untouched config renders no apps and runs no broker. Routing a server is the opt-in, and a name listed here still needs its launch approved in MCP Management before it is wrapped.
-Backend sharing is a separate, opt-in decision:
+`stub_servers` defaults to Kiro Crew's own managed servers only, so an untouched config renders no third-party apps. Routing another server is the opt-in, and a name listed here still needs its launch approved in MCP Management before it is wrapped. Writing your own `stub_servers` replaces that default list; keep the managed names in it, or turn one off with `stub_overrides` instead.
+Backend sharing is a separate decision, on by default (`mcp_gateway.enabled`):
 
 ```json
 { "mcp_gateway": { "enabled": true, "stub_servers": ["excalidraw"] } }

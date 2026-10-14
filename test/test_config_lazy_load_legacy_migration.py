@@ -382,7 +382,8 @@ def test_doctor_replays_the_rewrite_with_a_restore_command():
     assert line.endswith("kirocrew config set skills.lazy_load false")
     # The skills.lazy_load registry row carries the same key and old value, so it
     # vouches for the ledger entry and lists a value a failed write left stored.
-    assert (KEY, False) in {(e.dotted_key, e.old_default) for e in SD.SUPERSEDED_DEFAULTS}
+    # A list, not a set: a row's old value may be a list (``mcp_gateway.stub_servers``).
+    assert (KEY, False) in [(e.dotted_key, e.old_default) for e in SD.SUPERSEDED_DEFAULTS]
     assert SD.LEGACY_LAZY_LOAD_ADOPTION == (KEY, False)
     assert "still listed as drift" in line
     assert "no registered default explains" in SD.adoption_summary(KEY, True)

@@ -617,7 +617,7 @@ member-memory sandbox is required.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `mcp_gateway.enabled` | Share one MCP backend process between sessions with identical server configuration. Opt-in; when false each session owns its backend | `false` |
+| `mcp_gateway.enabled` | Share one MCP backend process between sessions with identical server configuration. When false each stubbed server still has a stub but each session owns its backend | `true` |
 
 ### Session summaries
 

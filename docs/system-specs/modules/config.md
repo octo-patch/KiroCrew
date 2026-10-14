@@ -663,6 +663,8 @@ names that test; every other report-only row gives its plain reason:
 | `watchdog.tool_stall_hard_cap_secs` | 3600.0 -> 7200.0, #8949 | reports | a tuning knob; holding it caps the same forbearance at an hour, with the same cost. Coupled with the suspect window (`note`): adopting either one alone leaves the window at an hour |
 | `watchdog.model_silent_probe_secs` | 900.0 -> 1800.0, #8949 | reports | a tuning knob; holding it probes a long silent think sooner, which regenerates it |
 | `agent.session_start_concurrency` | 2 -> "auto", #17055 | reports | the knob to lower when the host or provider is the bottleneck; holding 2 only serialises a burst of starts |
+| `mcp_gateway.stub_servers` | [] -> the ten managed servers, #19611 | reports | `test_an_empty_roster_is_the_full_opt_out` |
+| `mcp_gateway.enabled` | false -> true, #19611 | reports | `test_a_stored_false_keeps_backends_private` |
 
 A row whose old value is a supported configuration is not stale noise, whatever
 its type. `test_only_unpinned_broken_budgets_adopt_themselves` pins both sets by
@@ -1572,10 +1574,11 @@ a present value the reader cannot use takes the reader's value:
   `skills.max_triggered`; and no pruning or cap for a negative
   `telemetry.retention_days` or `max_total_mb`.
 - The MCP stub-roster migration (`_resolve_stub_roster`), which reproduces the
-  stub set a legacy install was running, whatever the field defaults are. When
-  `mcp_gateway` omits `stub_servers`, it reads an omitted or non-boolean `enabled`
-  as off and the roster as empty, and with `enabled: true` an omitted
-  `poolable_servers` as an empty roster. `_resolve_stub_base` layers
+  stub set a legacy install was running. When `mcp_gateway` omits `stub_servers`
+  but holds a non-empty `poolable_servers`, it reads an omitted or non-boolean
+  `enabled` as off (the roster is then empty) whatever the field default is, and
+  with `enabled: true` the alias is the roster. With neither, the roster is the
+  `stub_servers` field default, `DEFAULT_STUB_ROSTER` (RFC #19611). `_resolve_stub_base` layers
   `MANAGED_STUB_FOLLOWERS` on top of that roster whenever `kirocrew-core` is
   stubbed; `_resolve_stub_servers` applies `stub_overrides` to that base. Neither
   the base nor the followers are ever written back to `stub_servers`.

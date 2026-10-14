@@ -41,6 +41,32 @@ from kiro_crew.instances.constants import WARM_SET_CAP_AUTO as _WARM_SET_CAP_AUT
 logger = logging.getLogger("kiro_crew.config.loader")
 
 
+#: The roster a default install ships: every one of Kiro Crew's own managed
+#: servers (Phase 1 of docs/request-for-change/rfc-python-rust-hybrid-backend.md).
+#: Each is launched from Kiro Crew's own install,
+#: advertises ``kirocrew.caller-identity`` and is in
+#: ``mcp_discovery._MANAGED_SERVERS_CALLER_AWARE``, so one shared backend tells
+#: its callers apart by the caller block gatewayd injects per call, never by
+#: process identity. A ratchet test pins this equal to that set.
+#:
+#: Applies only to a file that states neither ``stub_servers`` nor the deprecated
+#: ``poolable_servers``. A stored ``stub_servers`` (including ``[]``, the full
+#: opt-out) still wins, so an install that materialized the old empty default
+#: keeps its topology; ``superseded_defaults`` reports it instead.
+DEFAULT_STUB_ROSTER: tuple[str, ...] = (
+    "kirocrew-core",
+    "kirocrew-cron",
+    "kirocrew-computer",
+    "kirocrew-dashboard",
+    "kirocrew-work",
+    "kirocrew-crew-log",
+    "kirocrew-debug",
+    "kirocrew-panel",
+    "kirocrew-guide",
+    "kirocrew-mate",
+)
+
+
 def _resolve_stub_roster(mcp_gateway_data: dict) -> list[str]:
     """The stub set as CONFIGURED, before the operator's own deviations.
 
@@ -63,16 +89,24 @@ def _resolve_stub_roster(mcp_gateway_data: dict) -> list[str]:
     per-server decision, the broker was gated on ``enabled`` alone, so a config
     with ``enabled: false`` produced no broker, no overlay and no stub no matter
     what ``poolable_servers`` held. Migrating that list unconditionally would
-    hand such an install a daemon and a stub process per server on upgrade —
-    inventing the very topology change this design exists to make optional. An
-    operator whose gateway was off keeps nothing running and opts in per server.
+    hand such an install a daemon and a stub process per server on upgrade. A
+    legacy file whose gateway was off keeps nothing running and opts in per
+    server. ``enabled`` is read here with its OLD default (False), because that is
+    what such a file meant when it was written.
+
+    A file with no ``stub_servers`` and no legacy entries never chose a stub set,
+    so it gets the field default, :data:`DEFAULT_STUB_ROSTER`. An empty
+    ``poolable_servers`` names nothing to migrate: every file saved since the
+    alias was deprecated materializes it as ``[]``, and an adopted
+    ``stub_servers`` row (``superseded_defaults``) leaves it behind.
     """
     if "stub_servers" in mcp_gateway_data:
         source = mcp_gateway_data.get("stub_servers")
-    elif _safe_bool(mcp_gateway_data.get("enabled", False), False):
-        source = mcp_gateway_data.get("poolable_servers")
+    elif _safe_list(mcp_gateway_data.get("poolable_servers")):
+        legacy_on = _safe_bool(mcp_gateway_data.get("enabled", False), False)
+        source = mcp_gateway_data.get("poolable_servers") if legacy_on else None
     else:
-        source = None
+        source = field_default(McpGatewayConfig, "stub_servers")
     return [s for s in _safe_list(source) if isinstance(s, str) and s]
 
 
@@ -399,17 +433,17 @@ class McpGatewayConfig:
     """Sidecar MCP broker daemon — shares MCP backends across sessions."""
 
     enabled: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Share MCP Backends",
             "Let sessions with an identical server configuration share one MCP "
-            "server process instead of each getting its own. Off, every session "
-            "gets its own backend — the same process topology as running without "
-            "the broker. This switch does not start the broker: the broker starts "
-            "iff some server is stubbed, and this chooses whether stubbed servers "
-            "share one backend or get one per session; see "
+            "server process instead of each getting its own. Off, every stubbed "
+            "server still gets a stub, but each session gets its own backend. This "
+            "switch does not start the broker: the broker starts iff some server is "
+            "stubbed, and this chooses whether stubbed servers share one backend or "
+            "get one per session; see "
             "docs/architecture/design-notes/mcp-stub-decoupling.md. "
-            "Default False — opt-in.",
+            "Default True.",
         ),
     )
     apps_enabled: bool = field(
@@ -606,15 +640,15 @@ class McpGatewayConfig:
         ),
     )
     stub_servers: list[str] = field(
-        default_factory=list,
+        default_factory=lambda: list(DEFAULT_STUB_ROSTER),
         metadata=_meta(
             "Routed Servers",
             "MCP server names given a stub. The stub interposes a "
             "stub, which is what makes server-authored UI (MCP Apps) and backend "
             "sharing possible for that server — so it is the one per-server "
-            "decision. Empty by default: an unstubbed server is launched by the "
-            "session itself, the same process topology as running without the "
-            "broker, and an empty list means no broker runs at all. Whether "
+            "decision. Defaults to Kiro Crew's ten managed servers. An unstubbed "
+            "server is launched by the session itself, and an empty list means "
+            "no stub and no broker at all. Whether "
             "stubbed servers SHARE one backend is the separate global switch "
             "(mcp_gateway.enabled). Managed from MCP Management.",
             restart=True,
@@ -668,7 +702,7 @@ class McpGatewayConfig:
     #: private fields (same convention as ``_degraded_sections``); consumers read
     #: the :attr:`stub_roster` property.
     _stub_roster: list[str] = field(
-        default_factory=list,
+        default_factory=lambda: list(DEFAULT_STUB_ROSTER),
         repr=False,
         compare=False,
     )

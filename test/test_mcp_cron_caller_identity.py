@@ -677,3 +677,39 @@ def test_dashboard_session_may_schedule_for_another_crew() -> None:
     )
 
     assert "Added job" in result
+
+
+# --- the delivery-channel default ---------------------------------------------
+
+
+def test_a_gateway_caller_never_defaults_to_the_process_channel(monkeypatch) -> None:
+    """A forwarded call's backend env belongs to gatewayd, not to the caller.
+
+    Both ``cron_add`` sites: the direct store write here, and the forward in
+    ``_call_tool`` (covered end to end by test_mcp_pooled_cross_session_isolation).
+    """
+    monkeypatch.setenv("KIROCREW_CHANNEL_ID", "C-GATEWAYD-ENV")
+    set_current_caller(
+        CallerContext(session_key="dashboard:tab-a", session_type="dashboard", from_gateway=True)
+    )
+    assert mcp_cron._default_delivery_channel() == ""
+    job_id = _add_job("no-channel")
+    assert CronService().get_job(job_id).channel is None
+
+    set_current_caller(
+        CallerContext(
+            session_key="dashboard:tab-b",
+            session_type="dashboard",
+            channel_id="C-OWN",
+            from_gateway=True,
+        )
+    )
+    assert mcp_cron._default_delivery_channel() == "C-OWN"
+
+
+def test_a_per_session_launch_keeps_its_own_channel(monkeypatch) -> None:
+    """Without gatewayd the environment belongs to the one session it serves."""
+    monkeypatch.setenv("KIROCREW_CHANNEL_ID", "C-SESSION")
+    assert mcp_cron._default_delivery_channel() == "C-SESSION"
+    set_current_caller(CallerContext(session_key="dashboard:tab-a", from_gateway=False))
+    assert mcp_cron._default_delivery_channel() == "C-SESSION"

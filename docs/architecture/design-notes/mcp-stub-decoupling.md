@@ -1,14 +1,17 @@
 # Decoupling the MCP stub from the pooling allowlist
 
-The stub roster is **opt-in per server**: `mcp_gateway.stub_servers` is empty by
-default, so a default install runs no stub, no daemon and no gateway in the request
-path. What this note records is why *whether a stub exists* is a separate question
+The stub roster is **per server**. Since RFC #19611 Phase 1, `mcp_gateway.stub_servers`
+defaults to Kiro Crew's ten managed servers (`DEFAULT_STUB_ROSTER`) and
+`mcp_gateway.enabled` to true, so a default install shares those backends; every
+other server stays opt-in. A stored `stub_servers: []` runs no stub, no daemon and no
+gateway in the request path. What this note records is why *whether a stub exists* is a separate question
 from *whether the backend is shared*, and why a connection-private backend sits
 outside the pooling budget.
 
 ## The config surface
 
-- **`mcp_gateway.stub_servers`** — the stub ROSTER, empty by default. Routing is what
+- **`mcp_gateway.stub_servers`** — the stub ROSTER, the ten managed servers by default
+  (a file that omits the key gets them; a stored `[]` is the full opt-out). Routing is what
   interposes a stub, so this is the per-server decision and the only thing that can
   grant MCP Apps for that server. It is a layer an edition can own: a distribution
   that wants its known servers stubbed out of the box ships them here and keeps

@@ -4712,18 +4712,16 @@ class GatewayOrchestrator:
             def _cron_extra_env() -> dict[str, str] | None:
                 """job.env plus KIROCREW_APPROVAL_MODE when the job runs auto.
 
-                SubagentManager.spawn's own auto-approve fallback for a cron's
+                SubagentManager.spawn's own auto-approve route for a cron's
                 spawn_run subagents (parent_trusted, i.e.
                 sessions.get_approval_policy(parent_session_key)=="auto")
                 depends on parent_session resolving back to this cron's session
-                key -- an identity-plumbing path that can fail silently and
-                leave the spawn stuck on the interactive approval path a cron
-                has no responder for. Injecting the mode directly as an env var
-                the spawned kiro-cli process inherits (mirroring
-                KIROCREW_SESSION_KEY/KIROCREW_CHANNEL_ID) lets the spawn_run MCP
-                tool (mcp_core.py) read and forward its own approval_mode
-                explicitly, independent of whether parent_session resolution
-                succeeds.
+                key. A pooled backend resolves it from the gateway's caller
+                block, so it does. A per-session MCP server resolves it
+                leniently and can miss, so the mode is also injected here as an
+                env var the spawned kiro-cli process inherits (mirroring
+                KIROCREW_SESSION_KEY/KIROCREW_CHANNEL_ID), and the spawn_run
+                tool forwards it on that topology only.
 
                 KIROCREW_APPROVAL_MODE is a RESERVED control var: it is stripped
                 from the app/user-controlled ``job.env`` on every path and only

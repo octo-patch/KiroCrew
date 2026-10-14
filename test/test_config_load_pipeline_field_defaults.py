@@ -727,7 +727,7 @@ def _move_cases() -> list:
         _case(
             "mcp_gateway.stub_overrides-omitted",
             [(sections.McpGatewayConfig, "stub_overrides", {"extra": True})],
-            {"mcp_gateway": {}},
+            {"mcp_gateway": {"stub_servers": []}},
             lambda c: (c.mcp_gateway.stub_overrides, c.mcp_gateway.stub_servers),
             ({"extra": True}, ["extra"]),
         ),
@@ -867,13 +867,16 @@ def _own_value_cases() -> list:
 def _stub_roster_migration_cases() -> list:
     """The stub roster a legacy ``mcp_gateway`` section migrates to, moved defaults or not.
 
-    ``_resolve_stub_roster`` reproduces the stub set that install was already running,
-    so with ``stub_servers`` absent an omitted ``enabled`` reads off, and an omitted
-    ``poolable_servers`` an empty roster, whatever the fields declare. Each case reads
-    the effective set and the configured roster.
+    ``_resolve_stub_roster`` reproduces the stub set a legacy ``poolable_servers``
+    install was already running, so there an omitted ``enabled`` reads off whatever
+    the field declares. A section stating neither roster key reads the
+    ``stub_servers`` field default. Each case reads the effective set and the
+    configured roster.
     """
     gateway = sections.McpGatewayConfig
-    moves = [(gateway, "enabled", True), (gateway, "stub_servers", ["moved"])]
+    # ``enabled`` already defaults True, so the legacy cases below prove an omitted
+    # ``enabled`` still reads off there without moving it.
+    moves = [(gateway, "stub_servers", ["moved"])]
 
     def roster(c: loader.KiroCrewConfig) -> tuple[list[str], list[str]]:
         return c.mcp_gateway.stub_servers, c.mcp_gateway.stub_roster
@@ -909,10 +912,10 @@ def _stub_roster_migration_cases() -> list:
         ),
         _case(
             "mcp_gateway.stub-roster-poolable_servers-omitted",
-            [*moves, (gateway, "poolable_servers", ["moved"])],
+            [*moves, (gateway, "poolable_servers", ["moved-alias"])],
             {"mcp_gateway": {"enabled": True}},
             roster,
-            ([], []),
+            (["moved"], ["moved"]),
         ),
     ]
 

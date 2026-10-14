@@ -87,8 +87,10 @@ class TestResolver:
             {"enabled": True, "stub_servers": ["alpha-mcp"]}
         ) == ["alpha-mcp"]
 
-    def test_a_fresh_install_stubs_nothing(self) -> None:
-        assert _resolve_stub_servers({}) == []
+    def test_a_fresh_install_stubs_the_managed_servers(self) -> None:
+        from kiro_crew.config.integration_sections import DEFAULT_STUB_ROSTER
+
+        assert _resolve_stub_servers({}) == list(DEFAULT_STUB_ROSTER)
 
     def test_junk_entries_are_dropped_rather_than_carried(self) -> None:
         assert _resolve_stub_servers(
@@ -97,7 +99,8 @@ class TestResolver:
 
     def test_a_non_list_value_is_not_trusted(self) -> None:
         assert _resolve_stub_servers({"stub_servers": "alpha-mcp"}) == []
-        assert _resolve_stub_servers({"poolable_servers": {"alpha-mcp": True}}) == []
+        # A junk alias names nothing to migrate, so the shipped roster applies.
+        assert "alpha-mcp" not in _resolve_stub_servers({"poolable_servers": {"alpha-mcp": True}})
 
 
 class TestThroughTheLoader:
@@ -132,7 +135,9 @@ class TestThroughTheLoader:
         )
         assert cfg.mcp_gateway.stub_servers == []
 
-    def test_the_shipped_default_is_empty(self, tmp_path) -> None:
+    def test_the_shipped_default_is_the_managed_roster(self, tmp_path) -> None:
         """No mcp_gateway section at all — the state of a fresh install."""
+        from kiro_crew.config.integration_sections import DEFAULT_STUB_ROSTER
+
         cfg = _load_from_dict({}, tmp_path)
-        assert cfg.mcp_gateway.stub_servers == []
+        assert cfg.mcp_gateway.stub_servers == list(DEFAULT_STUB_ROSTER)

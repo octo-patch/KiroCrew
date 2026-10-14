@@ -2524,7 +2524,7 @@ subprocess that runs **no inbound listener** — communication is outbound
 `urllib` only. The one channel that can interrupt it, `notifications/cancelled`
 on stdin, is unusable for this: it is a session-teardown signal whose response
 `_run_tool` suppresses entirely (so kiro-cli would wait out the 600s stall
-watchdog), it requires `mcp_gateway.enabled` (default **False**), it cancels
+watchdog), it requires `mcp_gateway.enabled` (which a stored `false` turns off), it cancels
 *every* in-flight request for the PID's stubs, and on Windows there is no path
 at all because `select.select()` cannot poll stdin. The keepalive round-trip was
 already running on a timer, already authenticated (`X-Internal-Secret`), and
@@ -2587,7 +2587,7 @@ is the existing primitive for this class of session-mutating tool
 (`monitor_start`, `autonudge_stop`, `set_project`): it drops the walk and accepts
 only a gateway-injected caller context, `KIROCREW_SESSION_KEY`, or an
 HMAC-verified pid sidecar. Consequence worth stating plainly: with
-`mcp_gateway.enabled` at its default of **false** and no sandbox launcher, the
+`kirocrew-core` unstubbed (an operator opt-out) and no sandbox launcher, the
 feature is absent. [#2347](https://github.com/kirodotdev/KiroCrew/issues/2347) is
 the work that supplies per-session identity and lets this gate go away.
 

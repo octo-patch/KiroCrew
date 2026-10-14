@@ -532,6 +532,27 @@ class TestSpawnRunArgumentHandling:
             _call_tool("spawn_run", {"task": "one", "solo_reason": "bulk_data"})
         assert m.call_args[0][1]["approval_mode"] == "auto"
 
+    def test_a_gateway_caller_never_inherits_the_process_approval_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A shared backend's env is gatewayd's; it grants no caller auto-approval.
+
+        A pooled cron session still auto-approves through its own session
+        policy (``parent_trusted`` in the admission gate);
+        ``test_a_pooled_spawn_names_its_caller_as_parent`` pins that the request
+        names the caller block's key as ``parent_session``.
+        """
+        from kiro_crew.mcp_caller import CallerContext, set_current_caller
+
+        monkeypatch.setenv("KIROCREW_APPROVAL_MODE", "auto")
+        set_current_caller(CallerContext(session_key="cron:job1", from_gateway=True))
+        try:
+            with patch.object(mcp_core, "_post", return_value={"id": "ag1"}) as m:
+                _call_tool("spawn_run", {"task": "one", "solo_reason": "bulk_data"})
+        finally:
+            set_current_caller(None)
+        assert "approval_mode" not in m.call_args[0][1]
+
 
 class TestSpawnLifecycleTools:
     def test_continue_forwards_optional_overrides(self):

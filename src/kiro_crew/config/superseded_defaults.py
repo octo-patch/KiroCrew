@@ -127,8 +127,8 @@ logger = logging.getLogger(__name__)
 class SupersededDefault:
     """One shipped default change that already-materialized installs never saw.
 
-    ``dotted_key`` addresses a scalar field as ``<section>.<field>`` (the only
-    shape the current entries need). ``old_default`` and ``new_default`` are the
+    ``dotted_key`` addresses a top-level field of a section as ``<section>.<field>``,
+    a scalar or a list. ``old_default`` and ``new_default`` are the
     literal values before and after the change; an install is reported as drifted
     only when its stored value equals ``old_default``. ``changed_in`` names the
     PR the change shipped in, so the report can say when the divergence started.
@@ -553,6 +553,48 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         old_default=2,
         new_default="auto",
         changed_in="#17055",
+    ),
+    # Phase 1 of rfc-python-rust-hybrid-backend.md: a default install stubs the
+    # ten managed servers and shares their backends. An install materialized
+    # before it stores ``stub_servers: []`` and ``enabled: false``, so it keeps
+    # one process per managed server per session.
+    #
+    # REPORT-ONLY, both: each stored value is a documented opt-out. ``[]`` is the
+    # full one (no stub, no broker), pinned by ``test_an_empty_roster_is_the_full_opt_out``;
+    # ``false`` keeps the stubs but gives each session its own backend, pinned by
+    # ``test_a_stored_false_keeps_backends_private``. Adopting would start a broker,
+    # or start sharing, for an operator who may have chosen not to.
+    SupersededDefault(
+        dotted_key="mcp_gateway.stub_servers",
+        old_default=[],
+        new_default=[
+            "kirocrew-core",
+            "kirocrew-cron",
+            "kirocrew-computer",
+            "kirocrew-dashboard",
+            "kirocrew-work",
+            "kirocrew-crew-log",
+            "kirocrew-debug",
+            "kirocrew-panel",
+            "kirocrew-guide",
+            "kirocrew-mate",
+        ],
+        changed_in="#19611",
+        new_default_display="Kiro Crew's ten managed servers",
+        note=(
+            "sharing also needs mcp_gateway.enabled true; an empty list is the "
+            "full opt-out, so keep it if you chose it"
+        ),
+    ),
+    SupersededDefault(
+        dotted_key="mcp_gateway.enabled",
+        old_default=False,
+        new_default=True,
+        changed_in="#19611",
+        note=(
+            "shares only the servers in mcp_gateway.stub_servers; false keeps "
+            "their stubs but gives each session its own backend"
+        ),
     ),
 )
 

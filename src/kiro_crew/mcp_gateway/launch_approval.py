@@ -846,8 +846,10 @@ def _write(path: Path, text: str) -> None:
     # Deferred: ``atomic_write`` pulls in platform helpers this leaf does not
     # need at import time.
     from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.owner_only_files import mkdirs_owner_only
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Born owner-only: the default roster makes every fresh boot write this store.
+    mkdirs_owner_only(path.parent)
     atomic_write(path, text, mode=0o600)
 
 
