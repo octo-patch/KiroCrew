@@ -2019,6 +2019,55 @@ class TestSshTunnelArgvCompression:
         assert captured["compression"] is True
 
 
+class TestTunnelStatusCarriesTheDialIdentity:
+    """The status surfaces the identity the tunnel was ACTUALLY dialled with.
+
+    A credential path binds to this (not to the agent-writable registry row), so
+    the fields have to name the node and account the open port reaches and must
+    not change for the life of the tunnel.
+    """
+
+    def test_an_ssm_tunnel_surfaces_its_node_and_account(self):
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        tun = _SshTunnel(
+            "ssm-1",
+            "",
+            53410,
+            7879,
+            transport="ssm",
+            ssm_target="mi-0a1b2c3d4e5f67890",
+            aws_profile="prof",
+            aws_region="us-east-1",
+        )
+        d = tun.status.to_dict()
+        assert d["transport"] == "ssm"
+        assert d["ssm_target"] == "mi-0a1b2c3d4e5f67890"
+        assert d["aws_profile"] == "prof"
+        assert d["aws_region"] == "us-east-1"
+
+    def test_an_ssh_tunnel_carries_no_ssm_coordinates(self):
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        # Even if an SSH forward is handed SSM-shaped values, the status reports
+        # none, so a record requiring an SSM node can never match an SSH tunnel.
+        tun = _SshTunnel(
+            "ssh-1",
+            "host.example",
+            53411,
+            7879,
+            transport="ssh",
+            ssm_target="mi-should-be-ignored",
+            aws_profile="prof",
+            aws_region="us-east-1",
+        )
+        d = tun.status.to_dict()
+        assert d["transport"] == "ssh"
+        assert d["ssm_target"] == ""
+        assert d["aws_profile"] == ""
+        assert d["aws_region"] == ""
+
+
 class TestSshTunnelWindowsRefusal:
     """On native Windows an ssh-tunnel spawn failure names the platform.
 

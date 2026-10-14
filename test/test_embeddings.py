@@ -2523,7 +2523,50 @@ class TestIdleEviction:
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
         emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
         assert emb.embed("warm") is not None
+        # The embed returns as soon as the loader PUBLISHES the model, but the
+        # loader thread still runs its epilogue (_start_evictor) after that.
+        # evict_if_idle refuses while a loader thread is alive, and the evictor
+        # does not exist until the epilogue ran, so join the loader before any
+        # test reads either.
+        assert emb.wait_ready(timeout=5)
+        assert emb._load_thread is not None and not emb._load_thread.is_alive()
         return emb, fake_cls, closed
+
+    def test_eviction_refuses_while_the_loader_is_still_finishing(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A first embed can return before its loader thread has exited.
+
+        The loader publishes the model, then starts the evictor. An embed that
+        waited for the cold load returns on the publish, so a caller can reach
+        evict_if_idle while the loader is still alive, and is refused. The
+        epilogue is held here so the order is fixed, not left to the scheduler.
+        """
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        epilogue = threading.Event()
+        real_start_evictor = emb._start_evictor
+
+        def _held_start_evictor() -> None:
+            assert epilogue.wait(timeout=30), "the test never released the loader"
+            real_start_evictor()
+
+        monkeypatch.setattr(emb, "_start_evictor", _held_start_evictor)
+        try:
+            assert emb.embed("warm") is not None
+            assert emb._load_thread is not None and emb._load_thread.is_alive()
+            emb._last_used -= 100
+            assert emb.evict_if_idle(50) is False  # the loader is still alive
+            assert emb.is_ready()
+            epilogue.set()
+            assert emb.wait_ready(timeout=5)
+            assert not emb._load_thread.is_alive()
+            assert emb.evict_if_idle(50) is True
+            assert not emb.is_ready()
+        finally:
+            epilogue.set()
+            emb.close()
 
     def test_evict_if_idle_unloads_and_frees_the_model(self, tmp_path: Path, monkeypatch):
         emb, fake_cls, closed = self._loaded(tmp_path, monkeypatch)

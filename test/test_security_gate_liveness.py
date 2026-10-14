@@ -306,7 +306,13 @@ def _url_payload_command(n: int) -> str:
 #: other caller are byte-identical, and the stream suspension still wins. Then by
 #: 4 more because only a value no earlier pass touched is deferred: a partly
 #: claimed value is still redacted per delta, gaps and all.
-_PACKAGE_LINE_BUDGET = 29_165
+#:
+#: Raised again, from 29,165, for one write-protected TARGET in ``paths.py``: the microvm
+#: lane's crew records, whose rows carry the VM id ``teardown`` hands to
+#: ``launcher.terminate``. Ten lines, of which four are the comprehension and six the
+#: reason every entry in that list carries. No matching rule, no threshold and no pass
+#: moved -- a target was added to a list the gate already walks.
+_PACKAGE_LINE_BUDGET = 29_175
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

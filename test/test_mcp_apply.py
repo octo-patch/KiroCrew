@@ -11,6 +11,7 @@ from body_stream_helpers import attach_body
 from dashboard_owner_helpers import owner_claims
 
 from kiro_crew.platform.interfaces import McpScope
+from kiro_crew.testing.wait import await_until
 
 
 class _NoSyncLock:
@@ -1353,7 +1354,7 @@ class TestUninstallCrashWindowCleanup:
         # position, and it reports the PRECONDITION in those words so a failure
         # here is never read as a missing purge.
         try:
-            await _asyncio.wait_for(done_confirmed.wait(), timeout=10)
+            await await_until(done_confirmed, what="done confirmed before phase 1 exit")
         except _asyncio.TimeoutError:  # pragma: no cover - guard
             task.cancel()
             pytest.fail("Phase 1 never confirmed 'done': the interleaving under test did not occur")

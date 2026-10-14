@@ -747,6 +747,18 @@ class TunnelStatus:
     # Fargate only: the local URL of the crew's turn API, what the card shows in
     # place of a dashboard. Empty for the dashboard-bearing methods.
     turn_url: str = ""
+    # The identity the tunnel was ACTUALLY dialled with, carried so a caller can
+    # bind a credential to the live transport rather than to a registry row that
+    # was editable after the forward was built. ``transport`` is the dialled
+    # ``connection_method`` ("ssh"/"ssm"); ``ssm_target``/``aws_profile``/
+    # ``aws_region`` are the SSM coordinates the child was spawned on (empty for
+    # an SSH forward). These never change for the life of a tunnel: a row edited
+    # after connect does not rebuild the child, so these keep naming the node and
+    # account the port actually reaches.
+    transport: str = ""
+    ssm_target: str = ""
+    aws_profile: str = ""
+    aws_region: str = ""
 
     def to_dict(self) -> dict:
         d: dict[str, object] = {
@@ -756,6 +768,13 @@ class TunnelStatus:
             "remote_port": self.remote_port,
             "error": self.error,
             "connected_at": self.connected_at,
+            # The dialled identity, always present so a reader never has to tell
+            # "not an ssm tunnel" apart from "field absent". Empty strings on an
+            # SSH forward, which is exactly what a mismatch check wants to see.
+            "transport": self.transport,
+            "ssm_target": self.ssm_target,
+            "aws_profile": self.aws_profile,
+            "aws_region": self.aws_region,
         }
         if self.diagnosis is not None:
             d["diagnosis"] = self.diagnosis
@@ -912,6 +931,14 @@ class _SshTunnel:
             instance_id=instance_id,
             local_port=local_port,
             remote_port=remote_port,
+            # The identity the child is dialled with, frozen here at construction.
+            # A later edit to the registry row does not reach this object, so a
+            # caller comparing against it sees the node and account the port
+            # actually reaches. SSM coordinates are empty on an SSH forward.
+            transport=transport,
+            ssm_target=ssm_target if transport == "ssm" else "",
+            aws_profile=aws_profile if transport == "ssm" else "",
+            aws_region=aws_region if transport == "ssm" else "",
         )
 
     @property

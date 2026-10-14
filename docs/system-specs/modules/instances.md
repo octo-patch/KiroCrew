@@ -60,8 +60,8 @@ mint, diagnostics, injection validation, run-marker, shared constants
 
 A Kiro Crew gateway normally binds the dashboard to loopback only. The Instances
 feature lets the hub reach *other* gateways running on remote hosts by opening an
-SSH `-L` forward to each remote's loopback dashboard port, minting (for the `ssh`
-and `ssm` methods; the `fargate` method mints nothing, §16) a short-lived
+SSH `-L` forward to each remote's loopback dashboard port, minting (for a crew
+that runs a gateway; a headless crew mints nothing, §16) a short-lived
 dashboard token on the remote, and embedding the remote dashboard in an
 `<iframe>`. You switch panes from a dropdown (`InstanceTabBar`, plus
 Cmd/Ctrl+digit in the Electron shell); the hub keeps the most-recently-used set
@@ -156,7 +156,7 @@ Module responsibilities:
 | `ssm_token_mint.py` | The SSM sibling of `token_mint.py`: runs the same subcommand via `aws ssm send-command` through the launcher's `cloud.ssm` chokepoint, reusing the shared remote-command builders. Token in memory only, **never logged**. See §13. |
 | `validation.py` | The authoritative injection-safe guard on `ssh_host` / `remote_bin`, and on `ssm_target` / `aws_profile` / `aws_region` / `ssm_run_as`, applied immediately before any command line is built. See §11. |
 | `run_marker.py` | Records the running gateway's own `kirocrew` launcher (and pid) keyed by port, so a remote mint execs the same venv the live gateway runs from. Also backs zero-config client port discovery. See §12. |
-| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two forwarder shapes; the `fargate` method shares the SSM forwarder and mints nothing (§16). An SSM child's stdout is captured and drained alongside stderr, because the close notice that names why a forward ended is printed there. |
+| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two forwarder shapes; the `fargate` method shares the SSM forwarder, and a headless crew mints nothing whatever its method (§16). An SSM child's stdout is captured and drained alongside stderr, because the close notice that names why a forward ended is printed there. |
 | `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder), `diagnose_instance_ssm` (SSM ladder) and `diagnose_instance_fargate` (ECS task ladder, §16). |
 | `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane. |
 
@@ -209,8 +209,8 @@ strip.
 1. **Connect.** `POST /api/instances/{id}/connect` validates the ssh inputs,
    allocates a free local forward port, starts
    `ssh -N -L`, waits until the local forward accepts a TCP connection, mints a
-   dashboard token on the remote over SSH (for the `ssh` and `ssm` methods; a
-   `fargate` connect mints nothing, §16), and returns the live status plus the
+   dashboard token on the remote over SSH (for a crew that runs a gateway; a
+   headless crew's connect mints nothing, §16), and returns the live status plus the
    token. Connect is **idempotent**: an already-connected instance returns its
    current status, and the handler then *probes* the stored token before handing
    it over (see below). Two opt-in query flags bend that in opposite directions,
@@ -285,11 +285,12 @@ strip.
    response within `DEFAULT_PROBE_HEALTH_TIMEOUT_SECS` (4s). Any status line
    counts as alive — a status code proves bytes traversed to the far end and
    back — so the code itself is not inspected. The path is the far end's: a
-   gateway forward answers `/api/health` credential-free, and a fargate crew's
-   container answers `FARGATE_HEALTH_PATH` (`/health`); the probe picks the
-   fargate path when `turn_url` is set. It matters that the path is the far
-   end's own liveness route rather than a fixed one, because the fargate
-   container authorises before it routes and would emit a `control` deny record
+   gateway forward answers `/api/health` credential-free, and a headless crew's
+   front answers `FARGATE_HEALTH_PATH` (`/health`); the probe picks the
+   headless path when `turn_url` is set, which it is for every headless crew
+   (§16). It matters that the path is the far end's own liveness route rather
+   than a fixed one, because the headless front authorises before it routes and
+   would emit a `control` deny record
    for every probe aimed at a path it does not serve. Only a timeout or
    connection error (no response) fails a probe; after `probe_failure_threshold`
    (3) *consecutive* failures the child is terminated so recovery fires. A
@@ -647,6 +648,7 @@ with `403 owner_only`, and rejects a disabled feature with `403`. Every call, su
 | `GET /api/instances/versions` | Every CONNECTED crew's version beside this gateway's: `{local_version, instances: [{id, name, version, behind, updatable, error}]}`. One `/api/version` read per connected crew through `SshTunnelManager.peer_capability` (the closed path set capabilities uses), run concurrently. `behind` is `_remote_is_behind(local, peer)`: strictly older by the update checker's own pre-release-aware ordering (`_is_newer`), so `0.9.0rc3` is behind `0.9.0`; an empty or unparseable version is never behind. A crew that does not answer reports `version: ""` and its read failure in `error` (the carrier's code, e.g. `capability_unreachable`), which the row and the post-update offer report. `updatable` is false for a chained, fargate or headless crew (`_can_run_remote_commands`, the display side of the manager's refusals), so the dashboard offers Update only where the gateway would run it. The capabilities reply carries the same `behind` beside `version_match`, which the crew-window header reads. Strings cross `_cap_str` (redact + clamp). Owner-only: `_guard` plus an explicit `is_owner_dashboard_request`. |
 | `POST /api/instances/{id}/update` | The explicit "Update remote" action. Starts a background job (`SshTunnelManager.start_remote_update`) that runs the fixed literal `kirocrew update` on the remote through `_run_remote_subcommand` -- the same SSH / SSM runner `restart` uses, resolved through the same run-marker launcher -- with a `REMOTE_UPDATE_TIMEOUT_SECS` (600s) budget and a redacted stdout tail on failure, then `kirocrew restart` only when the update exits 0. A zero exit does not prove an install (`kirocrew update` also exits 0 when it is already current or managed elsewhere, and the running gateway reports a new version only after its restart), so the job then reads the crew's own `/api/version` through `peer_capability` until it differs from the version read before the update, for up to `REMOTE_UPDATE_VERIFY_SECS` (180s, every 5s): a different version is `succeeded`, the same one `unchanged`, no answer `unverified`. Peer version strings are kept only when version-shaped (`clean_version`) and unchanged by the credential redactor. The request takes no body and nothing from it reaches the command. Refused before anything runs, by the gate `restart` shares (`_remote_command_target`): `404 not_found`, `400 invalid_transport`, `409 chained`, `409 headless` (fargate or a headless provisioner), and `409 already_running` while this crew's job runs. Answers `202 {ok, job}`. The remote's own update policy provider, install layout and updater decide what `update` does; an expired transport credential surfaces as the runner's own error. Owner-only: `_guard` plus an explicit `is_owner_dashboard_request`, so an app token is refused. Nothing schedules it: it runs only on this request. |
 | `GET /api/instances/{id}/update` | The latest update job for this crew (`instances/remote_update.py`): `{job: {state: running/succeeded/unchanged/unverified/failed, phase: updating/restarting/verifying/done, started_at, finished_at, elapsed_secs, error, version_before, version_after}}`, or `{job: null}` when none ran since the gateway started. A failed job keeps the phase it failed in and a redacted, clamped error tail; an exception in the job body records only its type name. The job outlives the crew's restart and reconnect, so the dashboard reads the outcome here, not from the tunnel state. Gateway shutdown cancels a running job. Same owner gate as the POST, and every allowed read is audited. |
+| `POST /api/instances/{id}/crew-turn` | One chat turn against a CONNECTED headless crew on the MicroVM lane (`src/kiro_crew/dashboard/handlers_crew_turn.py`). Body `{"thread", "message", "stream"}`: `thread` is the crew's slot id, so the same id continues one conversation for as long as the VM holds its transcript; `stream` defaults to `true`. Owner-only, like the proxy: it runs with the owner's AWS credentials and sends the crew's control secret. Only `TURN_LANE` (`microvm`) is served; any other lane, Fargate included, is refused `409 crew_lane_not_served` BEFORE any secret is read, and its crew stays reachable at the turn URL its card shows. The gateway resolves the target from the live status's `turn_url` (`409 crew_not_connected` when there is none), reads the per-crew control secret named by the lane's crew record through the AWS CLI off the event loop (`503 crew_secret_unavailable` when the reference is unrecorded or unreadable), addresses the turn to the crew name the deployment serves rather than the instance's display name (`503 crew_name_unavailable`), and sends the secret in the control header. The reply passes the peer redactor on the way out: a non-streamed body that cannot be redacted is refused `502 crew_reply_unredactable`, and a streamed reply is reassembled into whole SSE events, each redacted before it is relayed, with an event too large to scrub ending the stream. An unreachable crew answers `502 crew_unreachable`. Request validation answers `400 bad_request`, `413 message_too_large`, `404 instance_unknown` and `503 instances_unavailable`. |
 | `GET /api/instances/{id}/capabilities` | What a CONNECTED peer can do, read by New chat on crew and the crew window: `version` (+ `local_version` and `version_match`, which is `versions_compatible(local, peer)`: same major.minor, exact string equality for a non-semver build id, false for an empty peer version), `agents` + `default_agent`, `models`, `effort_levels`, `workspaces` + `default_workspace`. Aggregates five fixed peer reads (`/api/version`, `/api/agents`, `/api/models`, `/api/effort-levels`, `/api/workspaces`) through `SshTunnelManager.peer_capability` — a closed path set, deliberately NOT the prefix-fenced proxy below, which would have granted the peer's mutating `PUT /api/agents/{name}` in the same stroke. The reads fan out concurrently, each under `DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS` (8s) except `/api/models`, which gets `DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS` (20s): the model list is the one read whose COLD path runs bounded subprocess work on the peer (up to 5s sandbox-backend detection + up to 10s `kiro-cli chat --list-models` + up to 3s entitlement revalidation, ~18s worst case — the named production bounds `_SANDBOX_BACKEND_PROBE_TIMEOUT_SECS`, `_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS` and `_READ_PATH_PROBE_DEADLINE_SECS`), so an 8s budget would kill every cold read and report a healthy peer as `capability_unreachable`. One failed read does not fail the request: the reply is a PARTIAL document with the miss named per-field in `unavailable` (`capability_unreachable`, `capability_unauthorized`, `capability_peer_too_old`, `capability_peer_revalidating`, …), so the frontend disables exactly that control. A peer whose `/api/models` answers its deliberate `503 model_list_revalidating` (an entitlement revalidation in flight) maps to `capability_peer_revalidating`; any other non-2xx is `capability_peer_refused`. The dashboard reads it in two places: New chat on crew (`chat-sidebar/create.ts`) refuses to create a session on a peer whose `version_match` is false, and the crew window (`CrewChatWindow`) re-reads it every 5s until `version_match` is true, so a reconnect unlocks the window; the window's model picker (`useCrewWindowModelPicker`) marks the model list failed when `unavailable.models` is set rather than showing an empty list. Replies are untrusted input: every string crosses the redact + clamp chain (`_cap_str` / `_cap_rows`, row cap 500) before reaching a picker. Owner-only, like the proxy and the federated search. |
 | `GET /api/instances/{id}/approval-state` | A CONNECTED peer's machine-wide YOLO flag, for the crew window's approval-mode picker: `yolo` (bool; `null` when the read failed or carried no boolean). Reads the peer's `/api/status` through the same closed `SshTunnelManager.peer_capability` carrier and forwards that one field and nothing else. A route of its own so the window's 30 s poll reads one peer endpoint, not the roster. A failed or raising read answers 200 with `yolo: null`. Owner-only, like the capability read. |
 | `GET /api/instances/{id}/chat-slots` | A CONNECTED peer's live sessions for the merged Sessions sidebar (`read_peer_slots`). Read-only. Each row is re-shaped to an allowlist of fields (`_clean_peer_slot`), a `parent` citation keeps only its string `slot` and `key` halves (`_clean_peer_parent`), and the server stamps each keyed row's `row_identity` as `<instance_id>:<key>`. Every peer row is listed, including the peer's own row for a local relay archive's chat; the archive projects its own local key, so the two never share a sidebar identity. See the feature map's merged-sessions row. |
@@ -2699,6 +2701,23 @@ stock dashboard port, so a `fargate` record sets it.
 `registry.SSM_TRANSPORT_METHODS` is `{"ssm", "fargate"}`: the two methods whose
 forwarder is `aws ssm start-session` and which share the `ssm_target` /
 `aws_profile` / `aws_region` coordinates.
+
+**Headless crews on other methods.** "No dashboard" is a property of the CREW,
+not of the `fargate` method. `registry.HEADLESS_CREW_PROVISIONERS` is
+`{"aws_fargate", "microvm"}`, and `registry.is_headless_provisioner(provisioner_id)`
+is the one judge of it. A MicroVM crew (`provisioner_id = "microvm"`, see
+[cloud.md](cloud.md)) is reached over the plain `ssm` method, aimed at the
+guest's `mi-` managed-node id, yet it runs the same headless front as a Fargate
+task. So every rule below that this section states for `fargate` is keyed on
+`method == "fargate" or is_headless_provisioner(...)` in the code, and holds for
+a headless crew on any method: `_TransportParams.headless` carries the answer to
+the sites that have no instance row in scope; `_mint_for`, `connect()`'s mint
+step and `restart_remote` refuse or skip; `turn_url()` is set, so the health
+probe aims at `FARGATE_HEALTH_PATH` (`/health`) and the pane reads the turn URL
+from the status. One difference: the MicroVM front runs the strict posture,
+which requires the per-crew secret on `/health` too, so a probe that sends no
+secret is answered `403` (alive, because any status line counts) and the front
+records a `control` deny for it.
 
 ### 16.1 Registry (`src/kiro_crew/instances/registry.py`)
 

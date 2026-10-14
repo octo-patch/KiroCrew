@@ -125,6 +125,11 @@ recursive-include src/kiro_crew/_vendor/llama_cpp_libs *
 # build from a checkout does.
 recursive-include src/kiro_crew/apps/builtins/aws_control/crew/runtime Dockerfile*
 recursive-include src/kiro_crew/apps/builtins/aws_control/crew/runtime .dockerignore
+# The guest's SSM agent configuration. Two settings in it are load-bearing
+# (the hybrid-activation identity pin and credential sharing), it is read FROM
+# DISK when the MicroVM recipe is assembled, and its suffix is matched by no
+# other rule here.
+recursive-include src/kiro_crew/apps/builtins/aws_control/crew/runtime microvm-ssm-agent.json
 recursive-include src/kiro_crew/apps/builtins/aws_control/crew/runtime/container *
 # The placeholder ONLY, so the directory exists in an installed copy. Named rather
 # than globbed because a wheel is STAGED into this directory to build a MicroVM

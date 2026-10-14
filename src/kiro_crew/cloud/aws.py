@@ -236,6 +236,7 @@ def run_aws(
     *,
     timeout: int = DEFAULT_TIMEOUT,
     proc_sink: Optional[Any] = None,
+    visible_dirs: tuple[str, ...] = (),
 ) -> tuple[int, str, str]:
     """Run a single ``aws`` CLI command. Returns ``(returncode, stdout, stderr)``.
 
@@ -258,10 +259,19 @@ def run_aws(
     Chokepoint guard: refuses non-read-only calls from an agent session (see
     :func:`assert_chokepoint_allowed`), so importing this function from a Python
     snippet can't run mutations or mint tokens behind the shell denylist.
+
+    ``visible_dirs`` names gateway-owned directories under a sandbox-masked root
+    that this one child must still read (a staged secret or payload file). They
+    are passed to the sandbox as ``extra_visible_dirs``, which lifts the mask for
+    this child only.
     """
     assert_chokepoint_allowed(args)
     argv = _build_argv(args, profile, region)
-    sandboxed, cleanup = wrap_argv(argv, mode="standard")
+    # Passed only when set, so every existing call is unchanged.
+    if visible_dirs:
+        sandboxed, cleanup = wrap_argv(argv, mode="standard", extra_visible_dirs=visible_dirs)
+    else:
+        sandboxed, cleanup = wrap_argv(argv, mode="standard")
     sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling
     proc: Optional[subprocess.Popen[str]] = None
     try:
@@ -371,6 +381,7 @@ def checked(
     *,
     action: str,
     timeout: int = DEFAULT_TIMEOUT,
+    visible_dirs: tuple[str, ...] = (),
 ) -> str:
     """Run an ``aws`` call, raising :class:`AWSError` on failure.
 
@@ -378,7 +389,8 @@ def checked(
     on an authorization failure the precise denied action is attached as
     ``missing_action`` so the UI can tell the user exactly what to grant.
     """
-    rc, out, err = run_aws(args, profile, region, timeout=timeout)
+    run_extra = {"visible_dirs": visible_dirs} if visible_dirs else {}
+    rc, out, err = run_aws(args, profile, region, timeout=timeout, **run_extra)
     if rc != 0:
         missing = map_missing_action(err)
         hint = ""
@@ -403,6 +415,7 @@ def checked_json(
     *,
     action: str,
     timeout: int = DEFAULT_TIMEOUT,
+    visible_dirs: tuple[str, ...] = (),
 ) -> Any:
     """Run a ``--output json`` ``aws`` call and parse the result.
 
@@ -410,7 +423,8 @@ def checked_json(
     """
     if "--output" not in args:
         args = [*args, "--output", "json"]
-    out = checked(args, profile, region, action=action, timeout=timeout)
+    check_extra = {"visible_dirs": visible_dirs} if visible_dirs else {}
+    out = checked(args, profile, region, action=action, timeout=timeout, **check_extra)
     try:
         return json.loads(out or "null")
     except json.JSONDecodeError as exc:
