@@ -44,7 +44,7 @@ def _restart_rows(messages: list[dict]) -> list[dict]:
 
 
 def _provider_mock() -> AsyncMock:
-    # Same shape as test_dashboard_chat._provider_mock: the telemetry accessors
+    # Same shape as dashboard_chat_helpers._provider_mock: the telemetry accessors
     # the runner reads after a turn are SYNCHRONOUS on the real provider, so they
     # are pinned as MagicMock or each call hands back a never-awaited coroutine.
     client = AsyncMock()

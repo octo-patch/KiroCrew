@@ -75,7 +75,7 @@ BUDGET: dict[str, int] = {
     "test/test_crew_log_order.py": 3,
     "test/test_crew_log_previous_latch.py": 2,
     "test/test_dashboard_approval.py": 2,
-    "test/test_dashboard_chat.py": 1,
+    "test/test_dashboard_chat_token_usage.py": 1,
     "test/test_deny_audit_first.py": 1,
     "test/test_decisions_compaction_hook.py": 1,
     "test/test_discord_empty_turn.py": 1,

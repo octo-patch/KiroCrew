@@ -195,7 +195,7 @@ class TestClientToolCallEventIdentityProvenance:
 # ACP client that streams ``AcpEvent``s (``LLMEvent`` is an alias of
 # ``AcpEvent``), exercising the actual ``_pending_dir_tool`` / ``_native_tc_card``
 # gate — not a reimplementation. The harness mirrors
-# ``test_dashboard_chat.TestKiroReadinessQueueHandoff``.
+# ``test_dashboard_chat_history.TestKiroReadinessQueueHandoff``.
 
 
 def _stub_state(tmp_path):

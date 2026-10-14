@@ -1346,7 +1346,7 @@ Tests: `test/test_usage.py` (`TestReadContextTokens`,
 `test/metrics/test_cost_breakdown.py`
 (channel attribution incl. the bare dashboard slot form, no-truncation,
 prior-window deltas, band bucketing, post-compaction slope, growth
-withholding, non-finite rejection), `test/test_dashboard_chat.py` (effective
+withholding, non-finite rejection), `test/test_dashboard_chat_token_usage.py` (effective
 session source at the dashboard write site),
 `test/test_turn_duration_task_runner.py` (canonical Task Runner writes), and
 `test/metrics/test_telemetry_titles.py`
