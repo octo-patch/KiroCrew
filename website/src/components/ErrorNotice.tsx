@@ -1,7 +1,8 @@
 import type { ComponentType, ReactNode } from 'react'
+import { useSyncExternalStore } from 'react'
 import { AlertTriangle, Sparkles, X } from 'lucide-react'
 import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
-import type { ErrorReport } from '../utils/errorReport'
+import { isGatewayConnected, subscribeGatewayConnected, type ErrorReport } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 import { withOriginLink } from './withOriginLink'
@@ -44,7 +45,10 @@ export function ErrorNoticeMenuItem({
    *  and so differs from the journal entry `findReport` looks up. */
   report?: ErrorReport
 }) {
-  if (!message) return null
+  // Same gate as AskAgentButton, for the same reason: while the gateway is
+  // unreachable the hand-off delivers the error to a composer that cannot send.
+  const gatewayConnected = useSyncExternalStore(subscribeGatewayConnected, isGatewayConnected)
+  if (!message || !gatewayConnected) return null
 
   return (
     <Item

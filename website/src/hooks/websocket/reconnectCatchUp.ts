@@ -4,7 +4,8 @@
  *  others for a stated reason below. */
 import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
-import { sseConnected, fetchSlots } from '../../store/dashboardSlice'
+import { fetchSlots } from '../../store/dashboardSlice'
+import { markGatewayConnected } from './gatewayConnectivity'
 import { fetchNotifications, markBootNotificationsFetched } from '../../store/notificationsSlice'
 import { refreshSlot, warmSlotCache, clearSubagentsForSnapshot } from '../../store/chatSlice'
 import { anchorForSlot, loadLayout, sessionSlots } from '../splitLayoutStore'
@@ -30,7 +31,7 @@ export interface CatchUpContext {
 export function runFirstConnect(ws: WebSocket, ctx: CatchUpContext): void {
   const { dispatch, socket } = ctx
   socket.wasConnectedRef.current = true
-  dispatch(sseConnected())
+  markGatewayConnected(dispatch)
   ctx.seedAutomations()
   // FIRST connect only: App's mount effect already dispatched fetchSlots,
   // and the socket's open handler fires strictly after it, so repeating it
@@ -104,7 +105,7 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   // user is looking at the screen" scenario).
   socket.reconnectingRef.current = true
   buffers.dropForReconnect()
-  dispatch(sseConnected())
+  markGatewayConnected(dispatch)
   dispatch(fetchSlots()).finally(() => { socket.reconnectingRef.current = false })
   refreshServerStateAfterReconnect(queryClient)
   ctx.seedAutomations()
