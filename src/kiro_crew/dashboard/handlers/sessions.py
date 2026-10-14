@@ -4752,7 +4752,8 @@ def _spec_failure_kind(path: Path, exc: BaseException) -> str:
 
 
 def _ambiguous_spec_reason(agent_name: str, exc: AmbiguousAgentSpecError) -> str:
-    """The wire ``reason`` for two specs declaring *agent_name*: names, not paths.
+    """The wire ``reason`` for two differing specs declaring *agent_name*: names,
+    not paths.
 
     The exception's own message quotes each file's full path for the terminal
     it was written for; this text reaches the MCP client's model-visible
@@ -4765,10 +4766,10 @@ def _ambiguous_spec_reason(agent_name: str, exc: AmbiguousAgentSpecError) -> str
         return str(exc)
     names = ", ".join(repr(path.name) for path in exc.paths)
     return (
-        f"{len(exc.paths)} specs in the agents directory declare the name {agent_name!r}: "
-        f"{names}. Which one is live is undefined, so the policy for {agent_name!r} is "
-        f"unknown. Remove or rename one of them in the agents directory (~/.kiro/agents "
-        f"unless relocated); no restart needed."
+        f"{len(exc.paths)} specs in the agents directory declare the name {agent_name!r} "
+        f"with differing content: {names}. Which one is live is undefined, so the policy "
+        f"for {agent_name!r} is unknown. Remove or rename one of them in the agents "
+        f"directory (~/.kiro/agents unless relocated); no restart needed."
     )
 
 
@@ -4995,8 +4996,12 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
     not answer it with the same empty body a policy-free agent gets.
 
     Propagates :class:`kiro_crew.agent_discovery.AmbiguousAgentSpecError` when
-    two specs declare *agent_name*: that is not "no policy" either, and the
-    caller records it as a denial rather than answering it silently.
+    two specs declare *agent_name* with differing content: that is not "no
+    policy" either, and the caller records it as a denial rather than answering
+    it silently. Two IDENTICAL specs declaring the name are one policy, and the
+    scan answers it (see ``spec_by_declared_name``): a package installer that
+    flattens dependencies writes such twins, and whichever of them the session
+    runs, its policy is this one.
     """
     # The file the policy was read from, when it was a direct-filename read.
     # The declared-name scan returns a parse and not a path (see

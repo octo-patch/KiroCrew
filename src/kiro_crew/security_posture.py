@@ -1846,6 +1846,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # path carries no home directory into the log ring / /api/logs stream.
         # It is an operational log line, not an output boundary of its own.
         "dashboard/stall_enrichment.py",
+        # Gate-side log hygiene, same shape: the declared-name spec scan redacts
+        # an agent name and the spec filenames it read from the user-writable
+        # agents directory before naming them in the twin-specs WARNING in the
+        # gateway log, so a credential-shaped name never enters the log ring /
+        # /api/logs stream. The parsed spec it returns is untouched; the surfaces
+        # that emit text derived from it are the registered sinks.
+        "agent_discovery.py",
         # Capture-side, not egress: the per-session MCP report scrubs a server
         # name and a failing server's startup error as it RECORDS them, so a
         # credential never enters the accumulator at all. Deliberately earlier

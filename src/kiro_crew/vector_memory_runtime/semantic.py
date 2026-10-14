@@ -24,6 +24,7 @@ from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_v2
 from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_INTERACTIVE
 from kiro_crew.lesson_validation import order_by_request_relevance
+from kiro_crew.user_json import strict_json_equal
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
@@ -170,24 +171,13 @@ def _scoring_cosines(scoring: _SemanticScoringSet, query_embedding: list[float] 
     return sims
 
 
-def _strict_json_equal(a: object, b: object) -> bool:
-    """Type-strict equality over decoded JSON: 1 != True, 1 != 1.0.
-
-    Python's == conflates bool with int (and int with float), so a decoded
-    compare alone would treat an existing ``1`` and a submitted ``true`` as
-    unchanged and silently retain the stale value. Requiring identical types
-    errs toward "changed", which routes to an update or conflict proposal --
-    never a silent skip.
-    """
-    if type(a) is not type(b):
-        return False
-    if isinstance(a, dict):
-        assert isinstance(b, dict)
-        return a.keys() == b.keys() and all(_strict_json_equal(a[k], b[k]) for k in a)
-    if isinstance(a, list):
-        assert isinstance(b, list)
-        return len(a) == len(b) and all(map(_strict_json_equal, a, b))
-    return a == b
+#: Type-strict equality over decoded JSON: 1 != True, 1 != 1.0. The shared
+#: comparator in :mod:`kiro_crew.user_json`, bound here under the name this
+#: module always exported. A decoded compare with ``==`` alone would treat an
+#: existing ``1`` and a submitted ``true`` as unchanged and silently retain the
+#: stale value; requiring identical types errs toward "changed", which routes to
+#: an update or conflict proposal -- never a silent skip.
+_strict_json_equal = strict_json_equal
 
 
 def _json_value_equal(a: str, b: str) -> bool:
@@ -200,9 +190,10 @@ def _json_value_equal(a: str, b: str) -> bool:
     """
     if a == b:
         return True
-    # A deeply nested value can exhaust the recursion limit in the decoded
-    # compare; treating that as "changed" routes it to an update or conflict
-    # proposal rather than aborting the write, which errs on the safe side.
+    # The compare itself walks an explicit stack, but ``json.loads`` can still
+    # exhaust the recursion limit on a value nested past it; treating that as
+    # "changed" routes it to an update or conflict proposal rather than
+    # aborting the write, which errs on the safe side.
     try:
         return _strict_json_equal(json.loads(a), json.loads(b))
     except (TypeError, ValueError, RecursionError):

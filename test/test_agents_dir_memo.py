@@ -525,8 +525,8 @@ def test_kas_memoized_spec_is_a_copy(tmp_path: Path) -> None:
 def test_kas_refusals_are_re_derived_on_every_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_spec(tmp_path / f"Alpha-{AGENT}.json", {"name": AGENT})
-    _write_spec(tmp_path / f"Beta-{AGENT}.json", {"name": AGENT})
+    _write_spec(tmp_path / f"Alpha-{AGENT}.json", {"name": AGENT, "description": "alpha"})
+    _write_spec(tmp_path / f"Beta-{AGENT}.json", {"name": AGENT, "description": "beta"})
     reads = _count_spec_reads(monkeypatch)
 
     with pytest.raises(kas_agents.KasAgentTranslationError):

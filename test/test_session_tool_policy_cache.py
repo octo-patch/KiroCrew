@@ -108,6 +108,31 @@ def test_an_in_place_edit_is_seen_and_the_new_policy_is_served(
     assert reads, "an edited spec must be read again"
 
 
+def test_an_identical_twin_edited_to_differ_turns_the_memoized_policy_into_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two identical specs declaring the agent resolve to one policy, which the
+    memo keeps; an edit that makes them differ changes the directory revision,
+    so the next read scans again and refuses, and the stale policy is gone."""
+    spec = {"name": AGENT, "managedToolPolicy": {"exclude": ["shell"]}}
+    _write_spec(tmp_path / f"Alpha-{AGENT}.json", spec)
+    beta = tmp_path / f"Beta-{AGENT}.json"
+    _write_spec(beta, spec)
+    reads = _count_reads(monkeypatch)
+
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, AGENT) == {"exclude": ["shell"]}
+    reads.clear()
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, AGENT) == {"exclude": ["shell"]}
+    assert reads == [], "an unchanged pair is served from the memo"
+
+    _write_spec(beta, {"name": AGENT, "managedToolPolicy": {"exclude": ["browser"]}})
+    _bump_mtime(beta, 5)
+
+    with pytest.raises(agent_discovery.AmbiguousAgentSpecError):
+        sessions_mod._read_managed_tool_policy_sync(tmp_path, AGENT)
+    assert reads, "the edited directory must be scanned again"
+
+
 def test_a_no_policy_answer_is_cached_until_a_spec_appears(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

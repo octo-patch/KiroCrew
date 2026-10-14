@@ -46,8 +46,10 @@ from kiro_crew.dashboard.side_readonly_spec import is_readonly_spec_description
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, is_unc_shape, unc_probe_allowed
 from kiro_crew.pinned_fs import open_fenced_for_read
+from kiro_crew.platform import redact_log_via_context
 from kiro_crew.security import is_sensitive_canonical_path, is_sensitive_path
 from kiro_crew.sel import sel as _sel
+from kiro_crew.user_json import strict_json_equal
 
 logger = logging.getLogger(__name__)
 
@@ -654,12 +656,18 @@ def _probe_spec_head(path: Path) -> tuple[bytes, bool] | None:
 
 
 class AmbiguousAgentSpecError(ValueError):
-    """More than one spec in one directory declares the same ``name``.
+    """More than one spec in one directory declares the same ``name``, and they
+    differ.
 
     Which of them is live is undefined, so a resolver that picked one would
     hand the caller an agent the operator did not name, with that agent's tools
     and prompt. Every declared-name resolver refuses instead; the message names
-    each file so the operator can remove or rename one.
+    each file so the operator can remove or rename one. A reader of parsed
+    content (:func:`spec_by_declared_name`) raises this only when the
+    claimants' content differs: identical files answer the same question
+    whichever is live, so it hands back that one answer instead. A writer
+    (:func:`kiro_crew.agent.agent_spec_path`) must pick a file to write and
+    refuses the pair whatever its content.
 
     ``paths`` carries the same files as data, for a caller that must name them
     WITHOUT their directory -- the tool-policy endpoint's 409 ``reason``
@@ -706,16 +714,28 @@ def spec_by_declared_name(
     can be repointed at a sensitive file, which would then be read with no
     denial and no SEL audit entry.
 
-    Raises :class:`AmbiguousAgentSpecError` when two specs declare *agent_id*,
-    the refusal :func:`kiro_crew.agent.agent_spec_path` makes on the same
-    ambiguity. Propagates ``OSError`` from the directory walk itself; the
-    per-file reads never raise.
+    Raises :class:`AmbiguousAgentSpecError` when two specs declare *agent_id*
+    with DIFFERENT content, the refusal :func:`kiro_crew.agent.agent_spec_path`
+    makes on the same names. Claimants whose parsed content is equal are not
+    refused: every caller of this scan reads the parse and never writes the
+    file, and an identical pair gives the same parse whichever of them the
+    backend runs, so the question the caller asks (this agent's policy, this
+    agent's projection) has one answer and that answer is returned, with a
+    warning naming each file so the operator can tidy the directory. A package
+    installer that flattens dependencies writes exactly such twins for an agent
+    two packages vend; refusing them denied the agent its policy and its KAS
+    session with no lasting repair. Equality is of the whole parse, not of the
+    fields one caller reads: a pair that agrees on ``managedToolPolicy`` but
+    differs elsewhere is still two agents, and stays refused. Propagates
+    ``OSError`` from the directory walk itself; the per-file reads never raise.
 
-    Only the first matching spec is held; a later match keeps its path and its
-    parse is dropped at once. The reader caps each file, so the parsed-spec
-    memory this scan holds at its peak is one capped parse, not one per
-    same-name file; the paths themselves, one per candidate, are what the
-    refusal message needs and are all the scan keeps of the rest.
+    Only the first matching spec is held; a later match is compared with it,
+    keeps its path, and its parse is dropped when the loop moves on. The reader
+    caps each file, so the parsed-spec memory this scan holds at its peak is a
+    constant few capped parses (the first match, the loop's last parse and the
+    one being read), not one per same-name file; the paths themselves, one per
+    candidate, are what the refusal message and the warning need and are all
+    the scan keeps of the rest.
 
     This is a fresh walk rather than a filter over :func:`parsed_agent_specs`,
     and the difference is the labels, not the loop. That cache serves catalog
@@ -728,20 +748,36 @@ def spec_by_declared_name(
     """
     match: dict[str, Any] | None = None
     match_paths: list[Path] = []
+    divergent = False
     for path in iter_agent_spec_files(agents_dir):
         spec = _read_agent_spec(path, operation=operation, source=source)
         if isinstance(spec, dict) and spec.get("name") == agent_id:
             if match is None:
                 match = spec
+            elif not strict_json_equal(spec, match):
+                divergent = True
             match_paths.append(path)
     if len(match_paths) > 1:
         # Paths are repr'd: a filename in this user-writable, tool-shared
-        # directory is untrusted input, and this message reaches a terminal.
-        raise AmbiguousAgentSpecError(
-            f"{len(match_paths)} specs declare the name {agent_id!r}: "
-            f"{', '.join(repr(str(path)) for path in match_paths)}. Which one is live is "
-            f"undefined -- remove or rename one.",
-            paths=match_paths,
+        # directory is untrusted input, and both texts reach a terminal.
+        names = ", ".join(repr(str(path)) for path in match_paths)
+        if divergent:
+            raise AmbiguousAgentSpecError(
+                f"{len(match_paths)} specs declare the name {agent_id!r} with differing "
+                f"content: {names}. Which one is live is undefined -- remove or rename one.",
+                paths=match_paths,
+            )
+        # The name and the filenames are untrusted input from a user-writable
+        # directory and this line persists in gateway.log: the same log-egress
+        # redaction every other operational line carrying foreign text applies
+        # (``redact_log_via_context``, the non-raising spelling for a log site),
+        # so a credential-shaped name is scrubbed before it is written.
+        logger.warning(
+            "%d identical specs declare the name %s: %s. Whichever is live, the spec "
+            "is the same, so it is used; remove or rename one to tidy the directory.",
+            len(match_paths),
+            redact_log_via_context(repr(agent_id)),
+            redact_log_via_context(names),
         )
     return match
 

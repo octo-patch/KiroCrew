@@ -870,12 +870,20 @@ class TestValueSizeLimit:
         # The purpose of the helper: escaped and raw dumps of one value match.
         korean = "\ud55c\uad6d\uc5b4"  # U+D55C U+AD6D U+C5B4, hangugeo
         assert _json_value_equal(json.dumps(korean), json.dumps(korean, ensure_ascii=False))
-        # A value nested past the recursion limit must not crash the compare:
-        # it reports "changed" (safe) rather than raising and aborting the write.
+        # A value nested hundreds of levels deep must not crash the compare:
+        # the comparator walks an explicit stack, so the two dumps of one
+        # value are answered equal, and a leaf differing only in type is still
+        # caught at the bottom.
         deep = "\ud55c"
         for _ in range(999):
             deep = [deep]
-        assert _json_value_equal(json.dumps(deep), json.dumps(deep, ensure_ascii=False)) is False
+        assert _json_value_equal(json.dumps(deep), json.dumps(deep, ensure_ascii=False)) is True
+        deep_int: object = 1
+        deep_bool: object = True
+        for _ in range(999):
+            deep_int = [deep_int]
+            deep_bool = [deep_bool]
+        assert _json_value_equal(json.dumps(deep_int), json.dumps(deep_bool)) is False
 
     def test_bool_reset_of_numeric_fact_is_not_silently_skipped(
         self, tmp_path: Path, opened

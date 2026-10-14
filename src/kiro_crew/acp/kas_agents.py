@@ -1094,10 +1094,11 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     convention use, and it is what keeps a misnamed ``<agent_id>.json`` that
     declares some other agent from being projected under this id, with that
     other agent's tools and prompt, while the spec that does declare the id
-    sits beside it unread. Two specs declaring *agent_id* are refused, as
-    :func:`kiro_crew.agent.agent_spec_path` refuses them: which is live is
-    undefined, and picking either would project an agent the operator did not
-    name.
+    sits beside it unread. Two DIFFERING specs declaring *agent_id* are
+    refused, as :func:`kiro_crew.agent.agent_spec_path` refuses them: which is
+    live is undefined, and picking either would project an agent the operator
+    did not name. Two identical ones are one spec, and the scan projects it:
+    whichever the backend runs, the projection is the same.
 
     The scan's parsed spec is what the projection uses: it was read under the hardened
     reader's guards, labelled ``kas_agent_projection`` so a denial is

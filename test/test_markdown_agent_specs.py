@@ -444,11 +444,23 @@ class TestRoster:
         assert [(a.name, a.description) for a in rows] == [("bot", "json twin")]
         assert any("bot.md is shadowed" in r.getMessage() for r in caplog.records)
 
-    def test_two_markdown_specs_declaring_one_name_are_ambiguous(self, agents_dir: Path) -> None:
-        (agents_dir / "a.md").write_text(_md("bot"), encoding="utf-8")
-        (agents_dir / "b.md").write_text(_md("bot"), encoding="utf-8")
+    def test_two_differing_markdown_specs_declaring_one_name_are_ambiguous(
+        self, agents_dir: Path
+    ) -> None:
+        (agents_dir / "a.md").write_text(_md("bot", description="a"), encoding="utf-8")
+        (agents_dir / "b.md").write_text(_md("bot", description="b"), encoding="utf-8")
         with pytest.raises(AmbiguousAgentSpecError):
             spec_by_declared_name(agents_dir, "bot", operation="t", source="unknown")
+
+    def test_two_identical_markdown_specs_declaring_one_name_resolve(
+        self, agents_dir: Path
+    ) -> None:
+        """The content-equal rule reads the parse, so it holds for the markdown
+        form too: frontmatter and body alike must agree."""
+        (agents_dir / "a.md").write_text(_md("bot", description="same"), encoding="utf-8")
+        (agents_dir / "b.md").write_text(_md("bot", description="same"), encoding="utf-8")
+        found = spec_by_declared_name(agents_dir, "bot", operation="t", source="unknown")
+        assert found is not None and found["description"] == "same"
 
 
 # ── the KAS projection ──────────────────────────────────────────────────────
