@@ -11169,7 +11169,8 @@
       "save_to_artifacts": "Сохранить в артефакты",
       "saved_to_library_notice": "«{{name}}» сохранён в ваших артефактах.",
       "open_doc_in_editor": "Открыть {{path}} в редакторе",
-      "open_doc_in_editor_failed": "Не удалось открыть этот файл в редакторе: {{reason}}. Нажми на его имя, чтобы открыть предпросмотр."
+      "open_doc_in_editor_failed": "Не удалось открыть этот файл в редакторе: {{reason}}. Нажми на его имя, чтобы открыть предпросмотр.",
+      "folder_renamed_to": "Папка переименована в {{name}}"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Кастомизация",
@@ -12918,7 +12919,8 @@
       "hide_sessions_on_these_models_hint": "Показывать все сессии, кроме использующих выбранные модели",
       "tick_a_model_first": "Сначала выбери модель",
       "not_models": "Кроме {{models}}",
-      "hide_sessions_using_model": "Скрыть сессии, использующие {{name}}"
+      "hide_sessions_using_model": "Скрыть сессии, использующие {{name}}",
+      "folder_renamed_to": "Папка переименована в {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
@@ -15558,7 +15560,8 @@
       "workspace_folder": "Папка рабочей области",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Файлы YAML нужно загружать на вкладке «Из YAML».",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML-воркфлоу обходят LLM-декомпозитор —",
-      "action_failed": "Действие не выполнено"
+      "action_failed": "Действие не выполнено",
+      "project_renamed_to": "Проект переименован в {{name}}"
     },
     "remoteArtifactDetailPage": {
       "back": "Назад",

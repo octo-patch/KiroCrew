@@ -850,7 +850,8 @@ interface SessionRowActions {
   renameInputRef: React.MutableRefObject<HTMLTextAreaElement | null>
   onRenameStart: (key: string, scope: string, title: string, fromMenu: boolean) => void
   onRenameChange: (value: string) => void
-  onRenameCommit: (key: string, value: string) => void
+  onRenameCommit: (key: string, value: string, reason?: 'enter' | 'blur') => void
+  slotRenameEnterRef: React.MutableRefObject<boolean>
   onRenameCancel: () => void
   /** The row menu's "Regenerate title": re-derives the title from the
    *  conversation without making the session active. */
@@ -973,6 +974,7 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
   const {
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder,
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
+    slotRenameEnterRef,
     onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession,
     openElsewhere, toggleConductor,
   } = actions
@@ -2227,7 +2229,7 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
                   onRename handler) so users can edit or drop it when they rename.
                   A separate ↳ glyph also double-stacked into "↳↳ Fork of …". */}
               {renamingHere ? (
-                <textarea ref={renameInputRef} rows={1} className={`w-full bg-bg-elevated border border-accent rounded px-1 py-0 ${ROW_TITLE_CLS} text-text-strong outline-hidden select-text resize-none block overflow-hidden focus-ring`} value={renameValue} onChange={e => onRenameChange(e.target.value)} {...ime.bindEnter<HTMLTextAreaElement>({ onEnter: () => { (document.activeElement as HTMLTextAreaElement)?.blur() }, onEscape: onRenameCancel, onBlur: () => onRenameCommit(s.key, renameValue) })} onMouseDown={e => e.stopPropagation()} />
+                <textarea ref={renameInputRef} rows={1} className={`w-full bg-bg-elevated border border-accent rounded px-1 py-0 ${ROW_TITLE_CLS} text-text-strong outline-hidden select-text resize-none block overflow-hidden focus-ring`} value={renameValue} onChange={e => onRenameChange(e.target.value)} {...ime.bindEnter<HTMLTextAreaElement>({ onEnter: () => { slotRenameEnterRef.current = true; (document.activeElement as HTMLTextAreaElement)?.blur() }, onEscape: onRenameCancel, onBlur: () => { const reason = slotRenameEnterRef.current ? 'enter' : 'blur' as const; onRenameCommit(s.key, renameValue, reason) } })} onMouseDown={e => e.stopPropagation()} />
               ) : (
                 <>
                   {/* The live dot leads the name, where the eye lands when
@@ -2591,6 +2593,7 @@ function ChatSidebar({
   )
   const {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
+    renameAnnouncement, slotRenameEnterRef,
     suppressMenuRestoreRef, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit,
     onMenuCloseAutoFocus,
   } = useSessionRename({ dispatch, store, queryClient })
@@ -2878,6 +2881,7 @@ function ChatSidebar({
   const {
     folderEditInputRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName,
   } = useFolderRename({ renamingSlot, suppressMenuRestoreRef })
+  const [folderRenameAnnouncement, setFolderRenameAnnouncement] = useState('')
 
   // Folders via React Query. `isSuccess` gates the stale-collapse move
   // watcher below: before folder data has actually ARRIVED `folders` is the
@@ -3212,9 +3216,15 @@ function ChatSidebar({
     revealFlash,
   } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView })
   const renameCommit = useCallback((id: string, name: string) => {
-    if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
+    if (name.trim()) {
+      const trimmed = name.trim()
+      setFolderRenameAnnouncement('')
+      updateFolderMutation.mutate({ id, body: { name: trimmed } }, {
+        onSuccess: () => setFolderRenameAnnouncement(i18nT('pages.chatSidebar.folder_renamed_to', { name: trimmed })),
+      })
+    }
     setEditingId(null)
-  }, [updateFolderMutation, setEditingId])
+  }, [updateFolderMutation, setEditingId, setFolderRenameAnnouncement])
   const {
     dragMove, undoDragMove, undoBar, folderMove, undoFolderMove, folderUndoBar, moveByDrag, moveFolderByDrag,
   } = useSidebarMoveUndo({ localSlots, folders, moveFolderTo, queryClient })
@@ -3397,7 +3407,7 @@ function ChatSidebar({
              *  handled the other way round — the row's onKeyDown ignores events
              *  whose target is not the row — so Space types a space here rather
              *  than collapsing the folder. */
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[12px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
+            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[12px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { renameCommit(folder.id, editName); requestAnimationFrame(() => { const row = document.querySelector<HTMLElement>(`[data-folder-row="${folder.id}"]`); (row?.querySelector<HTMLElement>('button,[tabindex]') ?? row)?.focus({ preventScroll: true }) }) }, onEscape: () => { const id = folder.id; setEditingId(null); requestAnimationFrame(() => { const row = document.querySelector<HTMLElement>(`[data-folder-row="${id}"]`); (row?.querySelector<HTMLElement>('button,[tabindex]') ?? row)?.focus({ preventScroll: true }) }) }, onBlur: () => renameCommit(folder.id, editName) })} />
           ) : (
             // Double-click rename is a mouse-only power shortcut; the accessible
             // path is the ⋯-menu Rename item, so scope-disable the interaction rule.
@@ -3531,6 +3541,7 @@ function ChatSidebar({
   // reference, so none of these may take a new identity per render.
   const rowActions = useMemo(() => ({
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
+    slotRenameEnterRef,
     onDuplicate: sessionActions.duplicate, onCloseSession: sessionActions.close,
     onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource: stableOpenSource,
     onOpenPeerSession: openPeerSession,
@@ -3539,6 +3550,7 @@ function ChatSidebar({
     openElsewhere, toggleConductor: toggleConductorExpanded,
   }), [
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
+    slotRenameEnterRef,
     sessionActions.duplicate, sessionActions.close, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab,
     stableOpenSource, openPeerSession, startBoardCardDrag, endNativeSessionDrag, reorderPinnedByKeyboard,
     openElsewhere, toggleConductorExpanded,
@@ -4031,7 +4043,7 @@ function ChatSidebar({
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} />
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
+            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { renameCommit(folder.id, editName); requestAnimationFrame(() => { const row = document.querySelector<HTMLElement>(`[data-folder-row="${folder.id}"]`); (row?.querySelector<HTMLElement>('button,[tabindex]') ?? row)?.focus({ preventScroll: true }) }) }, onEscape: () => { const id = folder.id; setEditingId(null); requestAnimationFrame(() => { const row = document.querySelector<HTMLElement>(`[data-folder-row="${id}"]`); (row?.querySelector<HTMLElement>('button,[tabindex]') ?? row)?.focus({ preventScroll: true }) }) }, onBlur: () => renameCommit(folder.id, editName) })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
         ) : (
@@ -6077,6 +6089,11 @@ function ChatSidebar({
         className="mx-2 mt-2 shrink-0"
         testId="new-chat-error"
       />
+      {/* Polite live regions: announce confirmed renames to screen readers.
+          Always mounted (never remounted during rename) so no announcement is lost.
+          Cleared at the start of each new attempt (a live region fires on TEXT CHANGES). */}
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="slot-rename-status">{renameAnnouncement}</span>
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="folder-rename-status">{folderRenameAnnouncement}</span>
       {/* A refused rename: the editor is already closed and the title has been
        *  reverted to the server value by the recovery refetch, so there is no
        *  unsaved draft left to lose and the hand-off is safe. Dismissable: the

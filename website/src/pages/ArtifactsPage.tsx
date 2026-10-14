@@ -205,13 +205,17 @@ function FolderCard({ folder, folders, previewArtifacts, actions }: {
   const stats = folderSubtreeStats(folders, folder.id)
   const renaming = actions.renamingId === folder.id
   const preview = previewArtifacts.slice(0, 3)
+  const cardRef = useRef<HTMLDivElement | null>(null)
+  const restoreCardFocus = (reason: 'enter' | 'escape' | 'blur') => {
+    if (reason !== 'blur') requestAnimationFrame(() => cardRef.current?.focus({ preventScroll: true }))
+  }
   return (
     <DndDroppable id={`folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
       {({ setNodeRef: setDropRef, isOver }) => (
         <DndDraggable id={`folder:${folder.id}`} data={{ type: 'folder', id: folder.id, name: folder.name } satisfies LibraryDrag}>
           {({ setNodeRef: setDragRef, listeners, isDragging }) => (
             <div
-              ref={(el) => { setDropRef(el); setDragRef(el) }}
+              ref={(el) => { setDropRef(el); setDragRef(el); cardRef.current = el }}
               {...(renaming ? {} : listeners)}
               onClick={() => { if (!renaming) actions.onOpen(folder.id) }}
               role="button"
@@ -245,6 +249,7 @@ function FolderCard({ folder, folders, previewArtifacts, actions }: {
                       placeholder={i18nT('pages.artifactsPage.rename_folder')}
                       onCommit={(name) => actions.onRenameSubmit(folder, name)}
                       onCancel={actions.onRenameCancel}
+                      onClose={restoreCardFocus}
                     />
                   ) : (
                     <div className="text-[15px] leading-tight text-text-strong font-semibold truncate">{folder.name}</div>
@@ -994,6 +999,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [newFolderColor, setNewFolderColor] = useState('')
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
+  const [folderRenameAnnouncement, setFolderRenameAnnouncement] = useState('')
 
   // The emoji icon is derived by a background LLM task server-side after
   // create/rename — refetch shortly after so it pops in without a reload.
@@ -1186,12 +1192,15 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     onRenameSubmit: (f, name) => {
       setRenamingFolderId(null)
       if (name && name !== f.name) {
-        updateFolderMut.mutate({ id: f.id, body: { name } })
+        setFolderRenameAnnouncement('')
+        updateFolderMut.mutate({ id: f.id, body: { name } }, {
+          onSuccess: () => setFolderRenameAnnouncement(i18nT('pages.artifactsPage.folder_renamed_to', { name })),
+        })
         scheduleIconRefetch()
       }
     },
     onRenameCancel: () => setRenamingFolderId(null),
-  }), [openFolder, updateFolderMut, folders, renamingFolderId, scheduleIconRefetch, scopeFolderId, invalidateFolders])
+  }), [openFolder, updateFolderMut, folders, renamingFolderId, setFolderRenameAnnouncement, scheduleIconRefetch, scopeFolderId, invalidateFolders])
 
   const confirmDeleteFolder = useCallback(async (deleteContents: boolean) => {
     if (!deletingFolder) return
@@ -1720,6 +1729,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
           <CollapsibleChrome collapsed={chromeCollapsed}>
             <PageHeader title={i18nT('pages.artifactsPage.artifacts')} subtitle={i18nT('pages.artifactsPage.widgets_files_and_snippets_live_tracked_with_ver')} />
           </CollapsibleChrome>
+          <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="folder-rename-status">{folderRenameAnnouncement}</span>
         </div>
       <div
         className={`px-4 md:px-6 ${

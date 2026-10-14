@@ -142,14 +142,17 @@ export function FolderGlyph({ folder, size = 16, open = false }: { folder: Artif
 /** Inline folder-name editor (create + rename) — the same native pattern the
  * chat sidebar uses for slot/folder renames: autofocused input, Enter commits,
  * Escape cancels, blur commits a non-empty value. IME-guarded. */
-export function FolderNameInput({ initial = '', placeholder = 'Folder name', onCommit, onCancel }: {
+export function FolderNameInput({ initial = '', placeholder = 'Folder name', onCommit, onCancel, onClose }: {
   initial?: string
   placeholder?: string
   onCommit: (name: string) => void
   onCancel: () => void
+  /** Called with the reason the editor closed; omit for create-only uses. */
+  onClose?: (reason: 'enter' | 'escape' | 'blur') => void
 }) {
   const [value, setValue] = useState(initial)
   const cancelledRef = useRef(false)
+  const enterRef = useRef(false)
   const ime = useImeGuard()
   return (
     <Input
@@ -164,13 +167,16 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
       className="w-full bg-transparent border border-accent rounded px-1.5 py-0.5 text-text-strong outline-hidden text-sm select-text focus-ring"
       {...ime.bindEnter<HTMLInputElement>({
         onFocus: (e) => (e.target as HTMLInputElement).select(),
-        onEnter: () => { (document.activeElement as HTMLInputElement)?.blur() },
-        onEscape: () => { cancelledRef.current = true; onCancel() },
+        onEnter: () => { enterRef.current = true; (document.activeElement as HTMLInputElement)?.blur() },
+        onEscape: () => { cancelledRef.current = true; onCancel(); onClose?.('escape') },
         onBlur: () => {
           if (cancelledRef.current) { cancelledRef.current = false; return }
+          const viaEnter = enterRef.current
+          enterRef.current = false
           const name = value.trim()
           if (name) onCommit(name)
           else onCancel()
+          onClose?.(viaEnter ? 'enter' : 'blur')
         },
       })}
     />
@@ -676,13 +682,18 @@ export function FolderRow({ folder, folders, depth, expanded, onToggle, actions,
   const stats = folderSubtreeStats(folders, folder.id)
   const Chevron = expanded ? ChevronDown : ChevronRight
   const renaming = actions.renamingId === folder.id
+  const rowRef = useRef<HTMLTableRowElement | null>(null)
+  const restoreRowFocus = (reason: 'enter' | 'escape' | 'blur') => {
+    if (reason !== 'blur') requestAnimationFrame(() => rowRef.current?.focus({ preventScroll: true }))
+  }
   return (
     <DndDroppable id={`folder-row-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
       {({ setNodeRef: setDropRef, isOver }) => (
         <DndDraggable id={`folder-row:${folder.id}`} data={{ type: 'folder', id: folder.id, name: folder.name } satisfies LibraryDrag}>
           {({ setNodeRef: setDragRef, listeners, isDragging }) => (
             <tr
-              ref={(el) => { setDropRef(el); setDragRef(el) }}
+              ref={(el) => { setDropRef(el); setDragRef(el); rowRef.current = el }}
+              tabIndex={-1}
               {...(renaming ? {} : listeners)}
               onClick={() => { if (!renaming) onToggle(folder.id) }}
               style={{ opacity: isDragging ? 0.4 : 1 }}
@@ -700,6 +711,7 @@ export function FolderRow({ folder, folders, depth, expanded, onToggle, actions,
                         placeholder={i18nT('pages.artifactsPage.rename_folder')}
                         onCommit={(name) => actions.onRenameSubmit(folder, name)}
                         onCancel={actions.onRenameCancel}
+                        onClose={restoreRowFocus}
                       />
                     </span>
                   ) : (

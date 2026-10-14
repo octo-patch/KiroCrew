@@ -10704,7 +10704,8 @@
       "save_to_artifacts": "保存到产物",
       "saved_to_library_notice": "已将“{{name}}”保存到你的产物中。",
       "open_doc_in_editor": "在编辑器中打开 {{path}}",
-      "open_doc_in_editor_failed": "无法在编辑器中打开此文件：{{reason}}。点击文件名即可预览。"
+      "open_doc_in_editor_failed": "无法在编辑器中打开此文件：{{reason}}。点击文件名即可预览。",
+      "folder_renamed_to": "文件夹已重命名为 {{name}}"
     },
     "capabilitiesPage": {
       "agent_capabilities": "自定义",
@@ -12312,7 +12313,8 @@
       "hide_sessions_on_these_models_hint": "显示除使用所选模型以外的所有会话",
       "tick_a_model_first": "请先选择一个模型",
       "not_models": "非 {{models}}",
-      "hide_sessions_using_model": "隐藏使用 {{name}} 的会话"
+      "hide_sessions_using_model": "隐藏使用 {{name}} 的会话",
+      "folder_renamed_to": "文件夹已重命名为 {{name}}"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -14841,7 +14843,8 @@
       "workspace_folder": "工作区文件夹",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML 文件应通过“From YAML”标签页上传。",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML 工作流会跳过 LLM 分解器 —",
-      "action_failed": "操作失败"
+      "action_failed": "操作失败",
+      "project_renamed_to": "项目已重命名为 {{name}}"
     },
     "remoteArtifactDetailPage": {
       "back": "返回",
