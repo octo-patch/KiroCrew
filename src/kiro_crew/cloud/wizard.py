@@ -46,6 +46,7 @@ def _deploy_with_progress(
     disable_rollback: bool = False,
     ami_id: str = "",
     extra_packages: str = "",
+    ssm_kms_key_arn: str = "",
 ) -> ec2.DeployResult:
     """Run ``ec2.deploy`` while streaming live CloudFormation + bootstrap logs.
 
@@ -73,6 +74,7 @@ def _deploy_with_progress(
                 disable_rollback=disable_rollback,
                 ami_id=ami_id,
                 extra_packages=extra_packages,
+                ssm_kms_key_arn=ssm_kms_key_arn,
                 proc_sink=lambda p: deploy_proc.__setitem__("proc", p),
             )
         except BaseException as exc:  # noqa: BLE001 - surfaced on join
@@ -368,6 +370,7 @@ def launch(
     login_target: Optional[KiroLoginTarget] = None,
     ami_id: str = "",
     extra_packages: str = "",
+    ssm_kms_key_arn: str = "",
 ) -> int:
     """Run the full interactive launch flow. Returns a process exit code.
 
@@ -533,7 +536,15 @@ def launch(
             ui.detail("Use `kirocrew cloud launch --new --subnet …` for a fresh instance.")
         # Same rule for the image and package set: both are fixed when the
         # instance is created.
-        fixed = [f for f, v in (("--ami", ami_id), ("--extra-packages", extra_packages)) if v]
+        fixed = [
+            f
+            for f, v in (
+                ("--ami", ami_id),
+                ("--extra-packages", extra_packages),
+                ("--ssm-kms-key", ssm_kms_key_arn),
+            )
+            if v
+        ]
         if fixed:
             names = " / ".join(fixed)
             if assume_yes:
@@ -555,6 +566,8 @@ def launch(
             ui.info(f"AMI: {ami_id} (explicit --ami)")
         if extra_packages:
             ui.info(f"Extra packages: {extra_packages}")
+        if ssm_kms_key_arn:
+            ui.info(f"Session Manager KMS key: {ssm_kms_key_arn} (explicit --ssm-kms-key)")
         # NB: do NOT persist last_tag yet. Saving it BEFORE the deploy succeeds
         # would leave the record pointing at a ROLLBACK_COMPLETE / no-instance
         # stack on a failed first launch, and the NEXT `launch` would then treat
@@ -580,6 +593,7 @@ def launch(
                 disable_rollback=keep_on_failure,
                 ami_id=ami_id,
                 extra_packages=extra_packages,
+                ssm_kms_key_arn=ssm_kms_key_arn,
             )
         except AWSError as exc:
             ui.fail(str(exc))

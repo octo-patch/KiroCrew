@@ -132,6 +132,9 @@ def _cloud_launch(args: argparse.Namespace) -> int:
         if ami_id:
             ami_id = ec2.validate_ami_id(ami_id)
         extra_packages = ec2.normalize_extra_packages(getattr(args, "extra_packages", "") or "")
+        ssm_kms_key_arn = getattr(args, "ssm_kms_key", "") or ""
+        if ssm_kms_key_arn:
+            ssm_kms_key_arn = ec2.validate_ssm_kms_key_arn(ssm_kms_key_arn)
     except ValidationError as exc:
         ui.fail(f"Invalid launch option: {exc}")
         return 2
@@ -147,6 +150,7 @@ def _cloud_launch(args: argparse.Namespace) -> int:
         login_target=login_target,
         ami_id=ami_id,
         extra_packages=extra_packages,
+        ssm_kms_key_arn=ssm_kms_key_arn,
     )
 
 
@@ -502,11 +506,20 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     from kiro_crew.cloud import source as source_mod
 
     profile, region = _resolve(args)
-    boundaries = (
+    boundaries = [
         ("Instance permissions boundary", source_mod.ensure_instance_boundary),
         ("Fargate crew task-role boundary", source_mod.ensure_crew_boundary),
         ("Fargate crew execution-role boundary", source_mod.ensure_crew_exec_boundary),
-    )
+    ]
+    # Opt-in only: without --ssm-kms this step creates exactly the three
+    # boundaries above. This admin step is the one caller that may create the
+    # KMS-session boundary; a launch only verifies it.
+    if getattr(args, "ssm_kms", False):
+
+        def _ensure_kms(profile: str = "", region: str = "") -> str:
+            return source_mod.ensure_instance_kms_boundary(profile, region, create=True)
+
+        boundaries.append(("KMS-session instance boundary", _ensure_kms))
     failed = False
     for label, ensure in boundaries:
         try:

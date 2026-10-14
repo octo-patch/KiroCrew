@@ -2617,6 +2617,14 @@ Examples:
         help='Extra dnf packages to install on the box, comma-separated (e.g. "gh,jq"). '
         "A package dnf cannot find is skipped with a warning in the setup log.",
     )
+    _c_launch.add_argument(
+        "--ssm-kms-key",
+        default="",
+        metavar="KEY_ARN",
+        help="Full ARN of the KMS key your org pins for Session Manager encryption. "
+        "The box may then decrypt its own session data with that key only. Without it "
+        "the default boundary is unchanged and the box has no KMS access.",
+    )
     _c_launch.add_argument("-y", "--yes", action="store_true", help="Accept defaults, no prompts")
     _c_launch.add_argument(
         "--new",
@@ -2699,6 +2707,12 @@ Examples:
         help="Pre-create the immutable EC2 + Fargate permissions boundaries (admin, one-time)",
     )
     _cloud_creds_opts(_c_boundary)
+    _c_boundary.add_argument(
+        "--ssm-kms",
+        action="store_true",
+        help="Also pre-create the opt-in KMS-session instance boundary that "
+        "`cloud launch --ssm-kms-key` uses",
+    )
     _c_doctor = cloud_sub.add_parser("doctor", help="Check cloud prerequisites + AWS reachability")
     _cloud_creds_opts(_c_doctor)
 

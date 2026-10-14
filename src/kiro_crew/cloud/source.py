@@ -1031,6 +1031,40 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     )
 
 
+def ensure_instance_kms_boundary(profile: str = "", region: str = "", create: bool = False) -> str:
+    """Verify (and, for the admin step only, create) the OPT-IN KMS-session boundary.
+
+    Only a launch with ``--ssm-kms-key`` or ``kirocrew cloud iam-boundary --ssm-kms``
+    reaches this: a default launch never names, creates or reads
+    ``kirocrew-ec2-kms-boundary``. The content is the base instance boundary plus
+    the Session Manager KMS decrypt (:func:`iam.kms_boundary_policy_document`), and
+    it goes through the same verify-before-reuse :func:`_ensure_boundary`
+    sequence, so a drifted policy at this name is refused, never reused.
+
+    A launch passes ``create=False``. The launcher policy grants no
+    ``iam:CreatePolicy`` on this name, because in an account that never opts in the
+    name would stay unclaimed: a leaked launcher credential could create a
+    permissive policy there and then a role capped by it. So only an admin creates
+    it (``iam-boundary --ssm-kms`` passes ``create=True``), and a launch that finds
+    it absent names that step.
+    """
+    from kiro_crew.cloud import iam
+
+    account = _require_account(profile, region)
+    return _ensure_boundary(
+        name=iam.KMS_BOUNDARY_NAME,
+        arn=iam.kms_boundary_arn(account),
+        expected=iam.kms_boundary_policy_document(account),
+        description=(
+            "Kiro Crew EC2 instance permissions ceiling (SSM core + launcher source "
+            "read + KMS for encrypted Session Manager)."
+        ),
+        profile=profile,
+        region=region,
+        admin_step="" if create else "kirocrew cloud iam-boundary --ssm-kms",
+    )
+
+
 def ensure_crew_boundary(profile: str = "", region: str = "") -> str:
     """Create (once, idempotently) the shared Fargate crew boundary; return its ARN.
 
@@ -1108,8 +1142,12 @@ def _ensure_boundary(
     description: str,
     profile: str,
     region: str,
+    admin_step: str = "",
 ) -> str:
     """Create-once-and-verify, shared by every permissions boundary this launcher owns.
+
+    ``admin_step`` set means this caller must NOT create the boundary: an absent
+    one is refused with that command named, and an existing one is still verified.
 
     ONE copy of the sequence rather than one per lane, because the ORDER here is
     the security property and not an implementation detail: an existing policy is
@@ -1144,6 +1182,19 @@ def _ensure_boundary(
             f"{(read_err or '').strip()[:300]} — grant `{read_missing}` and retry",
             action="iam:GetPolicy",
             missing_action=read_missing,
+            returncode=rc,
+            stderr=read_err or "",
+        )
+
+    # Absent, and this caller may not create it: refuse with the admin step that
+    # can. The launcher policy grants no iam:CreatePolicy on such a name, so a
+    # create here would only be denied.
+    if admin_step:
+        raise aws.AWSError(
+            f"could not find the permissions boundary '{name}' (an AWS admin creates "
+            f"it once for this account with `{admin_step}`): "
+            f"{(read_err or '').strip()[:300]}",
+            action="iam:GetPolicy",
             returncode=rc,
             stderr=read_err or "",
         )

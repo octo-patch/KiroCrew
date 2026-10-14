@@ -590,6 +590,43 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
     three names and removing the action while a boundary is missing leaves no
     principal allowed to create it. A launch whose `create-policy` is denied names
     this admin step at the head of its error, ahead of AWS's own text.
+  - **Opt-in KMS for encrypted Session Manager (`launch --ssm-kms-key <key-arn>`).**
+    An org that pins a KMS key in its Session Manager preferences needs the
+    on-box SSM agent to call `kms:Decrypt` on the session data key, and the
+    default boundary caps it away. The default boundary is NOT widened. With the
+    flag, and only then, the launch uses a second content-fixed boundary,
+    `kirocrew-ec2-kms-boundary` (`iam.kms_boundary_policy_document`): the default
+    document plus one statement allowing `kms:Decrypt` on `arn:aws:kms:*:*:key/*`
+    only when the encryption context carries both `aws:ssm:SessionId` and
+    `aws:ssm:TargetId`. The agent calls KMS directly with the instance role, so
+    there is no `kms:ViaService` to scope on; the encryption context is what
+    marks a Session Manager key, and it keeps out Parameter Store SecureStrings
+    and every other service's ciphertext. The boundary names no key because it is
+    shared and never re-versioned. The grant is a separate conditional
+    `AWS::IAM::RolePolicy` (`SsmSessionKmsPolicy`, on the template's
+    `SsmKmsKeyArn` parameter): `kms:Decrypt` on exactly the passed key ARN, with
+    `aws:ssm:TargetId` equal to the stack's own instance and a session id present.
+    The CLI and the template's `AllowedPattern` accept one full `arn:aws` key ARN
+    only (no alias, wildcard, bare id, other service or other partition).
+  - **The launcher never creates the KMS boundary.** An admin does, once, with
+    `kirocrew cloud iam-boundary --ssm-kms`. A launcher-held `iam:CreatePolicy`
+    on that name would leave it claimable forever in every account that never
+    opts in: a leaked launcher credential could author a permissive policy there
+    and create a role capped by it, since `CreateRole` accepts the name. So the
+    launcher policy gets only `iam:GetPolicy` / `iam:GetPolicyVersion` on it
+    (`IamKmsBoundaryRead`), and `source.ensure_instance_kms_boundary` runs the
+    same `_ensure_boundary` verify-before-reuse sequence with creation turned off:
+    an absent boundary is refused with the admin step named. `CreateRole`'s
+    condition lists exactly the two boundary names; the launcher still gets no
+    `kms:*`, no `CreatePolicyVersion` and no `Put`/`DeleteRolePermissionsBoundary`.
+    Without the flag the deploy argv, the default boundary document and the role
+    are unchanged, and no launch names or reads the KMS boundary. The key is fixed
+    at creation, like `--ami`: an existing stack refuses it under `--yes`. Using
+    the flag needs the current launcher policy (`kirocrew cloud iam-policy`); an
+    older applied policy still launches without it. The SSM status reads and
+    `sts:GetCallerIdentity` share `CloudFormationAndResourceDiscovery` (same
+    Effect, `*`, no Condition, so one statement grants exactly what two would),
+    which keeps the policy under the 6,144-char cap.
   The instance role's inline `s3:GetObject` is still pinned to the **derived**
   launcher path (`kirocrew-src-${AccountId}-${Region}/${StackTag}/…`), not the
   `SourceBucket`/`SourceKey` deploy params — so a caller can't grant the box read

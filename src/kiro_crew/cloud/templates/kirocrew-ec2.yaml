@@ -61,11 +61,14 @@ Parameters:
     # AllowedPattern mirrors the other ARN params: an IAM policy ARN naming exactly
     # the boundary. InstanceRole references this by ARN — the CEILING on what the
     # role can EVER do, regardless of inline/attached policies.
-    AllowedPattern: "^arn:aws:iam::[0-9]{12}:policy/kirocrew-ec2-boundary$"
+    # Exactly two names: the default boundary, and the opt-in KMS-session one
+    # (kirocrew-ec2-kms-boundary) a `--ssm-kms-key` launch passes instead.
+    AllowedPattern: "^arn:aws:iam::[0-9]{12}:policy/kirocrew-ec2-(kms-)?boundary$"
     Description: >-
       ARN of the pre-created shared instance permissions boundary
-      (arn:aws:iam::<account>:policy/kirocrew-ec2-boundary). The launcher creates
-      it once and passes it here; the InstanceRole is capped by it.
+      (arn:aws:iam::<account>:policy/kirocrew-ec2-boundary, or
+      kirocrew-ec2-kms-boundary with SsmKmsKeyArn). The launcher creates it once
+      and passes it here; the InstanceRole is capped by it.
   # NB: the AllowedPatterns below mirror the launcher CLI's FieldSpec charsets
   # (cloud/ec2.py). These values flow into the root user-data script, so the
   # template itself must reject shell metacharacters even when someone deploys
@@ -141,6 +144,17 @@ Parameters:
       Optional (`kirocrew cloud launch --extra-packages`). Space-separated dnf
       package names installed after the stock system packages. A name dnf
       cannot find is skipped with a warning in /var/log/kirocrew-setup.log.
+  SsmKmsKeyArn:
+    Type: String
+    Default: ""
+    # Mirrors the CLI's _SSM_KMS_KEY_RE (cloud/ec2.py): one full key ARN, never
+    # an alias or a wildcard, because it becomes an IAM Resource.
+    AllowedPattern: "^$|^arn:aws:kms:[a-z]{2}(-[a-z]+)+-[0-9]:[0-9]{12}:key/(mrk-[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+    Description: >-
+      Optional (the launch flag --ssm-kms-key). The KMS key your account pins
+      for Session Manager encryption. When set, the role may use exactly this
+      key, and only to decrypt Session Manager data for this instance; pass the kirocrew-ec2-kms-boundary ARN as
+      PermissionsBoundaryArn. Empty = no KMS grant.
 
 # The AMI is resolved at deploy time from the public SSM Parameter Store alias —
 # never a hardcoded per-region AMI id. Latest Amazon Linux 2023 for the arch.
@@ -158,6 +172,7 @@ Conditions:
   HasS3Source: !Not [!Equals [!Ref SourceBucket, ""]]
   WantPublicIp: !Equals [!Ref AssociatePublicIp, "true"]
   HasCustomAmi: !Not [!Equals [!Ref CustomAmiId, ""]]
+  HasSsmKmsKey: !Not [!Equals [!Ref SsmKmsKeyArn, ""]]
 
 Resources:
   # --- IAM: instance role trusts EC2 and gets SSM core (enables Session Manager
@@ -207,6 +222,31 @@ Resources:
       Tags:
         - { Key: "kirocrew:managed", Value: "true" }
         - { Key: "kirocrew:instance", Value: !Ref StackTag }
+
+  # Opt-in (--ssm-kms-key): the GRANT for encrypted Session Manager.
+  # A separate conditional resource so InstanceRole is unchanged when the flag
+  # is off. The on-box SSM agent calls kms:Decrypt itself (no kms:ViaService in
+  # the request), so the scope is the encryption context Session Manager always
+  # sets: a session id, and a target that is this stack's own instance. Exactly
+  # one key ARN. The kirocrew-ec2-kms-boundary caps it; the default boundary
+  # would deny it.
+  SsmSessionKmsPolicy:
+    Type: AWS::IAM::RolePolicy
+    Condition: HasSsmKmsKey
+    Properties:
+      RoleName: !Ref InstanceRole
+      PolicyName: SsmSessionKms
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: kms:Decrypt
+            Resource: !Ref SsmKmsKeyArn
+            Condition:
+              StringEquals:
+                kms:EncryptionContext:aws:ssm:TargetId: !Ref Instance
+              "Null":
+                kms:EncryptionContext:aws:ssm:SessionId: "false"
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
