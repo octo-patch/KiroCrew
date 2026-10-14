@@ -41,3 +41,41 @@ export function sendFailureCopy(reason: string | undefined, restored: boolean): 
 export function deliveryUnconfirmedCopy(restored: boolean): string {
   return i18nT(restored ? 'pages.chatPage.delivery_unconfirmed' : 'pages.chatPage.delivery_unconfirmed_option') as string
 }
+
+/**
+ * The banner text for the page's action-error when Submit All is pressed while
+ * the crewmate's DM thread is being re-confirmed (slot is absent). The comments
+ * are preserved for a retry; this banner is shown outside the DM transcript.
+ */
+export function commentsPendingReconnectCopy(): string {
+  return i18nT('pages.chatPage.comments_pending_reconnect') as string
+}
+
+/**
+ * The banner text for the page's action-error when a comment batch send returns
+ * `response-late` (delivery indeterminate) or `transport-error` (connection
+ * dropped before a response arrived). The comments are preserved for a retry.
+ * Shown outside the DM transcript -- the crewmate's DM stays messages-only per
+ * the 2026-10-09 recorded decision.
+ */
+export function deliveryUnconfirmedCommentsCopy(): string {
+  return i18nT('pages.chatPage.delivery_unconfirmed_comments') as string
+}
+
+/**
+ * The banner text when a `refused` receipt arrives for a comment batch send.
+ * Uses a user-friendly message rather than the server's internal reason, so
+ * implementation details like "slot unavailable" never reach the UI.
+ */
+export function commentsRefusedCopy(): string {
+  return i18nT('pages.chatPage.comments_refused') as string
+}
+
+/**
+ * The banner text when a confirmed delivery receipt arrives for a comment
+ * batch send. `count` is the number of comment rows in the batch; i18next
+ * picks the singular or plural form automatically.
+ */
+export function commentsSentCopy(count: number): string {
+  return i18nT('pages.chatPage.comments_sent', { count }) as string
+}

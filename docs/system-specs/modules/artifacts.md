@@ -1796,9 +1796,10 @@ sessionStorage channel ChatPage already consumes on slot activation (the
 slot-change restore in `website/src/pages/chat/page/composerDrafts.ts`).
 
 **Selection comment composer** — selecting a passage opens a type-first comment
-composer on the artifact page, the remote artifact page and the chat side
-panel's file view. A draft is kept per passage in `sessionStorage`
-(`utils/composerDraftStore.ts`) under `mc-artifact-composer-draft:<slug>`,
+composer on the artifact page, the remote artifact page and the side panel's
+file view on the chat page and the crewmate page. A draft is kept per passage
+in `sessionStorage` (`utils/composerDraftStore.ts`) under
+`mc-artifact-composer-draft:<slug>`,
 `mc-remote-artifact-composer-draft:<provider>/<id>` or
 `mc-comment-composer-draft:<path>`. Closing a non-empty draft asks before
 discarding it. Posting shows a saving state; a failed post keeps the text in the

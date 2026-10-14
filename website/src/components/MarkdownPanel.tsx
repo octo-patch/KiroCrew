@@ -322,8 +322,9 @@ interface Props {
   liveWatch?: boolean
   /** Hands the comment batch to chat. Returning (or resolving) `false`, or
    *  throwing, means the send was refused and the batch stays pending; any
-   *  other result counts as delivered and clears it. */
-  onSubmitComments?: (message: string) => void | boolean | Promise<void | boolean>
+   *  other result counts as delivered and clears it. The optional second
+   *  argument carries the count of comment rows in the batch. */
+  onSubmitComments?: (message: string, count?: number) => void | boolean | Promise<void | boolean>
   /** Gateway connection flag. Gates the batch comment submit (mirrors
    *  ChatInput's Send gating) so pending comments can't be composed and
    *  cleared while the chat send path would silently refuse the message.
@@ -2304,7 +2305,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     let verdict: void | boolean | Promise<void | boolean>
     try {
-      verdict = onSubmitComments(formatCommentsMessage(filePath, comments, displayContent, extraPrompt))
+      verdict = onSubmitComments(formatCommentsMessage(filePath, comments, displayContent, extraPrompt), comments.length)
     } catch {
       verdict = false
     }

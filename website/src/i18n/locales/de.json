@@ -12171,7 +12171,12 @@
       "dismiss_until_next_visit": "Bis zum nächsten Besuch ausblenden",
       "could_not_check_restored_tabs": "Es konnte nicht geprüft werden, ob nach dem letzten Neustart alle Tabs wiederhergestellt wurden.",
       "could_not_start_fresh_session": "Neue Sitzung konnte nicht gestartet werden",
-      "delivery_unconfirmed_option": "Zustellung nicht bestätigt — prüfe den Verlauf und tippe den Vorschlag erneut an, falls er fehlt."
+      "delivery_unconfirmed_option": "Zustellung nicht bestätigt — prüfe den Verlauf und tippe den Vorschlag erneut an, falls er fehlt.",
+      "comments_pending_reconnect": "Deine Kommentare stehen noch aus. Der Chat stellt die Verbindung wieder her -- drück gleich noch einmal auf Alle senden.",
+      "delivery_unconfirmed_comments": "Zustellung nicht bestätigt -- deine Kommentare stehen noch aus; prüf den Verlauf, bevor du erneut auf Alle senden drückst.",
+      "comments_sent_one": "1 Kommentar gesendet",
+      "comments_sent": "{{count}} Kommentare gesendet",
+      "comments_refused": "Der Crewmate konnte deine Kommentare gerade nicht entgegennehmen — sie sind noch hier; versuche es erneut."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

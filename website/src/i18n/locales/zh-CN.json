@@ -11991,7 +11991,12 @@
       "dismiss_until_next_visit": "下次访问前不再显示",
       "could_not_check_restored_tabs": "无法确认上次重启后所有标签页是否已恢复。",
       "could_not_start_fresh_session": "无法开始新会话",
-      "delivery_unconfirmed_option": "尚未确认送达——请先查看对话记录，若未出现再点一下该建议。"
+      "delivery_unconfirmed_option": "尚未确认送达——请先查看对话记录，若未出现再点一下该建议。",
+      "comments_pending_reconnect": "聊天正在重连 — 你的评论仍在等待发送；稍后再次点击\"全部提交\"。",
+      "delivery_unconfirmed_comments": "投递未确认 -- 你的评论仍处于待发送状态；请在再次按下“全部提交”之前，查看上方的对话。",
+      "comments_sent_one": "1 条评论已发送",
+      "comments_sent": "{{count}} 条评论已发送",
+      "comments_refused": "队员暂时无法接收你的评论—它们仍在这里，请再试一次。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",

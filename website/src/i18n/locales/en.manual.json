@@ -5634,7 +5634,12 @@
       "dismiss_until_next_visit": "Dismiss until next visit",
       "could_not_check_restored_tabs": "Could not check whether every tab was restored after the last restart.",
       "could_not_start_fresh_session": "Couldn't start a fresh session",
-      "delivery_unconfirmed_option": "Delivery not confirmed — check the conversation above, then tap the suggestion again if it is missing."
+      "delivery_unconfirmed_option": "Delivery not confirmed — check the conversation above, then tap the suggestion again if it is missing.",
+      "comments_pending_reconnect": "Your comments are still pending. The chat is reconnecting -- press Submit All again in a moment.",
+      "delivery_unconfirmed_comments": "Delivery not confirmed -- your comments are still pending; check the conversation above before pressing Submit All again.",
+      "comments_sent_one": "1 comment sent",
+      "comments_sent": "{{count}} comments sent",
+      "comments_refused": "The crewmate couldn't take your comments right now — they're still here; try again."
     },
     "chatSidebar": {
       "no_sessions_match_folders": "No sessions match — only a folder name did",

@@ -11991,7 +11991,12 @@
       "dismiss_until_next_visit": "次回アクセスまで非表示にする",
       "could_not_check_restored_tabs": "前回の再起動後にすべてのタブが復元されたかを確認できませんでした。",
       "could_not_start_fresh_session": "新しいセッションを開始できませんでした",
-      "delivery_unconfirmed_option": "送信が確認できません — 会話履歴を確認し、見当たらなければ提案をもう一度タップしてください。"
+      "delivery_unconfirmed_option": "送信が確認できません — 会話履歴を確認し、見当たらなければ提案をもう一度タップしてください。",
+      "comments_pending_reconnect": "コメントはまだ送信されていません。チャットが再接続中です — もう少ししたら「すべて送信」をもう一度押してください。",
+      "delivery_unconfirmed_comments": "配信が確認されていません -- コメントはまだ送信されていません。もう一度「すべて送信」を押す前に、上の会話を確認してください。",
+      "comments_sent_one": "1件のコメントを送信しました",
+      "comments_sent": "{{count}}件のコメントを送信しました",
+      "comments_refused": "クルーメートは今すぐあなたのコメントを受け取れませんでした—まだここにあります。もう一度試してください。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

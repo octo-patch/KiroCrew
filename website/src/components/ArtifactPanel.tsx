@@ -44,7 +44,7 @@ interface Props {
    *  an optional delivery verdict: an explicit `false` (or a promise of one)
    *  means the message was NOT delivered, so the batch must stay pending; any
    *  other return counts as delivered. */
-  onSubmitComments?: (message: string) => void | boolean | Promise<void | boolean>
+  onSubmitComments?: (message: string, count?: number) => void | boolean | Promise<void | boolean>
   /** Gateway connection flag. Gates the submit-to-chat affordance (mirrors
    *  ChatInput's Send gating) so a batch submit can't fire while the chat
    *  send path would silently refuse it. Defaults true for embeddings

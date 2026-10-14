@@ -12351,7 +12351,12 @@
       "dismiss_until_next_visit": "Nascondi fino alla prossima visita",
       "could_not_check_restored_tabs": "Non è stato possibile verificare se tutte le schede sono state ripristinate dopo l'ultimo riavvio.",
       "could_not_start_fresh_session": "Impossibile avviare una nuova sessione",
-      "delivery_unconfirmed_option": "Consegna non confermata: controlla la conversazione e, se manca, tocca di nuovo il suggerimento."
+      "delivery_unconfirmed_option": "Consegna non confermata: controlla la conversazione e, se manca, tocca di nuovo il suggerimento.",
+      "comments_pending_reconnect": "I tuoi commenti sono ancora in sospeso. La chat si sta riconnettendo -- premi di nuovo Invia tutti tra un momento.",
+      "delivery_unconfirmed_comments": "Consegna non confermata -- i tuoi commenti sono ancora in sospeso; controlla la conversazione sopra prima di premere di nuovo Invia tutti.",
+      "comments_sent_one": "1 commento inviato",
+      "comments_sent": "{{count}} commenti inviati",
+      "comments_refused": "Il crewmate non ha potuto ricevere i tuoi commenti adesso — sono ancora qui; riprova."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

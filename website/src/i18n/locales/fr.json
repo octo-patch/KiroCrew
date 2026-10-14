@@ -12351,7 +12351,12 @@
       "dismiss_until_next_visit": "Masquer jusqu’à la prochaine visite",
       "could_not_check_restored_tabs": "Impossible de vérifier si tous les onglets ont été restaurés après le dernier redémarrage.",
       "could_not_start_fresh_session": "Impossible de démarrer une nouvelle session",
-      "delivery_unconfirmed_option": "Envoi non confirmé — vérifie la conversation, puis appuie de nouveau sur la suggestion si elle n'y figure pas."
+      "delivery_unconfirmed_option": "Envoi non confirmé — vérifie la conversation, puis appuie de nouveau sur la suggestion si elle n'y figure pas.",
+      "comments_pending_reconnect": "Tes commentaires sont toujours en attente. Le chat se reconnecte ; appuie sur Tout soumettre dans un instant.",
+      "delivery_unconfirmed_comments": "Livraison non confirmée -- tes commentaires sont toujours en attente ; vérifie la conversation ci-dessus avant d’appuyer à nouveau sur Tout soumettre.",
+      "comments_sent_one": "1 commentaire envoyé",
+      "comments_sent": "{{count}} commentaires envoyés",
+      "comments_refused": "Le crewmate ne peut pas recevoir tes commentaires pour l’instant — ils sont toujours là ; réessaie."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",

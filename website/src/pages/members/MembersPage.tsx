@@ -105,7 +105,7 @@ import { i18nT } from '../../i18n/t'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, reportForError, type ErrorReport } from '../../utils/errorReport'
-import { useAppDispatch, useAppSelector } from '../../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
 import { selectSidebarAutomationRunningKeys, selectSlotMessages, selectSlotStreamState, selectSlotTurnFromWake } from '../../store/chatSlice'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { markSlotRead } from '../../store/dashboardSlice'
@@ -134,6 +134,10 @@ import CrewDashboardTab from './CrewDashboardTab'
 import { DASHBOARD_PREVIEW_PARAM, DASHBOARD_PREVIEW_VALUE, isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
 import { dashboardPreviewMemberFromRef, dashboardPreviewSlugFromRef } from '../../utils/dashboardPreview'
 import { mergePaneDraft } from '../../utils/chatPaneDrafts'
+import { sendTurn } from '../../chat-core/transport/sendTurn'
+import { commentsPendingReconnectCopy, commentsRefusedCopy, commentsSentCopy, deliveryUnconfirmedCommentsCopy } from '../../chat-core/transport/receiptCopy'
+import { slotBusySteer } from '../../components/chat-input/busySend'
+import { useJevAutoSend } from '../chat/useJevAutoSend'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
@@ -2821,6 +2825,8 @@ export default function MembersPage() {
   const besideRef = useRef(beside)
   besideRef.current = beside
   const [actionError, setActionError] = useState('')
+  const [actionInfo, setActionInfo] = useState('')
+  const actionInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // A failed document read is reported above the thread. In overlay mode the
   // open panel covers exactly that spot — the click that failed happened inside
   // it — so the overlay closes as the notice appears; otherwise the failure is
@@ -2869,6 +2875,63 @@ export default function MembersPage() {
   const openArtifactGuarded = useCallback((slug: string) => {
     void openArtifact(slug)
   }, [openArtifact])
+  // Inline comments on a document in the side panel. Its Submit sends the
+  // batch into this crewmate's chat the way the chat page sends it into the
+  // session the file was opened from: the chat-core transport, with the
+  // composer's busy-send decision for that slot (steer, queue or auto). The
+  // target is the confirmed DM slot read at the press: the ref the document
+  // actions above stamp every tab with, on a strip bucketed per crewmate, so a
+  // batch only ever reaches the crewmate the panel belongs to. While the thread
+  // is unconfirmed (a revalidation, a refusal) it sends nothing.
+  //
+  // On any non-success receipt the comments are kept pending for a retry.
+  // Error and notice banners are shown via setActionError (the page's own
+  // action-error slot, outside the DM transcript -- the crewmate's DM stays
+  // messages-only per the 2026-10-09 recorded decision):
+  //  - !slot: reconnecting banner (`commentsPendingReconnectCopy`)
+  //  - refused: generic user-friendly banner (`commentsRefusedCopy`) --
+  //    the server's internal reason is NOT shown in the UI
+  //  - transport-error / response-late: delivery-unconfirmed banner
+  //    (`deliveryUnconfirmedCommentsCopy`) -- delivery is indeterminate for
+  //    both, so the same copy tells the user to check before retrying
+  //  - confirmed delivery: "N comments sent" banner (`commentsSentCopy`)
+  const appStore = useAppStore()
+  const jevAutoConsented = useJevAutoSend()
+  const submitComments = useCallback(async (message: string, count = 0) => {
+    if (!connected) return false
+    const slot = activeSlotRef.current
+    if (!slot) {
+      // Thread is being re-confirmed. Show a reconnecting banner via the page's
+      // action-error state; the comments stay pending for the retry.
+      setActionError(commentsPendingReconnectCopy())
+      return false
+    }
+    const steer = slotBusySteer(appStore.getState(), slot, jevAutoConsented)
+    const receipt = await sendTurn({ message, slot, ...(steer ? { steer } : {}) })
+    if (receipt.status === 'refused') {
+      // Show a generic user-friendly refused message (not the raw server reason)
+      // via setActionError so the overlay stays open (showActionError would close
+      // it in non-beside mode, losing in-progress comment-row edits).
+      setActionError(commentsRefusedCopy())
+      return false
+    }
+    if (receipt.status === 'transport-error' || receipt.status === 'response-late') {
+      // Delivery is indeterminate for both: the request may or may not have
+      // reached the gateway. Show the delivery-unconfirmed banner and keep
+      // comments so the user can verify before retrying.
+      setActionError(deliveryUnconfirmedCommentsCopy())
+      return false
+    }
+    // Confirmed delivery (dispatched, queued or unknown).
+    if (count > 0) {
+      // Success is neutral feedback: use actionInfo (a plain status text),
+      // NOT actionError, so ErrorNotice is reserved for actual failures.
+      if (actionInfoTimerRef.current) clearTimeout(actionInfoTimerRef.current)
+      setActionInfo(commentsSentCopy(count))
+      actionInfoTimerRef.current = setTimeout(() => setActionInfo(''), 5000)
+    }
+    return receipt.status === 'dispatched' || receipt.status === 'queued' || receipt.status === 'unknown'
+  }, [connected, appStore, jevAutoConsented, setActionError])
   // Opening one of the crewmate's sessions leaves `/members` for `/chat` outright, so it
   // destroys the Schedules form as surely as the identity pill does. It is a raw
   // `navigate`, which the leave channel never sees -- only callers that ask reach it --
@@ -4892,6 +4955,16 @@ export default function MembersPage() {
                 testId="member-panel-action-error"
               />
             )}
+            {actionInfo && (
+              <p
+                className="text-[13px] text-muted px-4 py-1.5"
+                data-testid="member-panel-action-info"
+                role="status"
+                aria-live="polite"
+              >
+                {actionInfo}
+              </p>
+            )}
             {/* The editor's roster read (crewAgentsQuery, enabled only once the
                 identity pill sets editingCrew) failed: without this the pill would
                 be a silent dead click — editingAgent stays undefined, the hook's
@@ -5449,6 +5522,11 @@ export default function MembersPage() {
             onOpenWorkingTreeDiff: openWorkingTreeDiff,
             onArtifactOpen: openArtifactInPanel,
             onFileSave: saveFile,
+            // Document tabs take inline comments here as on the chat page; their
+            // Submit lands in this crewmate's chat (`submitComments`) and is
+            // disabled while the gateway is offline.
+            onSubmitComments: submitComments,
+            connected,
             leadingTabs,
             slotTitle: crewDisplayName(activeView ?? active),
             canDockBottom: false,
