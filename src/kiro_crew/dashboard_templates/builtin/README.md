@@ -6,7 +6,7 @@ the registry's only gate. A page that renders on a crewmate's Dashboard tab runs
 own script against that crewmate's task titles and summaries inside a frame that can
 navigate itself, so it comes from one of two places a person put it: this directory,
 which went through review, or the operator's own folder (see "An operator's own page"
-below). Thirteen ship: the first four are below, five more are in "The round-7 set"
+below). Fourteen ship: the first five are below, five more are in "The round-7 set"
 further down, then `office` in "A desk that ships decks and mail", two in
 "The two views", and `kirocrew-conductor` in "A page named for its crewmate".
 
@@ -15,6 +15,7 @@ further down, then `office` in "A desk that ships decks and mail", two in
 | `project-report` | `workstreams`, `panel` | what this crewmate did, what each thing cost, what came of it, what needs the reader |
 | `goal-board` | `work` | the work ledger it conducts: items, states, verdicts |
 | `work-kanban` | `work` | that same board as columns, including the one waiting on the conductor's own verdict |
+| `quest-log` | `work` | what needs the person now, what is active, what is advised, and what comes next |
 | `session-ledger` | `ledger` | what a long-running session is carrying, and what it would resume from |
 
 `project-report` is the DEFAULT: a crewmate that never adopted a template, and has no
@@ -25,6 +26,13 @@ it replaced -- `crewmate-overview`, `work-map`, `spend-and-tools` -- were each o
 of the same question asked three ways, and a reader had to assemble the answer from
 three pages of engineering counters. One page answering the four questions in order
 replaces them.
+
+### Quest log evidence
+
+`quest-log` is opt-in. Shipping it changes no current page or default. It reads the
+existing `work` fold, while its one clearly marked `advice` field carries up to three
+current actions. `dashboard_preview` stages the page without applying it, and dashboard
+instance history keeps the existing rollback path.
 
 ## The two rules every page here follows
 

@@ -1,0 +1,365 @@
+<div class="ql">
+  <style>
+    .ql {
+      --ql-stone: color-mix(in oklab, var(--bg, #101217) 91%, #4a4031 9%);
+      --ql-iron: color-mix(in oklab, var(--card, #191c22) 89%, #40382d 11%);
+      --ql-paper: color-mix(in oklab, var(--bg-elevated, #24221d) 84%, #8c7449 16%);
+      --ql-paper-soft: color-mix(in oklab, var(--card, #1b1d22) 94%, #9b7a42 6%);
+      --ql-edge: color-mix(in oklab, var(--border, #34363c) 78%, #9a8156 22%);
+      --ql-gold: color-mix(in oklab, var(--warn, #d6ad57) 82%, var(--text, #ece8df));
+      --ql-blue: var(--info, #65a8e8);
+      --ql-red: var(--danger, #d76b63);
+      --ql-green: var(--ok, #64b881);
+      --ql-ink: var(--text, #e9e5dc);
+      --ql-strong: var(--text-strong, #fffdf7);
+      --ql-muted: var(--muted, #aaa398);
+      background: var(--ql-stone);
+      color: var(--ql-ink);
+      font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+      padding: 10px;
+      min-width: 0;
+    }
+    @media (prefers-color-scheme: light) {
+      .ql {
+        --ql-stone: color-mix(in oklab, var(--bg, #f5f2e9) 93%, #746040 7%);
+        --ql-iron: color-mix(in oklab, var(--card, #fffdf7) 88%, #8c754d 12%);
+        --ql-paper: color-mix(in oklab, var(--bg-elevated, #fbf4df) 84%, #c9a966 16%);
+        --ql-paper-soft: color-mix(in oklab, var(--card, #fffdf7) 92%, #c7a35d 8%);
+        --ql-edge: color-mix(in oklab, var(--border, #d1c7b3) 72%, #826a40 28%);
+        --ql-gold: color-mix(in oklab, var(--warn, #9a6a15) 84%, var(--text, #2d261c));
+        --ql-blue: var(--info, #2266a6);
+        --ql-red: var(--danger, #a63e38);
+        --ql-green: var(--ok, #257343);
+        --ql-ink: var(--text, #302b23);
+        --ql-strong: var(--text-strong, #17130e);
+        --ql-muted: var(--muted, #6f685c);
+      }
+    }
+    .ql *, .ql *::before, .ql *::after { box-sizing: border-box; }
+    .ql-frame { max-width: 860px; margin: 0 auto; border: 1px solid var(--ql-edge); border-radius: 10px;
+      background: var(--ql-iron); box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--ql-edge) 22%, transparent), 0 12px 36px -24px #000; overflow: hidden; }
+    .ql-head { padding: 12px 13px; border-bottom: 1px solid var(--ql-edge);
+      background: linear-gradient(145deg, color-mix(in oklab, var(--ql-iron) 88%, #000), var(--ql-iron)); }
+    .ql-kicker { margin: 0; color: var(--ql-gold); font-size: 10px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+    .ql-goal { margin: 3px 0 0; color: var(--ql-strong); font: 650 16px/1.3 Georgia, "Times New Roman", serif; overflow-wrap: anywhere; }
+    .ql-state { margin: 6px 0 0; color: var(--ql-muted); font-size: 11.5px; overflow-wrap: anywhere; }
+    .ql-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 7px; color: var(--ql-muted); font-size: 10.5px; }
+    .ql-meta b { color: var(--ql-ink); font-weight: 600; }
+    .ql-body { display: grid; gap: 9px; padding: 9px; }
+    .ql-panel { border: 1px solid var(--ql-edge); border-radius: 8px; background: var(--ql-paper-soft); overflow: hidden; min-width: 0; }
+    .ql-panel-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 7px 9px;
+      border-bottom: 1px solid color-mix(in oklab, var(--ql-edge) 75%, transparent); background: var(--ql-paper); }
+    .ql-panel-h h2 { margin: 0; color: var(--ql-strong); font: 700 11px/1.2 Georgia, "Times New Roman", serif; letter-spacing: .06em; text-transform: uppercase; }
+    .ql-count { color: var(--ql-muted); font: 600 10px/1 system-ui, sans-serif; white-space: nowrap; }
+    .ql-list { list-style: none; margin: 0; padding: 0; }
+    .ql-row { position: relative; padding: 8px 9px 8px 13px; min-width: 0; }
+    .ql-row + .ql-row { border-top: 1px solid color-mix(in oklab, var(--ql-edge) 52%, transparent); }
+    .ql-row::before { content: ""; position: absolute; inset: 8px auto 8px 5px; width: 3px; border-radius: 3px; background: var(--ql-tone, var(--ql-blue)); }
+    .ql-row-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
+    .ql-title { color: var(--ql-strong); font-weight: 650; overflow-wrap: anywhere; min-width: 0; }
+    .ql-tag { flex: none; border: 1px solid var(--ql-tone, var(--ql-blue)); border-radius: 999px; padding: 1px 6px;
+      color: var(--ql-tone, var(--ql-blue)); font-size: 9.5px; font-weight: 700; white-space: nowrap; }
+    .ql-action { margin-top: 4px; color: var(--ql-ink); font-size: 11.5px; overflow-wrap: anywhere; }
+    .ql-action b { color: var(--ql-gold); font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; }
+    .ql-summary { margin-top: 3px; color: var(--ql-muted); font-size: 10.5px; overflow-wrap: anywhere; }
+    .ql-foot { display: flex; flex-wrap: wrap; gap: 5px 9px; align-items: center; margin-top: 5px; color: var(--ql-muted); font-size: 10px; }
+    .ql-id { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
+    .ql-link { color: var(--ql-blue); text-decoration: underline; text-underline-offset: 2px; font-weight: 650; }
+    .ql-link:visited { color: color-mix(in oklab, var(--ql-blue) 65%, var(--ql-muted)); }
+    .ql-link:focus-visible { outline: 2px solid var(--ql-gold); outline-offset: 2px; border-radius: 2px; }
+    .ql-empty, .ql-more { margin: 0; padding: 9px; color: var(--ql-muted); font-size: 11px; }
+    .ql-more { border-top: 1px dashed var(--ql-edge); color: var(--ql-gold); }
+    .ql-advice .ql-row { --ql-tone: var(--ql-gold); }
+    .ql-advice-mark { color: var(--ql-gold); font-size: 9px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    .ql-advice-stale { color: var(--ql-muted); }
+    .ql-finished { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 8px 10px;
+      border-top: 1px solid var(--ql-edge); color: var(--ql-muted); background: color-mix(in oklab, var(--ql-iron) 93%, #000 7%); font-size: 10.5px; }
+    .ql-finished b { color: var(--ql-green); font-size: 13px; }
+    .ql-omitted { color: var(--ql-gold); text-align: right; }
+    .ql-live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; background: var(--ql-blue);
+      animation: ql-breathe 2.4s ease-in-out infinite; vertical-align: 1px; }
+    @keyframes ql-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .42; } }
+    @media (min-width: 720px) {
+      .ql-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+      .ql-needs { grid-column: 1 / -1; }
+      .ql-upcoming { grid-column: 1 / -1; }
+    }
+    @media (max-width: 360px) {
+      .ql { padding: 5px; font-size: 12px; }
+      .ql-head { padding: 10px; }
+      .ql-body { padding: 6px; gap: 7px; }
+      .ql-row-top { display: block; }
+      .ql-tag { display: inline-block; margin-top: 4px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .ql *, .ql *::before, .ql *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+    }
+  </style>
+
+  <div class="ql-frame">
+    <header class="ql-head">
+      <p class="ql-kicker" data-i18n="quest_log">Quest log</p>
+      <h1 class="ql-goal" data-dashboard-field="goal">-</h1>
+      <p class="ql-state" id="ql-state" aria-live="polite">-</p>
+      <div class="ql-meta">
+        <span id="ql-round-wrap"><span data-i18n="round">Round</span> <b data-dashboard-field="round">-</b></span>
+        <span id="ql-updated-wrap"><span data-i18n="updated">Updated</span> <b data-dashboard-field="last_entry_at">-</b></span>
+      </div>
+    </header>
+
+    <main class="ql-body">
+      <section class="ql-panel ql-needs" aria-labelledby="ql-needs-title">
+        <div class="ql-panel-h"><h2 id="ql-needs-title" data-i18n="needs_you">Needs you</h2><span class="ql-count" id="ql-needs-count">0</span></div>
+        <ul class="ql-list" id="ql-needs"></ul>
+      </section>
+
+      <section class="ql-panel ql-active" aria-labelledby="ql-active-title">
+        <div class="ql-panel-h"><h2 id="ql-active-title" data-i18n="active">Active quests</h2><span class="ql-count" id="ql-active-count">0</span></div>
+        <ul class="ql-list" id="ql-active"></ul>
+      </section>
+
+      <section class="ql-panel ql-advice" aria-labelledby="ql-advice-title">
+        <div class="ql-panel-h"><h2 id="ql-advice-title" data-i18n="advice">War table advice</h2><span class="ql-advice-mark" data-i18n="agent_advice">Agent advice</span></div>
+        <ul class="ql-list" id="ql-advice"></ul>
+      </section>
+
+      <section class="ql-panel ql-upcoming" aria-labelledby="ql-upcoming-title">
+        <div class="ql-panel-h"><h2 id="ql-upcoming-title" data-i18n="upcoming">Upcoming quests</h2><span class="ql-count" id="ql-upcoming-count">0</span></div>
+        <ul class="ql-list" id="ql-upcoming"></ul>
+      </section>
+    </main>
+
+    <footer class="ql-finished">
+      <span><span data-i18n="finished">Finished</span> <b id="ql-finished">0</b></span>
+      <span class="ql-omitted" id="ql-omitted"></span>
+    </footer>
+
+    <span data-dashboard-field="items" hidden></span>
+    <span data-dashboard-field="omitted" hidden></span>
+    <span data-dashboard-field="forgotten" hidden></span>
+    <span data-dashboard-field="advice" hidden></span>
+  </div>
+
+  <script>
+    (function () {
+      var DASH = '\u2014';
+      var ROW_CAP = 12;
+      var PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[0-9]+\/?$/;
+      var I18N = {
+        en: {
+          quest_log: 'Quest log', round: 'Round', updated: 'Updated', needs_you: 'Needs you', active: 'Active quests',
+          advice: 'War table advice', agent_advice: 'Agent advice', upcoming: 'Upcoming quests', finished: 'Finished',
+          no_goal: 'No current goal in the work log.', no_needs: 'Nothing needs you right now.', no_active: 'No quest is active right now.',
+          no_advice: 'No current advice. The task facts above still stand.', stale_advice: 'Advice is older than the work log, so it is hidden.',
+          no_upcoming: 'No queued quest or dependency is recorded.', state: '{active} active \u00b7 {needs} needs you \u00b7 {upcoming} upcoming \u00b7 {finished} finished',
+          action: 'Action', answer: 'Answer this task in chat.', approve: 'Approve the pending request in chat.', clear: 'Clear the blocker named below.',
+          working: 'Working', review: 'Review', active_tag: 'Open', queued: 'Queued', dependency: 'Dependency', question: 'Question', blocked: 'Blocked',
+          pr: 'PR #{n} \u2197', more: '{n} more not shown', omitted: '{n} log entries omitted', task: 'Task {id}', why: 'Why',
+          status_progress: 'worker reports progress', status_done: 'worker reports done', updated_value: '{v}'
+        },
+        'zh-CN': {
+          quest_log: '\u4efb\u52a1\u65e5\u5fd7', round: '\u8f6e\u6b21', updated: '\u66f4\u65b0\u4e8e', needs_you: '\u9700\u8981\u4f60', active: '\u8fdb\u884c\u4e2d\u7684\u4efb\u52a1',
+          advice: '\u4f5c\u6218\u684c\u5efa\u8bae', agent_advice: '\u667a\u80fd\u5efa\u8bae', upcoming: '\u5f85\u5f00\u59cb\u7684\u4efb\u52a1', finished: '\u5df2\u7ed3\u675f',
+          no_goal: '\u5de5\u4f5c\u8bb0\u5f55\u4e2d\u8fd8\u6ca1\u6709\u5f53\u524d\u76ee\u6807\u3002', no_needs: '\u73b0\u5728\u6ca1\u6709\u4e8b\u60c5\u9700\u8981\u4f60\u3002', no_active: '\u73b0\u5728\u6ca1\u6709\u8fdb\u884c\u4e2d\u7684\u4efb\u52a1\u3002',
+          no_advice: '\u73b0\u5728\u6ca1\u6709\u5efa\u8bae\u3002\u4e0a\u65b9\u7684\u4efb\u52a1\u4e8b\u5b9e\u4ecd\u7136\u6709\u6548\u3002', stale_advice: '\u5efa\u8bae\u65e9\u4e8e\u5de5\u4f5c\u8bb0\u5f55\uff0c\u56e0\u6b64\u5df2\u9690\u85cf\u3002',
+          no_upcoming: '\u6ca1\u6709\u8bb0\u5f55\u5f85\u5f00\u59cb\u4efb\u52a1\u6216\u4f9d\u8d56\u3002', state: '{active} \u9879\u8fdb\u884c\u4e2d \u00b7 {needs} \u9879\u9700\u8981\u4f60 \u00b7 {upcoming} \u9879\u5f85\u5f00\u59cb \u00b7 {finished} \u9879\u5df2\u7ed3\u675f',
+          action: '\u64cd\u4f5c', answer: '\u5728\u804a\u5929\u4e2d\u56de\u7b54\u8fd9\u9879\u4efb\u52a1\u3002', approve: '\u5728\u804a\u5929\u4e2d\u6279\u51c6\u5f85\u5904\u7406\u8bf7\u6c42\u3002', clear: '\u89e3\u51b3\u4e0b\u65b9\u8bb0\u5f55\u7684\u963b\u585e\u3002',
+          working: '\u8fdb\u884c\u4e2d', review: '\u5f85\u68c0\u67e5', active_tag: '\u5df2\u5f00\u59cb', queued: '\u5df2\u6392\u961f', dependency: '\u4f9d\u8d56', question: '\u95ee\u9898', blocked: '\u53d7\u963b',
+          pr: 'PR #{n} \u2197', more: '\u8fd8\u6709 {n} \u9879\u672a\u663e\u793a', omitted: '{n} \u6761\u65e5\u5fd7\u8bb0\u5f55\u672a\u663e\u793a', task: '\u4efb\u52a1 {id}', why: '\u539f\u56e0',
+          status_progress: '\u6267\u884c\u8005\u6b63\u5728\u8fdb\u884c', status_done: '\u6267\u884c\u8005\u5df2\u62a5\u544a\u5b8c\u6210', updated_value: '{v}'
+        }
+      };
+      function locale() {
+        var l = (window.kirocrew || {}).locale;
+        return typeof l === 'string' && Object.prototype.hasOwnProperty.call(I18N, l) ? l : 'en';
+      }
+      function i18n(key, vars) {
+        var table = I18N[locale()];
+        var out = Object.prototype.hasOwnProperty.call(table, key) ? table[key] : I18N.en[key];
+        if (out === undefined) out = key;
+        if (vars) out = out.replace(/\{(\w+)\}/g, function (m, k) { return Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m; });
+        return out;
+      }
+      function applyStatic() {
+        var nodes = document.querySelectorAll('[data-i18n]');
+        for (var i = 0; i < nodes.length; i++) nodes[i].textContent = i18n(nodes[i].getAttribute('data-i18n'));
+      }
+      function fields() { return (window.kirocrew || {}).fields || {}; }
+      function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+      function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+      function el(tag, cls, words) {
+        var node = document.createElement(tag);
+        if (cls) node.className = cls;
+        if (words !== undefined && words !== null) node.textContent = String(words);
+        return node;
+      }
+      function items() {
+        var value = fields().items;
+        return Array.isArray(value) ? value.filter(function (item) { return item && typeof item === 'object' && !Array.isArray(item); }) : [];
+      }
+      function openItems() { return items().filter(function (item) { return text(item.state) === 'open'; }); }
+      function needsYou(item) {
+        if (text(item.state) !== 'open') return false;
+        if (item.status === 'question') return true;
+        return item.status === 'blocked' && (item.reason === 'approval' || item.reason === 'needs_human');
+      }
+      function upcoming(item) {
+        if (text(item.state) !== 'open' || needsYou(item)) return false;
+        return !text(item.status) || item.status === 'blocked';
+      }
+      function active(item) { return text(item.state) === 'open' && !needsYou(item) && !upcoming(item); }
+      function forgottenCount() {
+        var value = fields().forgotten;
+        var found = value && typeof value === 'object' && !Array.isArray(value) ? num(value.items) : null;
+        return found !== null && found > 0 ? Math.floor(found) : 0;
+      }
+      function finishedCount() {
+        return items().filter(function (item) { return text(item.state) && text(item.state) !== 'open'; }).length + forgottenCount();
+      }
+      function stamp(v) {
+        var raw = text(v);
+        if (!raw) return null;
+        var ms = Date.parse(raw);
+        if (!isFinite(ms)) return raw;
+        try { return new Date(ms).toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' }); }
+        catch (e) { return raw; }
+      }
+      function tone(row, value) { row.style.setProperty('--ql-tone', value); }
+      function taskTitle(item) { return text(item.title) || text(item.item_id) || DASH; }
+      function taskFoot(row, item) {
+        var foot = el('div', 'ql-foot');
+        var id = text(item.item_id);
+        if (id) foot.appendChild(el('span', 'ql-id', i18n('task', { id: id })));
+        var pr = num(item.pr);
+        var acceptance = item.acceptance && typeof item.acceptance === 'object' && !Array.isArray(item.acceptance) ? item.acceptance : {};
+        var repo = text(acceptance.repo);
+        var url = repo && pr !== null ? 'https://github.com/' + repo + '/pull/' + Math.floor(pr) : null;
+        if (url && PR_URL.test(url)) {
+          var link = el('a', 'ql-link', i18n('pr', { n: Math.floor(pr) }));
+          link.href = url;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.addEventListener('click', function (event) {
+            event.preventDefault();
+            try { parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*'); }
+            catch (e) { /* The host is absent, so the sandbox keeps the link closed. */ }
+          });
+          foot.appendChild(link);
+        }
+        if (foot.childNodes.length) row.appendChild(foot);
+      }
+      function summary(row, value) {
+        var words = text(value);
+        if (words) row.appendChild(el('div', 'ql-summary', words));
+      }
+      function exactAction(item) {
+        if (item.reason === 'approval') return i18n('approve');
+        if (item.reason === 'needs_human') return i18n('clear');
+        return i18n('answer');
+      }
+      function taskRow(item, kind) {
+        var row = el('li', 'ql-row');
+        var top = el('div', 'ql-row-top');
+        top.appendChild(el('span', 'ql-title', taskTitle(item)));
+        var label = kind;
+        if (kind === 'active') label = item.status === 'done' ? i18n('review') : i18n('working');
+        if (kind === 'upcoming') label = item.status === 'blocked' ? i18n('dependency') : i18n('queued');
+        if (kind === 'needs') label = item.status === 'question' ? i18n('question') : i18n('blocked');
+        top.appendChild(el('span', 'ql-tag', label));
+        row.appendChild(top);
+        if (kind === 'needs') {
+          var action = el('div', 'ql-action');
+          action.appendChild(el('b', null, i18n('action') + ': '));
+          action.appendChild(document.createTextNode(exactAction(item)));
+          row.appendChild(action);
+          tone(row, 'var(--ql-red)');
+        } else if (kind === 'active') {
+          tone(row, item.status === 'done' ? 'var(--ql-green)' : 'var(--ql-blue)');
+        } else {
+          tone(row, item.status === 'blocked' ? 'var(--ql-red)' : 'var(--ql-gold)');
+        }
+        summary(row, item.summary || item.decision);
+        taskFoot(row, item);
+        return row;
+      }
+      function drawTasks(hostId, countId, list, kind, emptyKey) {
+        var host = document.getElementById(hostId);
+        var count = document.getElementById(countId);
+        if (!host || !count) return;
+        host.textContent = '';
+        count.textContent = String(list.length);
+        for (var i = 0; i < list.length && i < ROW_CAP; i++) host.appendChild(taskRow(list[i], kind));
+        if (!list.length) host.appendChild(el('li', 'ql-empty', i18n(emptyKey)));
+        if (list.length > ROW_CAP) host.appendChild(el('li', 'ql-more', i18n('more', { n: list.length - ROW_CAP })));
+      }
+      function adviceRows() {
+        var api = window.kirocrew || {};
+        var names = Array.isArray(api.agentic) ? api.agentic : [];
+        var raw = fields().advice;
+        if (names.indexOf('advice') === -1 || !Array.isArray(raw)) return { state: 'empty', rows: [] };
+        var rows = raw.filter(function (entry) { return entry && typeof entry === 'object' && text(entry.text) && text(entry.why); }).slice(0, 3);
+        if (!rows.length) return { state: 'empty', rows: [] };
+        var wrote = text((api.written_at || {}).advice);
+        var moved = text(fields().last_entry_at);
+        var wroteMs = wrote ? Date.parse(wrote) : NaN;
+        var movedMs = moved ? Date.parse(moved) : NaN;
+        if (!isFinite(wroteMs) || (isFinite(movedMs) && movedMs > wroteMs)) return { state: 'stale', rows: [] };
+        return { state: 'current', rows: rows };
+      }
+      function drawAdvice() {
+        var host = document.getElementById('ql-advice');
+        if (!host) return;
+        host.textContent = '';
+        var advice = adviceRows();
+        if (advice.state !== 'current') {
+          host.appendChild(el('li', 'ql-empty ql-advice-stale', i18n(advice.state === 'stale' ? 'stale_advice' : 'no_advice')));
+          return;
+        }
+        for (var i = 0; i < advice.rows.length; i++) {
+          var item = advice.rows[i];
+          var row = el('li', 'ql-row');
+          row.appendChild(el('div', 'ql-title', text(item.text)));
+          var why = el('div', 'ql-summary');
+          why.appendChild(el('b', null, i18n('why') + ': '));
+          why.appendChild(document.createTextNode(text(item.why)));
+          row.appendChild(why);
+          var taskId = text(item.task_id);
+          if (taskId) row.appendChild(el('div', 'ql-foot ql-id', i18n('task', { id: taskId })));
+          host.appendChild(row);
+        }
+      }
+      function drawHead(need, act, next) {
+        var goal = document.querySelector('[data-dashboard-field="goal"]');
+        if (goal) goal.textContent = text(fields().goal) || i18n('no_goal');
+        var state = document.getElementById('ql-state');
+        if (state) state.textContent = i18n('state', { active: act.length, needs: need.length, upcoming: next.length, finished: finishedCount() });
+        var round = document.getElementById('ql-round-wrap');
+        if (round) round.hidden = !(num(fields().round) > 0);
+        var updated = document.getElementById('ql-updated-wrap');
+        if (updated) updated.hidden = !text(fields().last_entry_at);
+        var updatedValue = document.querySelector('[data-dashboard-field="last_entry_at"]');
+        if (updatedValue && text(fields().last_entry_at)) updatedValue.textContent = stamp(fields().last_entry_at);
+      }
+      function render() {
+        applyStatic();
+        var open = openItems();
+        var need = open.filter(needsYou);
+        var act = open.filter(active);
+        var next = open.filter(upcoming);
+        drawHead(need, act, next);
+        drawTasks('ql-needs', 'ql-needs-count', need, 'needs', 'no_needs');
+        drawTasks('ql-active', 'ql-active-count', act, 'active', 'no_active');
+        drawAdvice();
+        drawTasks('ql-upcoming', 'ql-upcoming-count', next, 'upcoming', 'no_upcoming');
+        var finished = document.getElementById('ql-finished');
+        if (finished) finished.textContent = String(finishedCount());
+        var omitted = document.getElementById('ql-omitted');
+        var omittedCount = num(fields().omitted);
+        if (omitted) omitted.textContent = omittedCount && omittedCount > 0 ? i18n('omitted', { n: Math.floor(omittedCount) }) : '';
+      }
+      render();
+      window.addEventListener('load', render);
+      window.addEventListener('message', function () { setTimeout(render, 0); });
+    }());
+  </script>
+</div>

@@ -1,0 +1,33 @@
+{
+  "id": "quest-log",
+  "version": 1,
+  "title": "Quest log",
+  "description": "A compact right-panel view of the current goal, the exact tasks needing the person, active work, current advice, queued or dependency-blocked work, and one folded finished count. Every task, state, PR, summary, timestamp, and count comes from the work fold. advice is the only agentic field: at most three short, actionable entries shaped as {text, why, task_id?}. The page labels it as advice and hides it when its host write stamp is older than the work fold. No page is changed when this template ships; a person can inspect it through dashboard_preview before choosing whether to apply it, and the existing instance history can roll it back.",
+  "source": "builtin",
+  "fields": {
+    "goal": { "type": "string", "source": { "fold": "work", "path": "conductor.goal" } },
+    "round": { "type": "number", "source": { "fold": "work", "path": "conductor.round" } },
+    "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
+    "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } },
+    "forgotten": { "type": "object", "source": { "fold": "work", "path": "forgotten" } },
+    "advice": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "why": { "type": "string" },
+          "task_id": { "type": "string" }
+        },
+        "required": ["text", "why"]
+      },
+      "source": { "agentic": true },
+      "upkeep": {
+        "means": "one to three small current actions, each {text, why, task_id?}",
+        "when": "whenever the work board moves or the useful next action changes",
+        "how": "write only current actions; remove completed advice; call dashboard_fields first for the exact shape"
+      }
+    }
+  }
+}

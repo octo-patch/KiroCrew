@@ -72,6 +72,7 @@ EXPECTED_IDS = frozenset(
         "org-chart",
         "pr-watch",
         "project-report",
+        "quest-log",
         "roadmap",
         "session-ledger",
         "standup",
