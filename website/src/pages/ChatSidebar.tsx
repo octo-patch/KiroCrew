@@ -850,7 +850,7 @@ interface SessionRowActions {
   renameInputRef: React.MutableRefObject<HTMLTextAreaElement | null>
   onRenameStart: (key: string, scope: string, title: string, fromMenu: boolean) => void
   onRenameChange: (value: string) => void
-  onRenameCommit: (key: string, value: string, reason?: 'enter' | 'blur') => void
+  onRenameCommit: (key: string, value: string) => void
   slotRenameEnterRef: React.MutableRefObject<boolean>
   onRenameCancel: () => void
   /** The row menu's "Regenerate title": re-derives the title from the
@@ -2229,7 +2229,7 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
                   onRename handler) so users can edit or drop it when they rename.
                   A separate ↳ glyph also double-stacked into "↳↳ Fork of …". */}
               {renamingHere ? (
-                <textarea ref={renameInputRef} rows={1} className={`w-full bg-bg-elevated border border-accent rounded px-1 py-0 ${ROW_TITLE_CLS} text-text-strong outline-hidden select-text resize-none block overflow-hidden focus-ring`} value={renameValue} onChange={e => onRenameChange(e.target.value)} {...ime.bindEnter<HTMLTextAreaElement>({ onEnter: () => { slotRenameEnterRef.current = true; (document.activeElement as HTMLTextAreaElement)?.blur() }, onEscape: onRenameCancel, onBlur: () => { const reason = slotRenameEnterRef.current ? 'enter' : 'blur' as const; onRenameCommit(s.key, renameValue, reason) } })} onMouseDown={e => e.stopPropagation()} />
+                <textarea ref={renameInputRef} rows={1} className={`w-full bg-bg-elevated border border-accent rounded px-1 py-0 ${ROW_TITLE_CLS} text-text-strong outline-hidden select-text resize-none block overflow-hidden focus-ring`} value={renameValue} onChange={e => onRenameChange(e.target.value)} {...ime.bindEnter<HTMLTextAreaElement>({ onEnter: () => { slotRenameEnterRef.current = true; (document.activeElement as HTMLTextAreaElement)?.blur() }, onEscape: onRenameCancel, onBlur: () => onRenameCommit(s.key, renameValue) })} onMouseDown={e => e.stopPropagation()} />
               ) : (
                 <>
                   {/* The live dot leads the name, where the eye lands when
@@ -3315,6 +3315,10 @@ function ChatSidebar({
     // while renaming in THIS column (rename is per-column via editScope) so
     // the inline input stays usable.
     const draggable = !!dragHandleProps && !(editingId === folder.id && editScope === columnId)
+    const focusBoardFolderRow = () => {
+      const col = document.querySelector<HTMLElement>(`[data-testid="col-${columnId}-folder-${folder.id}"]`)
+      ;(col?.querySelector<HTMLElement>('[role="button"][tabindex],button') ?? col)?.focus({ preventScroll: true })
+    }
     return (
       // Two drop mechanisms coexist on this block, one per drag SOURCE:
       //  • Native HTML5 onDrop (below) — SESSION cards drag natively (they set
@@ -3407,7 +3411,7 @@ function ChatSidebar({
              *  handled the other way round — the row's onKeyDown ignores events
              *  whose target is not the row — so Space types a space here rather
              *  than collapsing the folder. */
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[12px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { renameCommit(folder.id, editName); requestAnimationFrame(() => { const row = document.querySelector<HTMLElement>(`[data-folder-row="${folder.id}"]`); (row?.querySelector<HTMLElement>('button,[tabindex]') ?? row)?.focus({ preventScroll: true }) }) }, onEscape: () => { const id = folder.id; setEditingId(null); requestAnimationFrame(() => { const row = document.querySelector<HTMLElement>(`[data-folder-row="${id}"]`); (row?.querySelector<HTMLElement>('button,[tabindex]') ?? row)?.focus({ preventScroll: true }) }) }, onBlur: () => renameCommit(folder.id, editName) })} />
+            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[12px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { renameCommit(folder.id, editName); requestAnimationFrame(focusBoardFolderRow) }, onEscape: () => { setEditingId(null); requestAnimationFrame(focusBoardFolderRow) }, onBlur: () => renameCommit(folder.id, editName) })} />
           ) : (
             // Double-click rename is a mouse-only power shortcut; the accessible
             // path is the ⋯-menu Rename item, so scope-disable the interaction rule.
@@ -3955,6 +3959,11 @@ function ChatSidebar({
     // menu entry can never offer different sessions -- and null here means the
     // cluster emits its two controls and nothing else.
     const folderRowConductor = folderConductorOf(folder.id)
+    // Focus the folder row itself — it has tabIndex={-1} for this purpose.
+    const focusListFolderRow = () => {
+      document.querySelector<HTMLElement>(`[data-folder-row="${folder.id}"]`)
+        ?.focus({ preventScroll: true })
+    }
     return (
       // Right-click (or long-press) anywhere on the row opens the SAME menu the
       // ⋯ button does, positioned at the pointer. The ⋯ button stays: it is the
@@ -3971,6 +3980,10 @@ function ChatSidebar({
         // copy sorts first in the DOM — the same ambiguity the session reveal
         // avoids by targeting `data-session-row` instead of `data-slot-key`.
         data-folder-row={folder.id}
+        // tabIndex={-1} allows programmatic focus for rename focus-restore
+        // (Enter/Escape return focus here after the edit closes) without
+        // adding the row to the tab order.
+        tabIndex={-1}
         // Non-interactive container (role="group"): the row holds a collapse
         // toggle button + action buttons, so it must NOT itself be a button —
         // an interactive element can't legally contain other interactive
@@ -4043,7 +4056,7 @@ function ChatSidebar({
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} />
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { renameCommit(folder.id, editName); requestAnimationFrame(() => { const row = document.querySelector<HTMLElement>(`[data-folder-row="${folder.id}"]`); (row?.querySelector<HTMLElement>('button,[tabindex]') ?? row)?.focus({ preventScroll: true }) }) }, onEscape: () => { const id = folder.id; setEditingId(null); requestAnimationFrame(() => { const row = document.querySelector<HTMLElement>(`[data-folder-row="${id}"]`); (row?.querySelector<HTMLElement>('button,[tabindex]') ?? row)?.focus({ preventScroll: true }) }) }, onBlur: () => renameCommit(folder.id, editName) })} />
+            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { renameCommit(folder.id, editName); requestAnimationFrame(focusListFolderRow) }, onEscape: () => { setEditingId(null); requestAnimationFrame(focusListFolderRow) }, onBlur: () => renameCommit(folder.id, editName) })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
         ) : (

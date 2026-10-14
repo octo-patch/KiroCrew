@@ -7,7 +7,7 @@
  * the polite status region.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -22,17 +22,25 @@ vi.mock('framer-motion', async () => {
     'transition', 'variants', 'whileHover', 'whileTap', 'whileInView',
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
-  const make = (tag: string) =>
-    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
-      const clean: Record<string, unknown> = {}
-      for (const k of Object.keys(props)) {
-        if (k === 'children') continue
-        if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
-        if (FRAMER_PROPS.has(k)) continue
-        clean[k] = props[k]
-      }
-      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
-    })
+  // Cache per tag so the same component TYPE is returned on every render —
+  // a new forwardRef() each time is a new type, which causes React to unmount
+  // and remount the subtree and detaches any element that received focus.
+  const cache = new Map<string, ReturnType<typeof React.forwardRef>>()
+  const make = (tag: string) => {
+    if (!cache.has(tag)) {
+      cache.set(tag, React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+        const clean: Record<string, unknown> = {}
+        for (const k of Object.keys(props)) {
+          if (k === 'children') continue
+          if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
+          if (FRAMER_PROPS.has(k)) continue
+          clean[k] = props[k]
+        }
+        return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
+      }))
+    }
+    return cache.get(tag)!
+  }
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
@@ -113,8 +121,10 @@ function renderSidebar(title = SLOT_TITLE) {
 
 const nextFrame = () => act(async () => { await new Promise(requestAnimationFrame) })
 
-/** Open the rename textarea by double-clicking the session title. */
-function openRename(container: HTMLElement) {
+/** Open the rename textarea by double-clicking the session title.
+ * Also advances one frame so the focus rAF fires, ensuring document.activeElement
+ * is the textarea before Enter/Escape tests run. */
+async function openRenameAsync(container: HTMLElement) {
   const wrap = container.querySelector(`[data-session-row]`) as HTMLElement
   expect(wrap).toBeTruthy()
   const titleDiv = wrap.querySelector('[data-session-title]') as HTMLElement
@@ -122,7 +132,11 @@ function openRename(container: HTMLElement) {
   act(() => { fireEvent.click(titleDiv, { detail: 1 }) })
   act(() => { fireEvent.click(titleDiv, { detail: 2 }) })
   act(() => { fireEvent.doubleClick(titleDiv, { detail: 2 }) })
-  return container.querySelector('textarea') as HTMLTextAreaElement
+  // Advance one frame so rename.ts's focus rAF fires and textarea becomes activeElement
+  await act(async () => { await new Promise(requestAnimationFrame) })
+  const ta = container.querySelector('textarea') as HTMLTextAreaElement
+  expect(ta).toBeTruthy()
+  return ta
 }
 
 const statusRegion = () => document.querySelector('[data-testid="slot-rename-status"]')
@@ -136,7 +150,7 @@ afterEach(() => vi.clearAllMocks())
 
 describe('ChatSidebar slot rename — focus contract (#13598)', () => {
   it('slot-rename-status region is present and polite', () => {
-    const { container } = renderSidebar()
+    renderSidebar()
     const region = statusRegion()
     expect(region).toBeTruthy()
     expect(region?.getAttribute('role')).toBe('status')
@@ -146,7 +160,7 @@ describe('ChatSidebar slot rename — focus contract (#13598)', () => {
 
   it('Enter commits and returns focus to the session row', async () => {
     const { container } = renderSidebar()
-    const textarea = openRename(container)
+    const textarea = await openRenameAsync(container)
     act(() => { fireEvent.change(textarea, { target: { value: 'Renamed' } }) })
     act(() => { fireEvent.keyDown(textarea, { key: 'Enter' }) })
     act(() => { fireEvent.blur(textarea) })
@@ -159,7 +173,7 @@ describe('ChatSidebar slot rename — focus contract (#13598)', () => {
 
   it('Escape cancels and returns focus to the session row', async () => {
     const { container } = renderSidebar()
-    const textarea = openRename(container)
+    const textarea = await openRenameAsync(container)
     act(() => { fireEvent.change(textarea, { target: { value: 'Abandoned' } }) })
     act(() => { fireEvent.keyDown(textarea, { key: 'Escape' }) })
     await nextFrame()
@@ -172,7 +186,7 @@ describe('ChatSidebar slot rename — focus contract (#13598)', () => {
 
   it('pointer blur commits but does not redirect focus', async () => {
     const { container } = renderSidebar()
-    const textarea = openRename(container)
+    const textarea = await openRenameAsync(container)
     act(() => { fireEvent.change(textarea, { target: { value: 'Clicked Away' } }) })
     const elsewhere = screen.getByTestId('elsewhere')
     act(() => { elsewhere.focus() })
@@ -186,7 +200,7 @@ describe('ChatSidebar slot rename — focus contract (#13598)', () => {
 
   it('confirmed rename is announced through the polite status region', async () => {
     const { container } = renderSidebar()
-    const textarea = openRename(container)
+    const textarea = await openRenameAsync(container)
     act(() => { fireEvent.change(textarea, { target: { value: 'Announced Session' } }) })
     act(() => { fireEvent.keyDown(textarea, { key: 'Enter' }) })
     act(() => { fireEvent.blur(textarea) })

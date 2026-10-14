@@ -643,6 +643,8 @@ export default function ProjectsPage() {
             edits (compose) or the run's task-edit drafts (`pendingEdits` in the
             detail pane) — unsaved local state the hand-off would unmount. */}
         <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="projects-action-error" />
+        {/* Project rename announcement — always mounted so it is present before any run is selected. */}
+        <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="project-rename-status">{projectRenameAnnouncement}</span>
         {selectedRun ? (
           <>
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">
@@ -680,6 +682,10 @@ export default function ProjectsPage() {
                       ;(e.target as HTMLInputElement).blur()
                     } else if (e.key === 'Escape') {
                       cancelRenameRef.current = true
+                      // Explicitly blur so onBlur fires while the input is still
+                      // mounted — only onBlur clears cancelRenameRef, and React
+                      // does not reliably fire it on an element it is removing.
+                      ;(e.target as HTMLInputElement).blur()
                       setEditingName(false)
                       requestAnimationFrame(() => nameTriggerRef.current?.focus({ preventScroll: true }))
                     }
@@ -706,7 +712,6 @@ export default function ProjectsPage() {
                 onClick={() => { setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') }}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') } }}
               ><Pencil className="lucide-inline" /></span>}
-              <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="project-rename-status">{projectRenameAnnouncement}</span>
               <span className="text-[12px] text-muted">{selectedRun.status === 'planning' ? <><Hourglass className="lucide-inline" /> {i18nT('pages.projectsPage.planning')}</> : selectedRun.running ? <><RefreshCw className="lucide-inline" /> {i18nT('pages.projectsPage.running')}</> : selectedRun.status}</span>
               <div className="flex-1" />
               {selectedRun.status === 'planned' && <>

@@ -3,7 +3,7 @@
  * to the folder header row; a pointer blur moves nothing.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -19,17 +19,23 @@ vi.mock('framer-motion', async () => {
     'transition', 'variants', 'whileHover', 'whileTap', 'whileInView',
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
-  const make = (tag: string) =>
-    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
-      const clean: Record<string, unknown> = {}
-      for (const k of Object.keys(props)) {
-        if (k === 'children') continue
-        if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
-        if (FRAMER_PROPS.has(k)) continue
-        clean[k] = props[k]
-      }
-      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
-    })
+  // Stable cache prevents remounts when motion.div is accessed across renders
+  const cache = new Map<string, ReturnType<typeof React.forwardRef>>()
+  const make = (tag: string) => {
+    if (!cache.has(tag)) {
+      cache.set(tag, React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+        const clean: Record<string, unknown> = {}
+        for (const k of Object.keys(props)) {
+          if (k === 'children') continue
+          if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
+          if (FRAMER_PROPS.has(k)) continue
+          clean[k] = props[k]
+        }
+        return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
+      }))
+    }
+    return cache.get(tag)!
+  }
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
@@ -116,7 +122,7 @@ function startFolderRename(container: HTMLElement) {
   const nameSpan = folderRow.querySelector('[title]') as HTMLElement
   expect(nameSpan).toBeTruthy()
   act(() => { fireEvent.doubleClick(nameSpan) })
-  return container.querySelector('input[value]') as HTMLInputElement
+  return (container.querySelector(`[data-folder-row="${FOLDER_ID}"] input`) ?? container.querySelector('input')) as HTMLInputElement
 }
 
 beforeEach(() => {
@@ -146,8 +152,8 @@ describe('ChatSidebar list folder rename — focus contract (#13598)', () => {
     await nextFrame()
     await nextFrame()
     const folderRow = container.querySelector(`[data-folder-row="${FOLDER_ID}"]`) as HTMLElement
-    const focusable = folderRow.querySelector<HTMLElement>('button,[tabindex]') ?? folderRow
-    expect(document.activeElement).toBe(focusable)
+    // focusListFolderRow focuses the data-folder-row div directly (tabIndex={-1})
+    expect(document.activeElement).toBe(folderRow)
     expect(document.activeElement).not.toBe(document.body)
   })
 
@@ -160,8 +166,7 @@ describe('ChatSidebar list folder rename — focus contract (#13598)', () => {
     await nextFrame()
     await nextFrame()
     const folderRow = container.querySelector(`[data-folder-row="${FOLDER_ID}"]`) as HTMLElement
-    const focusable = folderRow.querySelector<HTMLElement>('button,[tabindex]') ?? folderRow
-    expect(document.activeElement).toBe(focusable)
+    expect(document.activeElement).toBe(folderRow)
     expect(document.activeElement).not.toBe(document.body)
   })
 

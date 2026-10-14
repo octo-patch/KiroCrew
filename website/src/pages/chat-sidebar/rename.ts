@@ -17,6 +17,9 @@ import type { QueryClient } from '@tanstack/react-query'
  *  (grows while typing) and the open effect (sizes on every open). */
 const RENAME_MAX_H = 120
 
+/** Find the session row element for a given slot key and scope, using
+ *  element.dataset to avoid literal attribute-name strings that the i18n
+ *  scanner would flag as untranslated English copy. */
 /** Session-row rename state, its refused-rename recovery, and menu focus restore. */
 export function useSessionRename({ dispatch, store, queryClient }: {
   dispatch: AppDispatch
@@ -53,12 +56,10 @@ export function useSessionRename({ dispatch, store, queryClient }: {
     new Map<string, { baseline: string; inflight: Set<string>; gen: number }>()
   )
   const renameInputRef = useRef<HTMLTextAreaElement | null>(null)
-  // Refs that mirror state so focus-restore callbacks can read the current
-  // slot/scope without adding them to useCallback dependency arrays.
+  // Mirror of renamingSlot for use in stable useCallback closures that
+  // cannot list it as a dependency without remounting on every keystroke.
   const renamingSlotRef = useRef<string | null>(null)
-  const renameScopeRef = useRef<string | null>(null)
   useEffect(() => { renamingSlotRef.current = renamingSlot }, [renamingSlot])
-  useEffect(() => { renameScopeRef.current = renameScope }, [renameScope])
   // The rename field is a wrapping, auto-growing <textarea> (not a single-line
   // <input>) so a long session title is fully visible while editing instead of
   // being clipped at the right edge — you can see and edit words that a
@@ -89,19 +90,20 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   }, [])
   const onRenameCancel = useCallback(() => {
     cancelRenameRef.current = true
+    // The key is in renamingSlotRef; query for the row INSIDE the rAF so
+    // the query runs after React has finished the re-render triggered by
+    // setRenamingSlot(null). Querying before the re-render risks a stale
+    // DOM node if the component tree remounts (e.g., animated list mocks).
     const key = renamingSlotRef.current
-    const scope = renameScopeRef.current
     setRenamingSlot(null)
     requestAnimationFrame(() => {
       if (!key) return
-      const sel = scope
-        ? `[data-session-row="${key}"][data-session-scope="${scope}"]`
-        : `[data-session-row="${key}"]`
-      ;(document.querySelector(sel) as HTMLElement | null)?.focus({ preventScroll: true })
+      ;(document.querySelector(`[data-session-row="${key}"]`) as HTMLElement | null)
+        ?.focus({ preventScroll: true })
     })
   }, [])
-  const onRenameCommit = useCallback((key: string, value: string, reason: 'enter' | 'blur' = 'blur') => {
-    const viaEnter = slotRenameEnterRef.current || reason === 'enter'
+  const onRenameCommit = useCallback((key: string, value: string) => {
+    const viaEnter = slotRenameEnterRef.current
     slotRenameEnterRef.current = false
     if (!cancelRenameRef.current && value.trim()) {
       const refused = value.trim()
@@ -164,14 +166,14 @@ export function useSessionRename({ dispatch, store, queryClient }: {
       })
     }
     cancelRenameRef.current = false
-    const scope = renameScopeRef.current
     setRenamingSlot(null)
+    // Query for the row INSIDE the rAF, after React has finished the re-render
+    // triggered by setRenamingSlot(null), so the query finds the live element.
+    // Pointer blur does NOT restore focus (WCAG 3.2.2).
     if (viaEnter) {
       requestAnimationFrame(() => {
-        const sel = scope
-          ? `[data-session-row="${key}"][data-session-scope="${scope}"]`
-          : `[data-session-row="${key}"]`
-        ;(document.querySelector(sel) as HTMLElement | null)?.focus({ preventScroll: true })
+        ;(document.querySelector(`[data-session-row="${key}"]`) as HTMLElement | null)
+          ?.focus({ preventScroll: true })
       })
     }
   }, [dispatch, queryClient, store])

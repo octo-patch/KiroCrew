@@ -6,7 +6,7 @@
  * programmatically focusable). A pointer blur moves focus nowhere.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('../api/client', () => ({
@@ -24,6 +24,7 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 
+import { DndContext } from '@dnd-kit/core'
 import { FolderNameInput, FolderRow } from '../components/library/LibraryTable'
 import type { ArtifactFolder, FolderActions } from '../types'
 
@@ -90,8 +91,7 @@ describe('FolderNameInput close-reason contract (#13598)', () => {
 function renderFolderRow() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   // DnD context required by FolderRow; stub with a plain wrapper
-  const { DndContext } = require('@dnd-kit/core')
-  const view = render(
+    const view = render(
     <QueryClientProvider client={qc}>
       <DndContext>
         <table>

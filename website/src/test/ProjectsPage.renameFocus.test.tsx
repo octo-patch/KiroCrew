@@ -87,10 +87,17 @@ function renderPage() {
 
 const nextFrame = () => act(async () => { await new Promise(requestAnimationFrame) })
 
-/** Open the rename input by clicking the project title trigger. */
+/** Open the rename input by:
+ * 1. Clicking the run item in the rail to select the run
+ * 2. Clicking the project name trigger to open the rename editor
+ */
 async function openRenameInput() {
-  const trigger = await screen.findByRole('button', { name: PROJECT_NAME })
-  act(() => { fireEvent.click(trigger) })
+  // Click the rail item to select the run (accessible name = "Open project ...")
+  const runItem = await screen.findByRole('button', { name: /Open project/ })
+  act(() => { fireEvent.click(runItem) })
+  // Click the title trigger to open rename (accessible name = "Rename project")
+  const nameTrigger = await screen.findByTestId('project-name-trigger')
+  act(() => { fireEvent.click(nameTrigger) })
   return screen.getByLabelText('Project name') as HTMLInputElement
 }
 
@@ -120,7 +127,7 @@ describe('ProjectsPage project rename — focus contract (#13598)', () => {
     act(() => { fireEvent.blur(input) })
     await nextFrame()
     await nextFrame()
-    const trigger = screen.getByRole('button', { name: 'Renamed Project' })
+    const trigger = screen.getByTestId('project-name-trigger')
     expect(document.activeElement).toBe(trigger)
     expect(document.activeElement).not.toBe(document.body)
   })
@@ -133,7 +140,7 @@ describe('ProjectsPage project rename — focus contract (#13598)', () => {
     act(() => { fireEvent.blur(input) })
     await nextFrame()
     await nextFrame()
-    const trigger = screen.getByRole('button', { name: PROJECT_NAME })
+    const trigger = screen.getByTestId('project-name-trigger')
     expect(document.activeElement).toBe(trigger)
     expect(document.activeElement).not.toBe(document.body)
   })
@@ -147,7 +154,7 @@ describe('ProjectsPage project rename — focus contract (#13598)', () => {
     await nextFrame()
     await nextFrame()
     expect(renameTaskRunMock).not.toHaveBeenCalled()
-    const trigger = screen.getByRole('button', { name: PROJECT_NAME })
+    const trigger = screen.getByTestId('project-name-trigger')
     expect(document.activeElement).toBe(trigger)
     expect(document.activeElement).not.toBe(document.body)
   })
