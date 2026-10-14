@@ -312,7 +312,38 @@ def _url_payload_command(n: int) -> str:
 #: ``launcher.terminate``. Ten lines, of which four are the comprehension and six the
 #: reason every entry in that list carries. No matching rule, no threshold and no pass
 #: moved -- a target was added to a list the gate already walks.
-_PACKAGE_LINE_BUDGET = 29_175
+#:
+#: Raised again, from 29,175, for ``rm_floor``: the argv floor that reads a
+#: recursive-force ``rm`` in any flag or home spelling against the root or home dir
+#: itself, with a word split on the shared quote state machine that drops comments,
+#: heredoc bodies and redirections, per-occurrence reachability that skips printed,
+#: single-quoted, commented and quoted-heredoc substitutions,
+#: and its gated branch at the end of ``is_denied``. No pattern moved.
+#:
+#: Raised again, from 29,571, for the arithmetic-paren stack in ``rm_floor._scan``:
+#: a ``<<`` inside ``((``/``$((`` is a shift, while a heredoc inside ``$(`` or a
+#: subshell is still read as data. No pattern moved.
+#:
+#: Raised again, from 29,577, for ``rm_floor._Scan.quote_breaks``: where each quote
+#: opens or closes inside a word, so ``"$HO""ME"`` and ``$HO''ME`` are the variable
+#: ``HO`` plus literal text, not ``$HOME``. No pattern moved.
+#:
+#: Raised again, from 29,584, for three ``rm_floor`` reads: only the name in
+#: ``${HOME:-"x"}`` must be one quoting run; each heredoc body expands by its own
+#: tag, and any quote in the tag (``E''OF``) keeps it literal; ``| sh`` covers
+#: only its own pipeline (``_pipeline_disqualified``), judging a grouped frame
+#: whole. Then by 1 more: an empty quoted word (``''``) never ends an ``rm`` command.
+#: Then by 3 more: ``_live_substitution_bodies`` locates each distinct non-empty
+#: body once, so a flood of empty substitutions costs no scan. Then by 19 more for
+#: four quote and redirect reads: a quoted ``;`` in printed text starts no command
+#: (``_unquoted_ops``), a quote in the tilde prefix keeps ``~`` literal, bodies come
+#: from the decoded text the live offsets index, and the last redirection in a word
+#: takes the next word. Then by 42 more for math and sibling reads: ``_Scan.arith_words``
+#: marks the words of a real ``((…))`` (inner ``(`` closing last, as bash decides) so
+#: they are never a program nor an argv end, ``_is_math`` / ``_math_bodies`` keep only
+#: the substitutions inside a ``$((…))``, and ``${HOME}.`` is a sibling, not home.
+#: No pattern moved.
+_PACKAGE_LINE_BUDGET = 29_688
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
