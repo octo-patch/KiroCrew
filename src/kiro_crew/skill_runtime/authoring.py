@@ -137,77 +137,37 @@ def _create_skill_pinned(
         with suppress(OSError):
             os.rmdir(skill_dir.name, dir_fd=parent_fd)
         raise
-    # Bound before the guarded region so the rollback can tell "no identity to
-    # verify against" from "the identity is X" without inspecting locals.
-    leaf: os.stat_result | None = None
     try:
+        # The leaf is pinned_fs.write_new_file_pinned's transaction, shared with
+        # the steering and prompt creates: the O_EXCL create under dir_fd, the
+        # identity probe before the first write, the short-write loop, the close
+        # inside the guard, and the rollback that removes SKILL.md through
+        # unlink_verified only while the name still holds the inode this call
+        # created. With no identity (both probes failed) the leaf STAYS, empty --
+        # nothing was written before the probe -- so remove_dir_verified below
+        # finds the directory non-empty and puts the name back, leaving a skill
+        # with an empty body that the Skills tab lists and update_skill and
+        # delete_skill both reach: a save away from correct, where unlinking
+        # whatever answers to the name would destroy a file this code never read.
+        #
         # 0o666, masked by umask, is what the by-name floor's write_text
         # produces, so the two branches land the same permissions and the pin
         # changes no default. This is the mode prompts.py's own pinned O_EXCL
         # create of user content passes, for the same reason. A tighter default
         # for user-authored skill bodies is a policy change that has to cover
         # both branches and both platforms, so it does not ride a migration.
-        fd = os.open(
-            "SKILL.md",
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_BINARY", 0),
-            0o666,
-            dir_fd=dir_fd,
-        )
-        try:
-            try:
-                # Identity of the inode this call created, from the descriptor while
-                # it is provably ours: the rollback addresses a NAME, and a rival can
-                # unlink ours and create its own inside the failure window.
-                leaf = os.fstat(fd)
-                data = content.encode("utf-8")
-                written = 0
-                while written < len(data):
-                    written += os.write(fd, data[written:])
-            except BaseException:
-                # Ask for the identity once more while the descriptor is still open --
-                # the close below is what takes it away, and the rollback arm cannot
-                # unlink anything without one. An EIO or ESTALE that made the first
-                # fstat fail on a network filesystem is usually transient, so this is
-                # a free path back to the verified arm; it can never answer with
-                # another object, because it addresses a descriptor rather than a name.
-                if leaf is None:
-                    with suppress(OSError):
-                        leaf = os.fstat(fd)
-                raise
-        finally:
-            os.close(fd)
+        sk.pinned_fs.write_new_file_pinned(dir_fd, "SKILL.md", content.encode("utf-8"), mode=0o666)
     except BaseException:
-        # Roll the whole create back, leaf first, both through descriptors. Caught
-        # broadly rather than on OSError: a KeyboardInterrupt or a MemoryError
-        # building the buffer leaves the same half-made skill, and the retry is
-        # just as permanently 409 either way.
+        # Roll the directory back through its descriptor. Caught broadly rather
+        # than on OSError: a KeyboardInterrupt or a MemoryError building the buffer
+        # leaves the same half-made skill, and the retry is just as permanently
+        # 409 either way. The leaf's own rollback already ran inside the helper.
         #
-        # Both halves verify identity, because both address a NAME under a
-        # descriptor and a name can be replaced inside the failure window. The
-        # leaf goes through unlink_verified, which stats through the directory's
-        # own fd and unlinks only if the inode is still the one created above, so
-        # a rival that replaced SKILL.md keeps ITS file. The directory goes
-        # through remove_dir_verified, which renames it aside under the pinned
+        # remove_dir_verified renames the directory aside under the pinned
         # parent, re-checks (st_dev, st_ino), and only then rmdirs -- a directory
-        # swapped in at the name is reported rather than removed. A bare unlink
-        # or rmdir by name would delete whatever answers to the name, which is
-        # the step this whole migration exists to remove.
-        #
-        # ``leaf`` is None only when the leaf open failed, or when BOTH fstats on
-        # the descriptor this call owned failed -- and the first of those precedes
-        # the first os.write, so in every one of those cases nothing was written.
-        # No identity therefore means no unlink: the empty SKILL.md keeps the
-        # directory non-empty, remove_dir_verified's rmdir fails and puts the name
-        # back, and the create is left as a skill with an empty body, which the
-        # Skills tab lists and which update_skill and delete_skill both reach. That
-        # is a save away from correct; unlinking whatever answers to the name to
-        # spare that would destroy a file this code has never read.
-        if leaf is not None:
-            sk.pinned_fs.unlink_verified(dir_fd, "SKILL.md", (leaf.st_dev, leaf.st_ino))
+        # swapped in at the name is reported rather than removed. A bare rmdir by
+        # name would delete whatever answers to the name, which is the step this
+        # whole migration exists to remove.
         outcome = sk.pinned_fs.remove_dir_verified(
             parent_fd, skill_dir.name, expect=(created.st_dev, created.st_ino)
         )

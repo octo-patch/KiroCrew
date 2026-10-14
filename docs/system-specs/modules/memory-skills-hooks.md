@@ -5140,7 +5140,13 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
 - `create_skill` is **all-or-nothing**: a failure mid-body (a short write, ENOSPC, an
   interrupt) rolls back the `SKILL.md` *and* the directory the call created, both
   through descriptors, and **both halves verify identity** because both address a NAME
-  under a descriptor: the leaf via `pinned_fs.unlink_verified`, which stats through the
+  under a descriptor. The leaf is `pinned_fs.write_new_file_pinned(dir_fd, "SKILL.md",
+  data, mode=0o666)` — the ONE pinned create-if-absent transaction, shared with the
+  steering create and the prompt create's by-name fallback, so the `O_EXCL` open, the
+  in-guard identity probe, the write loop, the in-guard close and the rollback below are
+  spelled once rather than per surface; `create_skill` keeps only its own taxonomy
+  (`FileExistsError` on the directory → `False` → 409) and the directory half. The leaf
+  rolls back via `pinned_fs.unlink_verified`, which stats through the
   directory's own fd and unlinks only if the inode is still the one the create made, and
   the directory via `pinned_fs.remove_dir_verified`, which stages it aside under the
   pinned parent and re-checks `(st_dev, st_ino)` before removing it. A rival that

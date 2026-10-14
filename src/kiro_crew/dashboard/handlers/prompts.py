@@ -1584,75 +1584,29 @@ async def api_prompts_create(request: web.Request) -> web.Response:
             # No O_TMPFILE on this filesystem. The body goes under its own name
             # and the failure path removes it, bound to the inode this call
             # created so the removal addresses an object rather than a name. The
-            # residual is the one pinned_fs's _unlink_verified documents as
+            # residual is the one pinned_fs.unlink_verified documents as
             # irreducible and ships: the verify and the unlink are two syscalls
             # on one name, so a replacement landing between them is lost. It is
             # accepted here for the reason it is accepted there -- POSIX offers
             # nothing better -- and it is now confined to filesystems that cannot
             # build an unnamed inode.
-            # O_EXCL keeps create-if-absent atomic; O_NOFOLLOW refuses an
-            # existing symlink at the name rather than writing through it. Both
-            # resolve relative to the pinned directory, so a swap after the check
-            # cannot redirect this write. O_BINARY matters only on Windows, which
-            # has no openat and takes the by-name branch above, but the flag
-            # belongs on any os.open this code owns.
+            #
+            # The transaction itself is pinned_fs.write_new_file_pinned's, shared
+            # with the steering and skill creates: the O_EXCL|O_NOFOLLOW create
+            # relative to the pinned directory, the identity probe before the
+            # first write, the short-write loop, the close inside the guard, and
+            # the identity-checked rollback. fsync=True adds what 201 promises
+            # here and the other two creates do not: the body is flushed before
+            # the close, and the ENTRY is flushed after it -- a directory flush
+            # that fails withdraws the publication through the same rollback, so
+            # a caller that gets the 500 retries into a clean create. Only the
+            # taxonomy is this surface's: an occupied name is "exists".
             try:
-                fd = os.open(
-                    filename,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | os.O_NOFOLLOW
-                    | getattr(os, "O_BINARY", 0),
-                    0o666,
-                    dir_fd=dir_fd,
+                pinned_fs.write_new_file_pinned(
+                    dir_fd, filename, content.encode("utf-8"), mode=0o666, fsync=True
                 )
             except FileExistsError:
                 return "exists"
-            # Annotated once, in the no-openat branch above: mypy reads both
-            # branches as one scope, so re-annotating here is a [no-redef].
-            created_ident = None
-            try:
-                # Identity of the inode THIS create made, read from the
-                # descriptor while it is provably ours, and unset until then so a
-                # failure before this point forgoes the cleanup rather than
-                # unlinking on a guess.
-                leaf_st = os.fstat(fd)
-                created_ident = (leaf_st.st_dev, leaf_st.st_ino)
-                data = content.encode("utf-8")
-                written = 0
-                while written < len(data):
-                    written += os.write(fd, data[written:])
-                os.fsync(fd)
-                # Closed INSIDE the guarded region: close is the other place a
-                # deferred write error surfaces, so a close in a `finally` beside
-                # the cleanup arm would skip the removal below and strand the
-                # partial body. Clearing `fd` first keeps the arm's fallback
-                # close from double-closing; atomic_write uses the same two lines
-                # for the same reason.
-                fd, open_fd = -1, fd
-                os.close(open_fd)
-                # Same reason as the unnamed branch above: the O_EXCL open made
-                # the entry, and the entry needs its own flush before 201 can
-                # claim the prompt is on disk. It raises here too -- and on THIS
-                # path the failure also withdraws the publication, because the
-                # arm below already removes this call's own leaf under an identity
-                # check. A caller that gets the 500 can retry into a clean create.
-                os.fsync(dir_fd)
-            except BaseException:
-                if fd >= 0:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-                try:
-                    if created_ident is not None:
-                        st_now = os.stat(filename, dir_fd=dir_fd, follow_symlinks=False)
-                        if (st_now.st_dev, st_now.st_ino) == created_ident:
-                            os.unlink(filename, dir_fd=dir_fd)
-                except OSError:
-                    pass
-                raise
         finally:
             os.close(dir_fd)
         return None
