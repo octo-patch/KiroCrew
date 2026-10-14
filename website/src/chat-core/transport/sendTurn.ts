@@ -97,6 +97,8 @@ export interface SendWirePayload {
   /** See `SendTurnOptions.steer`. Only the dashboard wire forwards it: an
    *  app embed cannot steer (the server refuses app-authenticated steers). */
   steer?: boolean | 'auto'
+  /** Human crewmate DM priority, validated by the gateway. Dashboard only. */
+  responsive?: boolean
   /** See `SendTurnOptions.colorTheme`. Dashboard wire only. */
   colorTheme?: string
 }
@@ -173,7 +175,7 @@ export function settleUnderSignal<T>(
 
 /** The dashboard client's wire: `POST /api/chat?ws=1` with the session key. */
 const dashboardSendWire: SendWire = (payload, signal) =>
-  api.sendChat(payload.message, payload.slot, payload.colorTheme, signal, payload.meta, payload.steer)
+  api.sendChat(payload.message, payload.slot, payload.colorTheme, signal, payload.meta, payload.steer, ...(payload.responsive ? [true] : []))
 
 export interface SendTurnOptions {
   /** Wire text, already serialized (dir tokens, file markers). The server
@@ -193,6 +195,8 @@ export interface SendTurnOptions {
    *  a new receipt shape: the answer comes back as the `dispatched` of a steer or
    *  the `queued` of a queue, which the two existing statuses already describe. */
   steer?: boolean | 'auto'
+  /** Ask the gateway to prioritize a human crewmate DM without a client stop. */
+  responsive?: boolean
   /** The active colour theme, so a widget the turn renders inherits it. Sent
    *  only by surfaces that own a theme (ChatPage); embeds and panes omit it. */
   colorTheme?: string
@@ -224,6 +228,7 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
         slot: opts.slot,
         meta: opts.meta,
         steer: opts.steer,
+        ...(opts.responsive ? { responsive: true } : {}),
         colorTheme: opts.colorTheme,
       },
       controller.signal,

@@ -11,7 +11,6 @@ import { ApiError } from '../../api/apiError'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { markSlotUnread, sseConnected, sseDisconnected, sseSlots } from '../../store/dashboardSlice'
 import { setSlotStatusDetail, sseChatMessage, sseToolActivity, sseToolResult, syncSlotRunningFromServer } from '../../store/chatSlice'
-import { PILL_ACTIVITY_MAX_CHARS } from './pillActivity'
 import { MEMBERS_ROSTER_QUERY_KEY, memberThreadQueryKey } from '../../api/membersQuery'
 import { __resetPaneDraftsForTests, readPaneDraft, writePaneDraft } from '../../utils/chatPaneDrafts'
 import { getViewedThreadSlot, _resetViewedThreadForTests } from '../../lib/viewedThread'
@@ -1020,8 +1019,8 @@ describe('MembersPage thread', () => {
     // transcript and composer halves itself; its default stays off for
     // split-view panes, which are already narrow).
     expect(pane).toHaveAttribute('data-follow-content-width', '1')
-    // A send while the member is working gets the main chat's Steer / Queue /
-    // Jev auto split, so the Members page must NOT ask for 'steer-only'.
+    // The host passes its crewmate identity; ChatPane owns the responsive
+    // send mode, leaving its default for ordinary session panes unchanged.
     expect(pane).toHaveAttribute('data-busy-mode', 'split')
     // The Crew page draws its own composer (no model / effort / permission /
     // context toolbar), not the ordinary chat one.
@@ -2781,39 +2780,32 @@ describe('MembersPage identity pill and Profile entry', () => {
     expect(sr).not.toHaveAttribute('aria-live')
     expect(sr.textContent).toBe(line.textContent)
 
-    // A tool call: the line is the SHARED status label for that slot — the
-    // same record the sessions sidebar renders — which in simplified mode is
-    // the call's own purpose, verbatim when short.
+    // A tool call remains technical state, never prose in the chat header.
     act(() => {
       store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: true, messages: 1 }] as never))
       store.dispatch(sseToolActivity({ slot: 'member-oncall', tool: 'shell', kind: 'shell', purpose: 'Look up the glass pill code', input_preview: 'grep -n Glass', tool_call_id: 't1' }))
       store.dispatch(setSlotStatusDetail({ slot: 'member-oncall', kind: 'tool', purpose: 'Look up the glass pill code', toolName: 'grep -n Glass', toolCallId: 't1', ts: Date.now() }))
       store.dispatch(sseChatMessage({ slot: 'member-oncall', role: 'tool', content: '🔧 shell', meta: { tool_call_id: 't1' } }))
     })
-    expect(line).toHaveAttribute('data-activity', 'tool')
-    expect(line.textContent).toBe('Look up the glass pill code')
-    expect(sr.textContent).toBe('Look up the glass pill code')
+    expect(line).toHaveAttribute('data-activity', 'working')
+    expect(line.textContent).toBe('Working')
+    expect(sr.textContent).toBe('Working')
 
     // Once the call returns (matched by ITS id; an empty output still counts)
     // the model is reading it: thinking, not the stale purpose.
     act(() => {
       store.dispatch(sseToolResult({ slot: 'member-oncall', output: '', tool_call_id: 't1' }))
     })
-    expect(line).toHaveAttribute('data-activity', 'thinking')
-    expect(line.textContent).toBe('Thinking…')
+    expect(line).toHaveAttribute('data-activity', 'working')
+    expect(line.textContent).toBe('Working')
 
-    // A long purpose is cut at the cap with one ellipsis, so the centred pill
-    // never grows to the header's width. At most the cap: a cut landing on a
-    // space drops the space too.
+    // Long technical purposes cannot expand the narrow header either.
     const long = 'Rebuild the whole site and then take a screenshot of every page in both themes'
-    expect(Array.from(long).length).toBeGreaterThan(PILL_ACTIVITY_MAX_CHARS)
     act(() => {
       store.dispatch(setSlotStatusDetail({ slot: 'member-oncall', kind: 'tool', purpose: long, toolName: 'npm run build', toolCallId: 't2', ts: Date.now() }))
     })
-    expect(line).toHaveAttribute('data-activity', 'tool')
-    expect(Array.from(line.textContent ?? '').length).toBeLessThanOrEqual(PILL_ACTIVITY_MAX_CHARS)
-    expect(line.textContent?.endsWith('…')).toBe(true)
-    expect(line.textContent?.startsWith('Rebuild the whole site')).toBe(true)
+    expect(line).toHaveAttribute('data-activity', 'working')
+    expect(line.textContent).toBe('Working')
 
     // Visible output streaming: the pill's own word, not the seam's
     // "Streaming" (transport jargon on a line that says what the crewmate

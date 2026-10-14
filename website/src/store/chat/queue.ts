@@ -5,7 +5,21 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
 import { quoteBlock } from '../../chat-core/composer/messageQuote'
-import { isUnsafeKey, queueEntryAttachments, queueEntryQuote, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+import { isUnsafeKey, queueEntryAttachments, queueEntryQuote, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+
+/** Replace only this send's provisional row; a queue acceptance is not execution. */
+function appendCorrelatedQueue(list: ChatMessage[], row: ChatMessage): void {
+  const sendId = row.meta?.sendId
+  if (sendId) {
+    // A late push cannot resurrect a queue card whose pop already ran locally.
+    if (list.some(m => m.role === 'user' && !m.meta?.optimistic
+      && m.meta?.sendId === sendId && m.meta?.queueId === row.meta?.queueId)) return
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].role === 'user' && list[i].meta?.optimistic && list[i].meta?.sendId === sendId) list.splice(i, 1)
+    }
+  }
+  if (!list.some(m => m.role === 'queued' && m.meta?.queueId === row.meta?.queueId)) list.push(row)
+}
 
 /** SINGLE hydration path for the slot-detail `queue` field — the one place that
  *  turns backend queue entries into `queued` message bubbles. Every reducer that
@@ -23,15 +37,30 @@ import { isUnsafeKey, queueEntryAttachments, queueEntryQuote, safeKey, type Queu
 export function hydrateQueuedBubbles(
   list: ChatMessage[],
   queue: SlotQueueItem[] | undefined,
+  preserveLiveQueue = false,
 ): ChatMessage[] {
+  // A first pane hydrate fills gaps; frames already applied locally are newer
+  // than its snapshot. Other fetch paths retain their authoritative semantics.
+  const live = preserveLiveQueue ? list.filter(m => m.role === 'queued') : []
+  const liveIds = new Set(live.map(m => m.meta?.queueId))
   const base = list.filter((m) => m.role !== 'queued')
   for (const { content, queueId, ts, kind, appLabel, quote, ...attachments } of queue ?? []) {
+    if (liveIds.has(queueId)) continue
     // The lists ride the row's meta under the same keys a user row carries
     // them, so a cancel on THIS tab restores a spaced path exactly even
     // though the send happened on another tab or before a reload.
-    base.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(quote ? { quote } : {}), ...attachments } })
+    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(quote ? { quote } : {}), ...attachments } })
   }
+  for (const row of live) appendCorrelatedQueue(base, row)
   return base
+}
+
+/** A pop/cancel can precede the first message array as well as the HTTP read. */
+function retireBeforePaneHydrate(state: ChatState, slot: string, queueId: string | undefined): void {
+  if (!queueId || slot === state.activeSlot || state.slotHydrated?.[slot]
+    || state.slotPaneHasMore?.[slot] !== undefined) return
+  const ids = ((state.slotPaneRemovedQueueIds ??= {})[safeKey(slot)] ??= [])
+  if (!ids.includes(queueId)) ids.push(queueId)
 }
 
 export const queueReducers = {
@@ -43,14 +72,17 @@ export const queueReducers = {
    *  path (`/tmp/My Report.pdf`) truncates to `/tmp/My`. */
   removeQueuedMessage(state: ChatState, action: PayloadAction<{ slot: string; content: string; queue_id?: string; drain_writes_row?: boolean; meta?: Record<string, unknown> }>) {
     const { slot, content, queue_id, drain_writes_row, meta } = action.payload
-    const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[slot]
-    if (!msgs) return
+    if (isUnsafeKey(slot)) return
+    retireBeforePaneHydrate(state, slot, queue_id)
+    const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
     const idx = queue_id
       ? msgs.findIndex(m => m.role === 'queued' && (m.meta?.queueId as string) === queue_id)
       : msgs.findIndex(m => m.role === 'queued' && m.content === content)
-    if (idx >= 0) {
-      const ts = msgs[idx].ts
-      msgs.splice(idx, 1)
+    const sendId = queueEntrySendId(meta).sendId
+    if (idx >= 0 || sendId) {
+      const queued = idx >= 0 ? msgs[idx] : undefined
+      const ts = queued?.ts
+      if (idx >= 0) msgs.splice(idx, 1)
       // The DRAIN's own verdict: when it writes its own row (`inject` /
       // `subagent`) right after this pop, rebuilding the popped entry as a
       // `user` row shows the text twice, once attributed to the human. The
@@ -59,7 +91,17 @@ export const queueReducers = {
       // EDITED cron card that drains as a real user row keeps its rebuild
       // (no chat_message echo follows for a user row).
       if (drain_writes_row) return
-      msgs.push({ role: 'user', content, cls: 'msg msg-u', ts, ...(meta && Object.keys(meta).length ? { meta } : {}) })
+      if (sendId) {
+        const existing = msgs.find(m => m.role === 'user' && m.meta?.sendId === sendId)
+        if (existing && !existing.meta?.optimistic) return
+        if (existing) msgs.splice(msgs.indexOf(existing), 1)
+      }
+      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta) }
+      if (queue_id && sendId) rowMeta.queueId = queue_id
+      delete rowMeta.optimistic
+      delete rowMeta.deliveryUnconfirmed
+      delete rowMeta.responsiveSend
+      msgs.push({ role: 'user', content, cls: 'msg msg-u', ts, ...(Object.keys(rowMeta).length ? { meta: rowMeta } : {}) })
       // Deliberately NO card retirement here. Three review rounds each found
       // a different way this path could retire the wrong card (system queue
       // items hydrated as indistinguishable rows; duplicate rows from the
@@ -73,6 +115,8 @@ export const queueReducers = {
   /** Cancel a queued message: remove from messages. pendingInput is set locally by the initiating client. */
   cancelQueuedMessage(state: ChatState, action: PayloadAction<{ slot: string; queue_id: string }>) {
     const { slot, queue_id } = action.payload
+    if (isUnsafeKey(slot)) return
+    retireBeforePaneHydrate(state, slot, queue_id)
     const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[slot]
     if (!msgs) return
     const idx = msgs.findIndex(m => m.role === 'queued' && (m.meta?.queueId as string) === queue_id)
@@ -137,10 +181,9 @@ export const queueReducers = {
       // A row with this queueId may ALREADY exist: slot-detail hydration
       // can land before a delayed `queue_push` for the same entry. Appending
       // blindly would duplicate the row; keep the existing one.
-      if (msgs.some(m => m.role === 'queued' && (m.meta?.queueId as string) === queueId)) return
       // Same row shape as `hydrateQueuedBubbles`: the frame's attachment
       // lists ride the row so a cancel restores from them.
-      msgs.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...queueEntryAttachments(meta), ...queueEntryQuote(meta) } })
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }

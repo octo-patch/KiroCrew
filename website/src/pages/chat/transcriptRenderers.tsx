@@ -680,9 +680,8 @@ export function createTranscriptRenderers(
                   activeSession: o.activeSession,
                   messageTs: m.ts,
                 })}
-                // Passed through, not forced: a crewmate chat in split busy
-                // mode still steers, and its Steered chip stays.
-                hideSteerBadge={o.hideSteerBadge}
+                // Delivery mechanics stay in Sessions, including old scrollback.
+                hideSteerBadge={!!crewmate || o.hideSteerBadge}
                 // The accent fill pairs with the crewmate's gray bubble above
                 // (#17839); a host that hides the steer badge without a
                 // crewmate keeps the neutral surface.

@@ -351,7 +351,7 @@ describe('queue entries carry their attachment lists onto the queued row', () =>
     store.dispatch(appendQueuedMessage({ slot: 'active', content: 'x', ts: 't', queue_id: 'q1', meta: { files: [spaced], dirs: 'not-a-list', sendId: 's-1' } }))
     store.dispatch(appendQueuedMessage({ slot: 'active', content: 'y', ts: 't', queue_id: 'q2' }))
     const queued = store.getState().chat.messages.filter((m) => m.role === 'queued')
-    expect(queued[0].meta).toEqual({ queueId: 'q1', files: [spaced] })
+    expect(queued[0].meta).toEqual({ queueId: 'q1', files: [spaced], sendId: 's-1' })
     expect(queued[1].meta).toEqual({ queueId: 'q2' })
   })
 

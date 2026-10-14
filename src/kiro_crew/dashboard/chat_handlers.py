@@ -1173,6 +1173,24 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
+    from kiro_crew.dashboard import responsive_chat
+
+    _responsive_eligible = False
+    if body.get("responsive") is True or steer:
+        _responsive_eligible = responsive_chat.eligible(
+            request,
+            slot,
+            _member_cfg if slot.mode == members_mod.DM_SLOT_MODE else None,
+            (
+                _send_binding
+                if slot.key.startswith(members_mod.DM_SLOT_KEY_PREFIX)
+                and slot.mode == members_mod.DM_SLOT_MODE
+                else None
+            ),
+        )
+        if _responsive_eligible and (not steer or not slot.turn_running):
+            return await responsive_chat.accept(request, slot, message, user_meta)
+
     if slot.turn_running or slot._turn_admission_reserved:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
@@ -1196,7 +1214,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # more conjunct on its condition and the receipt it stamps.
         _auto_strip: dict | None = None
         _auto_queues = False
-        if steer_is_auto(steer) and not request_app:
+        if steer_is_auto(steer) and not request_app and not _responsive_eligible:
             # The turn the question is ABOUT, captured before the await. The
             # decision is a provider round-trip, so the turn it describes can end
             # while it is in flight -- and an answer about a turn that is gone is
@@ -1223,6 +1241,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             # circular import: session_control imports this package's modules at module level.
             from kiro_crew.dashboard.session_control import containment_meta as _containment_meta
 
+            _responsive_steer_kwargs: dict[str, Any] = (
+                {"responsive": True} if _responsive_eligible else {}
+            )
             outcome = await steer_into_running_turn(
                 state,
                 slot,
@@ -1244,6 +1265,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # manual steer, which is what keeps that row byte-identical.
                 decision_strip=_auto_strip,
                 attachments=user_meta,
+                **_responsive_steer_kwargs,
             )
             if outcome == STEER_STEERED:
                 return web.json_response({"ok": True, "steered": True})
@@ -1251,6 +1273,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # The turn's teardown moved it into the queue while the steer RPC
                 # was suspended — queueing again would deliver the same text twice.
                 return web.json_response({"ok": True, "queued": True})
+            if _responsive_eligible:
+                return await responsive_chat.accept(request, slot, message, user_meta)
             # steer requested but unavailable -> fall through to queue below.
         # Queue the message - return JSON immediately (no SSE needed).
         # The existing SSE reader will pick up queued messages as _run_chat
@@ -1358,6 +1382,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         if _hold_attachments:
             # Same as the busy-slot frame: the card is a cancel's restore source.
             _hold_push["meta"] = _hold_attachments
+        if _hold_sid:
+            _hold_push.setdefault("meta", {})["sendId"] = _hold_sid
         if _hold_meta.get("quote"):
             _hold_push.setdefault("meta", {})["quote"] = _hold_meta["quote"]
         state.broadcast_ws("queue_push", _hold_push)
@@ -1506,23 +1532,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # LLM titling is kicked off below, before _run_chat.
 
     # ── AutoNudge: user input cancels any pending nudge timer (user wins). ──
-    try:
-        from kiro_crew.autonudge import (
-            get_instance as _autonudge_get,  # circular: autonudge -> dashboard.chat -> chat_handlers
-        )
-
-        _autonudge = _autonudge_get()
-        if _autonudge is not None:
-            # A person typing also ends an approval hold. Only on positive
-            # evidence of a dashboard user: an app, or the internal loopback
-            # secret a cron script or MCP tool sends with, is not one.
-            _autonudge.notify_user_input(
-                slot.key,
-                human=request.get("is_dashboard_user") is True
-                and request.get("internal_auth") is not True,
-            )
-    except Exception:
-        logger.warning("autonudge.notify_user_input failed", exc_info=True)
+    responsive_chat.notify_user_input(request, slot)
 
     # Drain stale pending messages from previous turns that completed
     # after their SSE reader disconnected. Must happen BEFORE _run_chat
@@ -1591,16 +1601,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # companion uses this to auto-ingest doc links pasted into chat. The public
         # Default is a no-op. Guarded so an observer error never blocks the turn;
         # deferred context read via the sel.py pattern (no platform import at load).
-        try:
-            from kiro_crew.platform.context import current_context, safe_context_call
-
-            safe_context_call(
-                lambda: current_context().dashboard.on_user_message(request.app, message),
-                fallback=None,
-                log_message="dashboard.on_user_message observer failed",
-            )
-        except Exception:
-            logger.debug("on_user_message observer raised; ignoring", exc_info=True)
+        responsive_chat.observe_user_message(request, message)
 
         # An unattended app-owned turn runs under the background concurrency
         # cap; run_background_turn passes an attended slot straight through, so the
@@ -3573,6 +3574,7 @@ def _make_stop_resolver(
     pending cancel has not produced).
     """
     generation = slot._stop_generation
+    session_key = effective_session_key(slot)
 
     async def _resolve() -> None:
         logger.debug(
@@ -3616,6 +3618,29 @@ def _make_stop_resolver(
         if card_id is not None and slot._stop_escalated_card_id == card_id:
             slot._stop_escalated_card_id = None
         state.push_slots_update()
+
+        from kiro_crew.dashboard import responsive_chat
+
+        # Teardown can yield the floor while reset is still awaiting completion.
+        # Only the settled stop may wake its retained priority, on that same slot.
+        if responsive_chat.first_priority_id(slot):
+            async with slot._lock:
+                if (
+                    generation == slot._stop_generation
+                    and state._slots.get(slot.key) is slot
+                    and effective_session_key(slot) == session_key
+                    and not slot.running
+                    and not slot._turn_admission_reserved
+                    and not slot.is_closing
+                    and not slot._last_turn_auth_required
+                    and slot._stop_state == "idle"
+                    and not responsive_chat.pending_interaction(slot, idle=True)
+                ):
+                    slot._turn_admission_reserved = True
+                    try:
+                        await _start_next_queued_turn(state, slot)
+                    finally:
+                        slot._turn_admission_reserved = False
 
     return _resolve
 

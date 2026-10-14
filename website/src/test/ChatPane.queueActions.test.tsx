@@ -139,6 +139,13 @@ function renderPane(slotKey: string, project?: string) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  __resetPaneDraftsForTests()
+  vi.mocked(api.chatSlotDetail).mockReset().mockResolvedValue({
+    messages: [{ role: 'queued', content: 'queued draft', cls: 'msg msg-queued', ts: '', meta: { queueId: 'q-77' } }],
+    running: true, has_more: false, total: 1,
+  } as never)
+  vi.mocked(api.cancelQueuedMessage).mockReset().mockResolvedValue({ ok: true } as never)
+  vi.mocked(api.interruptSlot).mockReset().mockResolvedValue({ ok: true } as never)
   paneInputValue = null
 })
 
@@ -231,5 +238,70 @@ describe('ChatPane queue actions (issue #5891)', () => {
     renderPane('pane-project', '/repo/main')
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel queued message' }))
     await waitFor(() => expect(paneInputValue).toBe('check @src/a.ts'))
+  })
+})
+
+// The cold-mount response carries queue separately from persisted messages.
+import { afterEach } from 'vitest'
+import { appendQueuedMessage, cancelQueuedMessage, removeQueuedMessage } from '../store/chatSlice'
+import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
+
+const COLD_SLOT = 'member-cold-queue'
+const COLD_TS = '2026-10-14T08:00:00Z'
+const coldQueue = { id: 'cold-q', content: 'accepted before reload', meta: { sendId: 'cold-send' } }
+const coldDetail = { messages: [], queue: [coldQueue], running: false, has_more: false, total: 0 }
+const coldPush = { slot: COLD_SLOT, queue_id: coldQueue.id, content: coldQueue.content, meta: coldQueue.meta, ts: COLD_TS }
+
+afterEach(() => vi.useRealTimers())
+
+describe('cold-mount queue from slot detail', () => {
+  beforeEach(() => __resetPaneDraftsForTests())
+
+  it.each([false, true])('restores one cancellable card (crewmate=%s)', async (crewmate) => {
+    vi.setSystemTime(new Date(COLD_TS))
+    vi.mocked(api.chatSlotDetail).mockReset().mockResolvedValue(coldDetail as never)
+    vi.mocked(api.cancelQueuedMessage).mockReset().mockResolvedValue({ ok: true } as never)
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+      preloadedState: { dashboard: { ...dashboardReducer(undefined, { type: '@@INIT' }), connected: true } },
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<Provider store={store}><QueryClientProvider client={qc}><ThemeProvider><MemoryRouter>
+      <ChatPane slotKey={COLD_SLOT} crewmate={crewmate ? { name: 'Radar' } : undefined} />
+    </MemoryRouter></ThemeProvider></QueryClientProvider></Provider>)
+    const cancel = await screen.findByRole('button', { name: 'Cancel queued message' })
+    expect(screen.getAllByText(coldQueue.content)).toHaveLength(1)
+    expect(selectSlotMessages(store.getState() as RootState, COLD_SLOT)).toMatchObject([
+      { role: 'queued', meta: { queueId: coldQueue.id, sendId: 'cold-send' } },
+    ])
+    act(() => { store.dispatch(appendQueuedMessage(coldPush)) })
+    expect(screen.getAllByText(coldQueue.content)).toHaveLength(1)
+    fireEvent.click(cancel)
+    await waitFor(() => expect(api.cancelQueuedMessage).toHaveBeenCalledWith(COLD_SLOT, coldQueue.id))
+    await waitFor(() => expect(paneInputValue).toBe(coldQueue.content))
+    expect(selectSlotMessages(store.getState() as RootState, COLD_SLOT)).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: 'Cancel queued message' })).toBeNull()
+  })
+
+  it.each(['push', 'pop', 'cancel'] as const)('preserves a %s frame arriving before the cold response', async (event) => {
+    vi.setSystemTime(new Date(COLD_TS))
+    const d = deferred()
+    vi.mocked(api.chatSlotDetail).mockReset().mockReturnValue(d.promise as ReturnType<typeof api.chatSlotDetail>)
+    const { store } = renderPane(COLD_SLOT)
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
+    act(() => {
+      if (event === 'push') store.dispatch(appendQueuedMessage({ ...coldPush, queue_id: 'new-q', content: 'newer request', meta: { sendId: 'new-send' } }))
+      if (event === 'pop') store.dispatch(removeQueuedMessage(coldPush))
+      if (event === 'cancel') store.dispatch(cancelQueuedMessage({ slot: COLD_SLOT, queue_id: coldQueue.id }))
+    })
+    await act(async () => { d.resolve(coldDetail) })
+    await waitFor(() => expect(store.getState().chat.slotHydrated[COLD_SLOT]).toBe(true))
+    const rows = selectSlotMessages(store.getState() as RootState, COLD_SLOT)
+    expect(rows.filter(m => m.role === 'queued').map(m => m.meta?.queueId)).toEqual(event === 'push' ? ['cold-q', 'new-q'] : [])
+    if (event === 'pop') {
+      expect(rows).toMatchObject([{ role: 'user', content: coldQueue.content, meta: coldQueue.meta }])
+      expect(screen.getAllByText(coldQueue.content)).toHaveLength(1)
+    }
+    if (event === 'cancel') expect(screen.queryByText(coldQueue.content)).toBeNull()
   })
 })

@@ -210,7 +210,7 @@ class TestQuoteThroughTheHandler:
         entry = next(i for i in slot._queue if i["content"] == "> q\n\nwhy?")
         assert entry["meta"]["quote"] == _QUOTE
         frames = [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_push"]
-        assert frames and frames[-1]["meta"] == {"quote": _QUOTE}
+        assert frames and frames[-1]["meta"] == {"quote": _QUOTE, "sendId": "s-1"}
 
     @pytest.mark.asyncio
     async def test_an_oversized_quote_is_dropped_on_the_busy_path_too(self, tmp_path, monkeypatch):

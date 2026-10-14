@@ -44,6 +44,7 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotServerTotalSeq,
   // Optional maps: an absent one holds nothing to evict.
   state.slotPaneNextBefore ?? {}, state.slotPaneLoadingOlder ?? {}, state.slotPaneOlderError ?? {},
+  state.slotPaneRemovedQueueIds ?? {},
   state.thinkingOrphans,
 ].filter(Boolean)
 

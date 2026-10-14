@@ -40,6 +40,10 @@ export const selectSlotTurnFromWake = (state: RootState, slot: string): boolean 
  *  subsequently fails. An optimistic bubble or identical text proves nothing. */
 export const selectSendConfirmed = (state: RootState, slot: string, sendId: string): boolean =>
   selectSlotMessages(state, slot).some(m => m.role === 'user' && m.meta?.sendId === sendId && !m.meta?.optimistic)
+/** Queue custody is confirmed acceptance, but does not prove a turn started. */
+export const selectSendAccepted = (state: RootState, slot: string, sendId: string): boolean =>
+  selectSendConfirmed(state, slot, sendId) || selectSlotMessages(state, slot).some(m =>
+    m.role === 'queued' && m.meta?.sendId === sendId && !m.meta?.optimistic)
 export const selectSlotStreamState = (state: RootState, slot: string): SlotState =>
   slot === state.chat.activeSlot ? state.chat.slotState : (state.chat.slotRun[slot]?.state ?? 'idle')
 /** The turn-start count for `slot` (see `ChatState.runEpoch`): the identity a
@@ -60,7 +64,7 @@ export const selectSlotPendingApproval = (state: RootState, slot: string | null)
   // Find the last NON-steer user message — steered messages don't start a new
   // turn, so they must not hide a pending approval bar (#1667).
   let lastUserIdx = -1
-  for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === 'user' && !msgs[i].meta?.steer) { lastUserIdx = i; break } }
+  for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === 'user' && !msgs[i].meta?.steer && !msgs[i].meta?.responsiveSend) { lastUserIdx = i; break } }
   for (let i = msgs.length - 1; i > lastUserIdx; i--) {
     const m = msgs[i]
     if (m.role === 'permission' && !m.meta?.resolved && m.meta?.approval_id) return m

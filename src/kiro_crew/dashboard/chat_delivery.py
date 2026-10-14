@@ -333,6 +333,7 @@ async def steer_into_running_turn(
     decision_strip: dict | None = None,
     attachments: dict | None = None,
     delivery_id: str | None = None,
+    responsive: bool = False,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -407,6 +408,11 @@ async def steer_into_running_turn(
     reconciliation reads identity and never content: the same text can recur in
     a restored transcript, and only an id names THIS delivery.
     """
+    # Only api_chat's owner/member gate grants this mode. Keep the wire prefix
+    # out of pending identity, transcript rows, mirrors and send receipts.
+    from kiro_crew.dashboard import responsive_chat
+
+    responsive = responsive and user_origin and not channel_origin
     send_id = normalize_send_id(send_id)
     quote = quote_meta(attachments)
     attachments = attachment_meta(attachments)
@@ -549,7 +555,8 @@ async def steer_into_running_turn(
     possibly_delivered = False
     slot._steer_rpc_in_flight.add(message)
     try:
-        steered = await client.steer(message)
+        wire_message = responsive_chat.steer_message(slot, message) if responsive else message
+        steered = await client.steer(wire_message)
     except Exception as exc:  # best-effort — the caller falls back to the queue
         logger.warning("steer failed for slot %s: %s", slot.key, exc)
         steered = False
@@ -654,6 +661,7 @@ async def steer_into_running_turn(
             # above means this is the only matching entry, which is why this is a
             # plain remove and not an index dance over possible duplicates.
             slot._pending_steers.remove(message)
+            responsive_chat.forget_steer(slot, message)
             slot._steer_delivery_ids.pop(message, None)
             slot._steer_send_ids.pop(message, None)
             slot._steer_user_origin.pop(message, None)
@@ -1068,6 +1076,9 @@ def queue_for_next_turn(
         push["meta"] = attachments
     if quote:
         push.setdefault("meta", {})[QUOTE_META_KEY] = quote
+    push_identity = normalize_send_id(send_id)
+    if push_identity:
+        push.setdefault("meta", {})["sendId"] = push_identity
     state.broadcast_ws("queue_push", push)
     # Accepted, and possibly not persisted: the write ceilings refuse an entry
     # past the count cap or the byte budget and the send is still accepted, so
@@ -1313,9 +1324,12 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
             item["content"], user_origin=queue_entry_is_user_origin(item)
         ),
     }
+    send_id = normalize_send_id((item.get("meta") or {}).get("sendId"))
+    if send_id:
+        view["meta"] = {"sendId": send_id}
     attachments = attachment_meta(item.get("meta"))
     if attachments:
-        view["meta"] = attachments
+        view.setdefault("meta", {}).update(attachments)
     # Redacted unless the entry is the session's own human's (an entry restored
     # from disk carries no origin stamp and so stays redacted), the same rule
     # the entry's text follows in `queued_text_for_display`.

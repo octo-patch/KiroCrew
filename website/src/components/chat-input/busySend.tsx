@@ -43,7 +43,7 @@ export function decideBusySend({ busyMode = 'split', mode, isRunning, stopState,
   // not consulted: a slot that once picked Queue in the main chat must not
   // silently queue from a surface that never shows that choice.
   const steerOnly = busyMode === 'steer-only'
-  const busyChoiceAvailable = isRunning && (!stopState || stopState === 'idle') && canSteer
+  const busyChoiceAvailable = busyMode !== 'responsive' && isRunning && (!stopState || stopState === 'idle') && canSteer
   // A stored `auto` from a session where the seam WAS available resolves back to
   // the shipped default while it is not: consent can be withdrawn and a fleet can
   // pin the seam off, and a mode kept on screen after that would send a flag the

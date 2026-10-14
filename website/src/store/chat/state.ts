@@ -485,6 +485,9 @@ export interface ChatState {
   /** Path B: per-slot one-time hydration guard so the server history is
    *  prepended exactly once even if a WS frame seeds slotMessages first. */
   slotHydrated: Record<string, boolean>
+  /** Terminal queue ids seen before a pane's first hydrate. Discarded when
+   *  that hydrate consumes them; later history upgrades keep the live queue. */
+  slotPaneRemovedQueueIds?: Record<string, string[]>
   slotLoading: boolean
   slotHistory: string[]
   /** Whether a non-empty slots frame has arrived. Distinguishes a reconnect's

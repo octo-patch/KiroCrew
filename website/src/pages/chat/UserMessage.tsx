@@ -165,7 +165,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // what both doors carry -- the live `steer_push` / `queue_push` reconcile and a
   // row reloaded from history -- so the line survives a reload without a fetch.
   // Absent on every ordinary send, and that absence is what draws nothing.
-  const steerDecision = readSteerRecord((meta as { decisions_strip?: unknown } | undefined)?.decisions_strip)
+  const steerDecision = hideSteerBadge ? null : readSteerRecord((meta as { decisions_strip?: unknown } | undefined)?.decisions_strip)
   const steerState = (meta as { steerState?: string } | undefined)?.steerState
   const steerOptimistic = !!(meta as { optimistic?: boolean } | undefined)?.optimistic
   const isSteer = !hideSteerBadge

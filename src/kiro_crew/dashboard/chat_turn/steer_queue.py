@@ -30,7 +30,6 @@ if TYPE_CHECKING:
         logger,
         queued_text_for_display,
         quote_meta,
-        settle_consumed_steers,
     )
 
 
@@ -118,7 +117,9 @@ def _settle_consumed_steers(
     # ``_refusal_notices`` settle in the same event branch, and the ``/side``
     # sidecar) settles nothing on an empty echo too.
     previous = list(slot._pending_steers)
-    remaining = settle_consumed_steers(previous, snapshot)
+    from kiro_crew.dashboard import responsive_chat
+
+    remaining = responsive_chat.settle_steers(slot, previous, snapshot)
     settled_count = len(previous) - len(remaining)
     logger.debug(
         "Steer consumed for slot %s (%d settled, %d still pending)",
@@ -200,6 +201,7 @@ def _settle_consumed_steers(
             state.clear_question_pending(slot.key, blocking=False)
     slot._pending_steers[:] = remaining
     for settled_msg in set(previous) - set(remaining):
+        responsive_chat.forget_steer(slot, settled_msg)
         slot._steer_attachment_meta.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
         slot._steer_possibly_delivered.discard(settled_msg)
@@ -223,6 +225,8 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     """
     if not slot._pending_steers:
         return
+    from kiro_crew.dashboard import responsive_chat
+
     requeued = slot._pending_steers[:]
     slot._pending_steers.clear()
     for steer_msg in reversed(requeued):
@@ -332,6 +336,10 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         ):
             _maybe_delivered.discard(steer_msg)
             _meta[STEER_POSSIBLY_DELIVERED_META] = True
+        responsive_meta = responsive_chat.turn_state(slot).steer_entries.get(steer_msg)
+        if responsive_meta is not None:
+            _meta.update(responsive_meta)
+            _requeue_user_origin = True
         qid = slot.queue_insert(
             0,
             steer_msg,
@@ -339,6 +347,19 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             directive_user_origin=_requeue_user_origin,
             directive_channel_origin=_channel,
         )
+        if responsive_chat.forget_steer(slot, steer_msg):
+            entry = next(item for item in slot._queue if item["id"] == qid)
+            entry[responsive_chat.RESPONSIVE_KEY] = True
+            entry["_responsive_protected"] = True
+            entry["_responsive_row"] = next(
+                (
+                    row
+                    for row in reversed(slot.messages)
+                    if (row.get("meta") or {}).get("steer_delivery_id")
+                    == _meta.get("steer_delivery_id")
+                ),
+                None,
+            )
         try:
             _push: dict = {
                 "slot": slot.key,
@@ -361,6 +382,11 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
                 # the human's own words stay as typed, anyone else's are redacted.
                 **quote_meta(_meta, user_origin=_requeue_user_origin and not _channel),
             }
+            from kiro_crew.dashboard.chat_delivery import normalize_send_id
+
+            _push_send_id = normalize_send_id(_meta.get("sendId"))
+            if _push_send_id:
+                _push_meta["sendId"] = _push_send_id
             if _push_meta:
                 _push["meta"] = _push_meta
             state.broadcast_ws("queue_push", _push)

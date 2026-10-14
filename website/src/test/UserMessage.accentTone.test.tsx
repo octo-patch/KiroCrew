@@ -96,10 +96,10 @@ describe("the crewmate chat's user entry", () => {
     expect(entry.id).toBe('user')
     const { container } = render(<>{entry.render(userRow, ctx({ messages: [userRow] }))}</>)
     expect(bubbleOf(container).classList.contains('user-bubble-accent')).toBe(true)
-    // …and the Steered chip is still the host's call: not hidden here.
+    // A crewmate hides the mechanics even for historical metadata.
     const steered = { ...userRow, meta: { steer: true, steerState: 'settled' } } as typeof userRow
     const steeredView = render(<>{entry.render(steered, ctx({ messages: [steered] }))}</>)
-    expect(steeredView.container.textContent).toMatch(/Steered/)
+    expect(steeredView.container.textContent).not.toMatch(/Steered/)
 
     // The steer badge hidden on its own (no crewmate) is not the iMessage pairing.
     const badgeOnly = mergeRenderers(createTranscriptRenderers({ slot: 's1', hideSteerBadge: true }))

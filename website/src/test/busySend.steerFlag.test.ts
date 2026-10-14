@@ -20,6 +20,11 @@ const flag = (over: Partial<Parameters<typeof busySteerFlag>[0]> = {}) =>
 beforeEach(() => localStorage.clear())
 
 describe('busySteerFlag', () => {
+  it.each(['steer', 'queue', 'auto'])('a responsive composer never chooses a steer or model from saved %s mode', (mode) => {
+    storeMode('slot-a', mode)
+    expect(flag({ busyMode: 'responsive', jevAutoConsented: true })).toBeUndefined()
+  })
+
   it('is a plain send while the slot is idle', () => {
     expect(flag({ busy: false, turnRunning: false })).toBeUndefined()
   })

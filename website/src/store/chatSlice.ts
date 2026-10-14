@@ -1014,7 +1014,7 @@ export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWork
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
 export { queueEditBroadcastAt } from './chat/side'
 export {
-  selectActiveSlotProject, selectComposerBusy, selectContinuable, selectSendConfirmed, selectSlotMessages,
+  selectActiveSlotProject, selectComposerBusy, selectContinuable, selectSendAccepted, selectSendConfirmed, selectSlotMessages,
   selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
   selectSlotTurnFromWake, selectTurnInterrupted,
   QUIET_END_SERVER, QUIET_END_TOOL,

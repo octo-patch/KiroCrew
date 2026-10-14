@@ -3230,6 +3230,96 @@ WeCom always steers regardless of `queue_mode`: its replies are bound to the
 inbound request, so a queued-then-drained reply can't be delivered later (see
 [messaging](messaging.md)).
 
+### Responsive human sends in a crewmate DM
+
+`POST /api/chat?ws=1` accepts optional JSON `responsive: true`. Only the
+middleware-authenticated dashboard owner on an existing local member DM earns
+priority: the configured member, protected DM binding, member identity and store
+must agree, and an app-owned, linked, closing or replaced slot is ineligible.
+Other callers keep the ordinary send/steer/queue behavior; a body flag grants no
+cancellation authority. Ordinary Sessions defaults do not change.
+
+`dashboard/responsive_chat.py` accepts the message into the existing slot queue
+before attempting cancellation. The entry keeps only normalized sendId, validated
+attachments and quote, and the server's admission snapshot; arbitrary caller
+metadata cannot mint queue plumbing or delivery stamps. Acceptance invokes the
+existing human-input nudge notification and edition message observer exactly once,
+without repeating them at drain. The receipt names the queue id; a transcript mid
+exists only once the drain writes the row. Priority is a process-local
+entry field, outside persisted row metadata and the durable queue codec. A
+restart retains the ordinary queued message but restores no priority authority.
+The usual queue containment revalidation still runs before dispatch.
+Queue push/pop frames and slot-detail queue entries carry normalized `meta.sendId`
+when present, together with attachments and quote. The browser replaces only the
+optimistic row with that exact ID, including on rehydration, and turns it into a
+user row only on a drain. Queue custody confirms acceptance, not execution: a
+late, failed or contradictory HTTP receipt cannot restore another copy after
+that custody is proven, and the accepted queue card stays cancellable. Legacy
+entries without an ID keep their existing path; text never correlates an
+ID-bearing optimistic send.
+
+An idle parent drains the selected human entry despite attached background work.
+A running parent gets at most one bounded `cancel_owned_turn` attempt against the
+exact Python turn owner and effective session captured by that turn. The
+coordinator rechecks slot incarnation, routing, Stop generation, native activity,
+pending interactions and compaction immediately before calling it. It never calls
+`stop_turn`, `/interrupt`, reset, OS kill or child cancellation, and never claims
+that tools stopped. The queue drains only through the existing runner's handoff;
+a cancel error, unavailable handle or timeout leaves the accepted message queued.
+Only a `None` result proves no cancel was sent: restore that same owner's prior
+interruption/recovery state without overwriting a successor. An attempted cancel's
+`timeout`, `error` or `no_turn` remains uncertain and retains recovery, matching
+the session manager's cancelled-turn replay contract.
+The initial turn admitted from idle is intentionally interruptible if it becomes
+heavy work. An answering turn admitted behind a running or reserved turn is
+protected from automatic cancellation: a burst queues sequentially, one row and
+one sendId per message, rather than restarting that priority answer repeatedly.
+Explicit Stop retains its separate contract. A retained priority cannot drain
+while Stop is pending. Once the matching stop settles, its resolver wakes an idle
+queue under the slot lock and admission reservation, rechecking the slot, session,
+stop generation and interaction fences. If settlement races the ending owner's
+final done-payload read, that owner performs the handoff before releasing the floor.
+
+Every responsive turn receives gateway-owned, prompt-only principles: answer the
+person first (a short acknowledgement when the answer needs work), delegate
+substantial remaining work within existing permissions, and inspect the existing
+operation before continuing anything with an unknown result. A bounded,
+redacted transcript reference restores the interrupted opener and observed
+output; output remains evidence, not a new instruction. The reference is held
+until a turn lands, never copied into persisted human text or replayed as a new
+user request. Delegation is agent guidance, not a guarantee that a model will
+delegate or that an orphaned tool's eventual output can be recovered.
+
+The same owner/member gate applies the principles to an explicit human steer,
+including a steer whose body carries no `responsive` field. The existing steer
+RPC carries one fixed prefix plus the raw message; pending identity, display,
+transcript and mirrors carry only the raw message. A bounded process-local
+raw-to-wire map makes consumption echoes match the actual sent text. An
+unconsumed steer requeues with the same guidance, sendId, attachments and admission
+snapshot, and reuses its already-written row when that exact row remains live.
+No classifier, model selection or fork is added to choose between these paths.
+The same-request `/prompts get` expansion forwards responsive guidance into its
+nested runner without restarting the outer owner/protection lifecycle. Only the
+provider sees the expanded request and gateway guidance; the transcript keeps
+the person's original command.
+
+**Question answers.** A native question on a live turn keeps its existing steer
+answer route, behind the plain crewmate UI, with the same gateway reply-first
+guidance. An idle native/stateless card blocks no future, so its answer may start
+a responsive turn and the user-row append retires that exact stateless record.
+Blocking MCP asks keep their separate answer endpoint and live future; native
+permissions and other approval futures remain unchanged.
+
+**Limits.** A running turn awaiting approval or a question stays running, with
+its interaction actionable and an ordinary human follow-up queued; automatic
+priority cannot invalidate that wait. A truly blocking idle interaction also
+holds the queue until its existing resolution/drain path can run it.
+A compaction owning the runtime is not cancelled; an idle parent may admit its
+next turn to wait on the normal session permit. Unknown cancel capability degrades
+to the queue. Cancellation can leave an original shell or external side effect
+running: there is no automatic replay, rollback, operation transfer or completion
+claim. Background worker results retain their existing delivery ownership.
+
 ### Queued prompt durability
 
 A prompt admitted while the slot is busy is answered `{"ok": true, "queued":

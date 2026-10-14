@@ -153,6 +153,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_handlers.py", "api_chat_slots_model"),
                 ("chat_handlers.py", "continue_slot_turn"),
                 ("chat_handlers.py", "stop_slot_turn"),
+                # Stop settlement wakes retained priority only on an unreserved slot.
+                ("chat_handlers.py", "_make_stop_resolver"),
                 ("chat_rewind.py", "api_chat_slot_rewind"),
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.
@@ -209,6 +211,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
             for site in {
                 ("chat_api/slot_detail.py", "api_chat_slot_detail"),
                 ("chat_handlers.py", "api_chat"),
+                ("responsive_chat.py", "accept"),
                 ("chat_regenerate.py", "_destructive_history_busy"),
                 ("chat_regenerate.py", "api_chat_slot_edit_resend"),
                 ("chat_regenerate.py", "api_chat_slot_regenerate"),

@@ -17,9 +17,9 @@ export type CrewComposerProps = Omit<ChatInputProps, (typeof SESSION_CHROME_PROP
 
 /**
  * The Crewmates page's composer: a DM with one crewmate, so it is the text
- * input, attachments, send / stop / steer and the queue, with no toolbar line.
+ * input, attachments and ordinary Send, with no session toolbar line.
  * It reuses the shared ChatInput for every one of those pieces rather than a
- * copy; only the session chrome is left out. ChatPane renders it through its
+ * copy; ChatPane supplies the responsive busy mode. It renders through its
  * `composerInput` slot, so the ordinary chat composer is untouched.
  *
  * With that chrome gone the toolbar holds only attach, mic and send, so the

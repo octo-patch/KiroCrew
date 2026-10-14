@@ -7,7 +7,8 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import { isRejectedDecision } from '../../utils/approvalDecision'
 import type { ChatState } from './state'
-import { isUnsafeKey, safeKey } from './wire'
+import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
+import { hydrateQueuedBubbles } from './queue'
 import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, mintMsgId, tailNotInPage } from './transcript'
 import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking } from './thinking'
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
@@ -87,7 +88,7 @@ export const messageReducers = {
         if (m.role !== 'user') continue
         const rowSid = typeof m.meta?.sendId === 'string' && m.meta.sendId ? m.meta.sendId : ''
         if (echoSid && rowSid === echoSid && !m.meta?.optimistic) return
-        if (!m.meta?.optimistic || !m.meta?.steer) continue
+        if (!m.meta?.optimistic || (!m.meta?.steer && !(echoSid && m.meta?.responsiveSend))) continue
         if (echoSid) {
           // Id-bearing echo: the match is exact or there is no match.
           if (rowSid === echoSid) { target = m; break }
@@ -126,7 +127,7 @@ export const messageReducers = {
     }
     // Optimistic steer bubble from a pane-scoped composer: same freeze as the
     // appendMessage (active-slot) path.
-    if (message.role === 'user' && message.meta?.steer && message.meta?.optimistic) {
+    if (message.role === 'user' && ((message.meta?.steer && message.meta?.optimistic) || message.meta?.responsiveSend)) {
       finalizeTrailingStreaming(msgs)
     }
     // Mark non-steer user bubbles as optimistic so the sseChatMessage
@@ -368,8 +369,8 @@ export const messageReducers = {
    *  unbounded one. The reverse is refused, and a superseded slot cannot upgrade
    *  again, so this cannot loop.
    *  No-op for the active slot (its mirror is already live). */
-  hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean; nextBefore?: number }>) {
-    const { slot, messages, hasMore, bounded, total, running, nextBefore } = action.payload
+  hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; queue?: unknown; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean; nextBefore?: number }>) {
+    const { slot, messages, queue, hasMore, bounded, total, running, nextBefore } = action.payload
     if (isUnsafeKey(slot)) return
     if (slot === state.activeSlot) return
     const k = safeKey(slot)
@@ -393,12 +394,16 @@ export const messageReducers = {
     const cur = state.slotMessages[slot] ?? []
     if (!state.slotHydrated) state.slotHydrated = {}
     state.slotHydrated[k] = true
+    const removedQueueIds = new Set(state.slotPaneRemovedQueueIds?.[k])
+    delete state.slotPaneRemovedQueueIds?.[k]
     // Only a page write records a marker, so its presence means `cur` is a
     // loaded transcript, and prepending a bounded tail onto that reorders it.
     if (state.slotPaneHasMore?.[k] !== undefined) return
     // Seeded frames are NEWER rows appended after the page, so the page's
     // has-more still describes what precedes it; dropping it hid the marker.
-    writeSlotPage(state, slot, [...messages, ...cur], hasMore, bounded ? messages.length : undefined, nextBefore)
+    const queued = normalizeQueueEntries(queue).filter(q => !removedQueueIds.has(q.queueId))
+    const hydrated = hydrateQueuedBubbles([...messages, ...tailNotInPage(cur, messages)], queued, true)
+    writeSlotPage(state, slot, hydrated, hasMore, bounded ? messages.length : undefined, nextBefore)
     retainServerTotal(state, slot, total, running)
   },
   sseChatMessageUpdate(state: ChatState, action: PayloadAction<{ slot: string; tool_call_id?: string; ts?: string; content?: string; meta?: Record<string, unknown> }>) {

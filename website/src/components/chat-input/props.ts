@@ -13,7 +13,7 @@ import type { ApprovalModeRemote } from '../ApprovalModePicker'
    props they need as their own parameters, a few by indexed access
    (`ChatInputProps['onFileSelect']`). */
 /** Busy-composer send affordance — see `ChatInputProps.busyMode`. */
-export type ComposerBusyMode = 'split' | 'steer-only'
+export type ComposerBusyMode = 'split' | 'steer-only' | 'responsive'
 
 /** The modifier state a Backspace/Delete keydown carries into `onMentionKey`,
  *  so the host can tell a plain or Shift-held delete (treated alike) from a
@@ -76,7 +76,9 @@ export interface ChatInputProps {
    * a person has no "wait until they finish, then they'll listen" step, so
    * offering one would present a console control inside a chat. Needs
    * `canSteer` + `onSteer` exactly like the split button; without a steer
-   * path the busy send still falls back to the queue button. */
+   * path the busy send still falls back to the queue button.
+   * 'responsive' keeps ordinary Send at every runtime state and calls onSend;
+   * the host asks the gateway to prioritize the message, never stops locally. */
   busyMode?: ComposerBusyMode
   disabled?: boolean
   placeholder?: string

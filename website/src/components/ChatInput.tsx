@@ -1440,7 +1440,7 @@ function ChatInput({
             {/* The busy branch is reachable with EITHER a stop affordance or a
                 steer path: a host without onStop still needs the split
                 steer/queue button while a turn runs. */}
-            {compacting && !isRunning && !composerHasDraft && (!stopState || stopState === 'idle') ? (
+            {busyMode !== 'responsive' && compacting && !isRunning && !composerHasDraft && (!stopState || stopState === 'idle') ? (
               // An automatic compaction holds the session. It is NOT a turn
               // (`isRunning` is false), so without this branch the composer
               // read idle and the only affordance was Send. Yields to a LIVE
@@ -1451,7 +1451,7 @@ function ChatInput({
               // the idle Send queues the message behind the compaction, so a
               // user with something to say is never left without a send.
               <CompactingIndicator />
-            ) : (isRunning || stopState === 'soft_pending' || stopState === 'killing') && (onStop || (!terminal.active && canSteer && onSteer)) ? (
+            ) : busyMode !== 'responsive' && (isRunning || stopState === 'soft_pending' || stopState === 'killing') && (onStop || (!terminal.active && canSteer && onSteer)) ? (
               <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued && !terminal.active} composerHasDraft={composerHasDraft && !terminal.active} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} onBusyModePicked={focusComposerAfterPick} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} />
             ) : !terminal.active && (<>
               {promptOptimizer && <button

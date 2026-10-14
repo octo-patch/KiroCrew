@@ -116,7 +116,7 @@ import CrewStateAvatar from '../../components/CrewStateAvatar'
 import CrewLoopIndicator from '../../components/crew/CrewLoopIndicator'
 import Glass from '../../components/Glass'
 import { Badge } from '../../components/ui'
-import { PILL_ACTIVITY_KEY, type PillActivityKind } from './pillActivity'
+import { PILL_ACTIVITY_KEY } from './pillActivity'
 import { useSlotActivity } from './useSlotActivity'
 import ChatPane from '../../components/ChatPane'
 import MateResumeCard from './MateResumeCard'
@@ -3117,14 +3117,9 @@ export default function MembersPage() {
   const activeSlotLastTs = useAppSelector(
     (s) => (activeSlot ? s.dashboard.slots.find(sl => sl.key === activeSlot)?.last_ts : undefined),
   )
-  // The identity pill's second line — what the crewmate is doing now, read
-  // through the ONE seam the chat's live status line reads too
-  // (`useSlotActivity`): the slot's live status record, the SAME one the
-  // sessions sidebar and the command palette render through `toolStatusLabel`,
-  // so the pill names a moment the way the sidebar row does and honours the
-  // `simplifiedToolNames` preference. The key falls back to the roster's
-  // slot_key the same way the avatar does, so a thread whose confirmed slot
-  // has not resolved yet still reads live.
+  // Read the existing activity seam, then project it as availability below.
+  // The key falls back to the roster's slot_key just as the avatar does, so
+  // an opening thread still has live presence without exposing tool prose.
   const pillSlotKey = activeSlot || active?.slot_key || ''
   // The DM header floats over the top of the thread (#18325): the identity
   // pill is a Glass chip, so the conversation scrolls under it the way it
@@ -3195,12 +3190,13 @@ export default function MembersPage() {
     // the next tick.
   }, [pillResting, pillLastActive, uiLang])
   const pillActivity = useMemo(() => {
-    const label = pillAct.text !== undefined
-      ? pillAct.text
-      : pillAct.kind === 'idle' && pillIdleAge
-        ? t('pages.membersPage.pill_idle_since', { when: pillIdleAge })
-        : t(PILL_ACTIVITY_KEY[pillAct.kind as Exclude<PillActivityKind, 'tool' | 'thinking'>])
-    return { kind: pillAct.kind, label }
+    // The header describes availability, not runtime/tool mechanics. The
+    // underlying activity stays intact for the detailed Sessions surface.
+    const kind = pillAct.kind === 'idle' || pillAct.kind === 'writing' ? pillAct.kind : 'working'
+    const label = kind === 'idle' && pillIdleAge
+      ? t('pages.membersPage.pill_idle_since', { when: pillIdleAge })
+      : t(PILL_ACTIVITY_KEY[kind])
+    return { kind, label }
   }, [pillAct, t, pillIdleAge])
   // Reactive document visibility AND focus, so the read effect below re-runs
   // when the user returns to a hidden tab or focuses the window — a plain
@@ -5049,10 +5045,8 @@ export default function MembersPage() {
                       page's widest region, and an uncapped line length is
                       unreadable on wide screens.
 
-                      Default (split) busy mode: a send while the member is
-                      working offers the same Steer / Queue / Jev auto choice
-                      as the main chat, so the user can queue a follow-up
-                      instead of always interrupting the running turn. */}
+                      The crewmate identity opts this pane into a normal Send
+                      at every runtime state; the gateway owns prioritization. */}
                   <ChatPane
                     slotKey={activeSlot}
                     agentLocked

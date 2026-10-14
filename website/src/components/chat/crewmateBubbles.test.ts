@@ -56,36 +56,12 @@ describe('filterCrewmateChat', () => {
     for (const m of rows) expect(isCrewmateChatRow(m)).toBe(true)
   })
 
-  it('hides only the machinery notice kinds (empty_turn, arm_refusal); every other notice draws', () => {
-    // A crewmate's chat drops a `notice` by an ALLOWLIST of machinery kinds,
-    // never by role: the empty-turn recovery card and the automation arm
-    // refusal are the runtime talking about itself and are hidden, while a
-    // notice the person must act on (a dropped queued message, a model-fallback
-    // hint) has no second route and still draws. Fails if the filter goes back
-    // to a blanket role drop OR to the old empty_turn-only tag.
-    const emptyTurn: ChatMessage = {
-      role: 'notice', cls: 'msg msg-info', ts: at('2026-09-22T06:00:05Z'),
-      content: 'ℹ️ The turn ended without a closing reply — continuing once from what already ran.',
-      meta: { kind: 'empty_turn' },
-    }
-    const armRefusal: ChatMessage = {
-      role: 'notice', cls: 'msg msg-info', ts: at('2026-09-22T06:00:06Z'),
-      content: '⚠️ Automation loop NOT updated — it kept its previous instruction: a stopped loop cannot be restarted.',
-      meta: { kind: 'arm_refusal' },
-    }
-    const modelFallback: ChatMessage = {
-      role: 'notice', cls: 'msg msg-info', ts: at('2026-09-22T06:00:07Z'),
-      content: "That model isn't offered right now. Pick another model from the composer.",
-      meta: { kind: 'model_fallback' },
-    }
-    const untaggedNotice: ChatMessage = { role: 'notice', content: 'note', cls: '', ts: at('2026-09-22T06:00:08Z') }
-    expect(isCrewmateChatRow(emptyTurn)).toBe(false)
-    expect(isCrewmateChatRow(armRefusal)).toBe(false)
-    // Person-actionable notices keep drawing — no second route for them.
-    expect(isCrewmateChatRow(modelFallback)).toBe(true)
-    expect(isCrewmateChatRow(untaggedNotice)).toBe(true)
-    expect(filterCrewmateChat([emptyTurn, armRefusal, modelFallback, untaggedNotice]))
-      .toEqual([modelFallback, untaggedNotice])
+  it('hides runtime notices regardless of kind without mutating the audit history', () => {
+    const notices: ChatMessage[] = ['empty_turn', 'arm_refusal', 'model_fallback', undefined].map(kind => ({
+      role: 'notice', content: 'runtime detail', cls: '', meta: kind ? { kind } : undefined,
+    }))
+    expect(filterCrewmateChat(notices)).toEqual([])
+    expect(notices).toHaveLength(4)
   })
 
   it('an all-machinery transcript filters to nothing (so the empty hint can show)', () => {
@@ -108,9 +84,9 @@ describe('filterCrewmateChat', () => {
     }
   })
 
-  it('the stop card is the one system row that is drawn', () => {
+  it('keeps stop cards in history but not in the crewmate conversation', () => {
     const stop: ChatMessage = { role: 'system', content: '{"kind":"stop_event"}', cls: '', ts: at('2026-09-22T06:00:00Z'), kind: 'stop_event', meta: { kind: 'stop_event' } }
-    expect(isCrewmateChatRow(stop)).toBe(true)
+    expect(isCrewmateChatRow(stop)).toBe(false)
   })
 
   it('hides gateway status written under the assistant role', () => {

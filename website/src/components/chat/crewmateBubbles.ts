@@ -13,13 +13,8 @@
  *    bursts, and the say-nothing rows a quiet patrol ends on — is filtered at
  *    RENDER time by `filterCrewmateChat`. Nothing is deleted: the rows stay in
  *    the slot's transcript and the Work log reads them from there — the turn
- *    in flight included. What the crewmate is doing RIGHT NOW is not a
- *    transcript row at all but ONE status line beside the working indicator
- *    (`CrewmateLiveActivity`, fed by the DM header pill's own reading,
- *    `useSlotActivity`), so the reader sees the current step, never the list
- *    of steps (#18238). A line that swaps its text in place is also what keeps
- *    the indicator still: rows mounting and unmounting above it made the ghost
- *    hop on every step.
+ *    in flight included. The existing footer reports a working turn without
+ *    drawing technical activity labels; Sessions keeps the detailed record.
  *
  * 2. HOW A RUN LOOKS. Consecutive messages from the crewmate form a run: one
  *    bubble per message, grouped corners on the run's (left) side, and NO
@@ -61,6 +56,7 @@ const WITHIN_TURN_ROLES: ReadonlySet<string> = new Set([
  *  non-empty and the crewmate's empty hint would never show. */
 const MACHINERY_ROLES: ReadonlySet<string> = new Set([
   'nudge', 'inject', 'subagent', 'tool', 'tool_call', 'tool_result', 'thinking', 'done',
+  ...REASONING_ROLES,
 ])
 
 /** A turn's progress rows: tool calls (the 🔧 line and its hidden ✅ / 🚫
@@ -104,35 +100,14 @@ export function isCrewmateSpeech(m: ChatMessage): boolean {
   return !isHiddenInvisibleAssistantRow(m) && !isSystemNoticeRow(m) && !isWorkflowCompletionMessage(m) && !isSubagentCompletionMessage(m)
 }
 
-/** The `notice` kinds a crewmate's chat drops: the runtime's own machinery that
- *  the person has nothing to do with. `empty_turn` is the runner's empty-response
- *  recovery card (`chat_utils.EMPTY_TURN_NOTICE_KIND`); `arm_refusal` is the
- *  automation arm/revision/stop refusal (`session_directive_apply.ARM_REFUSAL_NOTICE_KIND`),
- *  which is re-routed to the crewmate's next turn as an `inject` row instead;
- *  `spec_hooks` is the session-start notice about an agent spec's hooks that do
- *  not run (`chat_utils.SPEC_HOOKS_NOTICE_KIND`), drawn on the Sessions page.
- *  Every notice OUTSIDE this set names something the person may have to act on
- *  (a dropped queued message, a model-fallback hint) and keeps drawing. */
-const CREWMATE_HIDDEN_NOTICE_KINDS: ReadonlySet<string> = new Set(['empty_turn', 'arm_refusal', 'spec_hooks'])
-function isHiddenCrewmateNotice(m: ChatMessage): boolean {
-  const kind = (m.meta as { kind?: unknown } | undefined)?.kind
-  return typeof kind === 'string' && CREWMATE_HIDDEN_NOTICE_KINDS.has(kind)
-}
-
 /** Whether a row is drawn in a crewmate's chat at all. */
 export function isCrewmateChatRow(m: ChatMessage): boolean {
   if (MACHINERY_ROLES.has(m.role)) return false
   if (m.role === 'assistant') return isCrewmateSpeech(m)
-  if (m.role === 'system') return isStopCard(m)
-  // A crewmate's chat shows messages only, so a `notice` the runtime writes
-  // about its OWN machinery is dropped — an empty-turn recovery card, and the
-  // automation arm/revision/stop refusal, which reaches the crewmate through
-  // its next turn instead (`session_directive_apply`). The drop is by an
-  // ALLOWLIST of those kinds, never by role: a notice the PERSON must act on
-  // (a dropped queued message, a model-fallback hint, a directive-not-applied
-  // warning) has no second route, so it keeps drawing. The Sessions page draws
-  // every notice as today.
-  if (m.role === 'notice') return !isHiddenCrewmateNotice(m)
+  if (m.role === 'system') return false
+  // Runtime notices belong to Sessions, not the conversation with a person
+  // (docs/decisions/2026-10-09-crewmate-chat-draws-messages-only.md).
+  if (m.role === 'notice') return false
   // A pending approval is the approval surface and stays; a RESOLVED one draws
   // nothing (its renderer returns null) and must not count as content — kept,
   // it would hide the quiet hint behind a blank chat. Same rule `isRunTransparent`

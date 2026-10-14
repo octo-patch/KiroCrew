@@ -325,6 +325,42 @@ then takes no inset: a control under the glass is an ambiguous tap. The row and
 its cells pass pointer events through; only the controls catch them. Details:
 [crew-mode](../../docs/system-specs/modules/crew-mode.md#crewmate-conversation-layout-switcher-profile-dashboard-files).
 
+### Crewmate conversation sends and runtime detail
+
+A `ChatPane` with `crewmate` always uses the `responsive` composer mode:
+one normal Send arrow for idle, busy, delegated and stopping states. Enter,
+click, voice auto-submit and direct question answers use the existing send
+transport with an optional top-level `responsive: true` in
+`POST /api/chat?ws=1`. The gateway validates a human on a real member DM and
+owns prioritization; the frontend neither sends stop nor chooses a model.
+Other panes and Sessions retain their existing Steer/Queue controls and wire.
+
+The same attachment/quote/paste serializer, send-id correlation, draft recovery,
+and measured composer dock remain in use. A responsive optimistic bubble is
+marked locally with `responsiveSend` so an exact-id steer echo can reconcile it
+and buffered streaming text stays above it. A refused send restores the draft;
+a late receipt leaves a visible delivery-pending bubble. If the server really
+queues a send, the existing cancellable queue remains visible rather than
+losing the message. No system-delivery or subagent-progress bar is drawn.
+
+Cold pane mounts hydrate the slot-detail `queue` alongside `messages` through
+the shared queue normalizer and bubble hydrator, retaining the exact send id,
+attachments and quote. The first hydrate fills missing queue cards without
+replacing newer live cards; pop/cancel ids observed before it prevent a stale
+snapshot from resurrecting completed entries, even if no message array existed
+when the frame arrived. A bounded-to-unbounded history upgrade keeps the current
+queue rather than replaying its fetched queue snapshot. Active-slot hydration
+remains owned by Sessions' existing switch/refresh path.
+
+The crewmate transcript filters runtime notices and stop events as well as
+tools, reasoning and injected subagent rows, without changing stored history.
+Historical steer/requeue/decision metadata draws an ordinary user bubble.
+Errors, pending approvals, questions, files and OAuth actions remain accessible.
+The existing footer is the simple working indicator, not a tool-purpose timeline;
+the detailed Sessions view and its normal engineering UI remain available through
+the profile's session links. Narrow screens keep the same width-adaptive composer,
+attachment holds, IME/Enter handling and keyboard-preserving send control.
+
 ## Stat cards
 
 OPTIONAL summary metrics above the content. Add a row only when a number is not

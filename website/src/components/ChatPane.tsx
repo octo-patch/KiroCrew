@@ -15,7 +15,6 @@ import ChatInput, { type ComposerBusyMode } from './ChatInput'
 import type { ChatInputProps } from './chat-input/props'
 import { busySteerFlag } from './chat-input/busySend'
 import { filterCrewmateChat } from './chat/crewmateBubbles'
-import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
 import { useCrewmateGreetingShown } from './chat/useCrewmateGreetingShown'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
 import ErrorNotice from './ErrorNotice'
@@ -36,7 +35,6 @@ import SessionTitleControl from '../pages/chat/SessionTitleControl'
 import { pinCandidateKey, usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
 import { useJevAutoSend } from '../pages/chat/useJevAutoSend'
 import type { DisplayItem } from '../pages/chat/types'
-import { useSlotActivity } from '../pages/members/useSlotActivity'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter, defaultWriteFailureOf, defaultWriteKind, isCrewmateChat } from './AgentDropdownList'
 import type { DefaultWriteFailure } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
@@ -62,7 +60,7 @@ import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, loadOlderMessages, loadOlderSlotMessages, syncSlotRunningFromServer, setAgentSwitchNotice, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, selectSlotMessages, selectSendAccepted, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, loadOlderMessages, loadOlderSlotMessages, syncSlotRunningFromServer, setAgentSwitchNotice, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
@@ -238,10 +236,9 @@ export default function ChatPane({
    *  `'split'` — the same Steer/Queue split button as the main chat, which
    *  split-view (⌘D) panes keep: they are the main chat's own sessions seen
    *  side by side. A host that presents a conversation with ONE named peer
-   *  (the Members page's DM thread) passes `'steer-only'`: no queue concept,
-   *  every send while the member is working goes straight into its running
-   *  turn. Decided by the host, never inferred here, so no pane changes
-   *  behaviour by accident. */
+   *  may pass `'steer-only'`. A `crewmate` host instead uses `'responsive'`:
+   *  always ordinary Send, with priority owned by the gateway. Other panes
+   *  retain the explicit busy mode the host passed. */
   busyMode?: ComposerBusyMode
   /** This pane is a CREWMATE's chat (a member-mode slot on the Members page):
    *  the transcript shows only what the crewmate says to the user — the
@@ -565,14 +562,9 @@ export default function ChatPane({
   // The host's greeting is drawn while it is still the newest word: a reply
   // landing after it (a patrol / wake turn keeps it up) takes it down.
   const greetingShown = useCrewmateGreetingShown(!!crewmate && !!crewmateGreeting, messages)
-  // What the crewmate is doing right now, for the status line above the
-  // working indicator: read through the SAME seam the DM header's identity
-  // pill reads (`useSlotActivity` over the slot's live status record), so the
-  // two can never name one moment differently (same `delegatedOnly` input).
-  const liveActivity = useSlotActivity(crewmate ? slotKey : '', {
-    running: crewmateLive,
-    delegatedOnly: !!paneSlot?.subagents_running && !paneSlot?.running,
-  })
+  // The host declares the conversation surface; only the gateway decides
+  // how to prioritize the human's message on the validated member DM.
+  const composerBusyMode = crewmate ? 'responsive' : busyMode
   // The unfiltered rows, handed to the row set for the one read that must see
   // what the filter dropped (the steer-chip decision reads the policy-block
   // inject row). `undefined` for an ordinary chat, so its renderer set does not
@@ -842,7 +834,7 @@ export default function ChatPane({
     staleTime: Infinity,
   })
   useEffect(() => {
-    if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
+    if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, queue: slotDetail.queue, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
   }, [slotDetail, slotKey, dispatch, hydrateLimit])
 
   // Scroll follow (auto-pin, release, jump pill) is owned by the virtualizer
@@ -1270,16 +1262,16 @@ export default function ChatPane({
     // the optimistic bubble — without this id the echo appends a SECOND user
     // bubble carrying the raw marker.
     const sendId = mintSendId()
-    // Optimistic user bubble: show immediately in the right position (mirrors the
-    // single-chat send). Skipped while busy (main turn streaming OR sub-agents
-    // running). A real queue has its own card; an immediate dispatch supplies
-    // the skipped row through its correlated user echo.
+    // A crewmate send always appears immediately; a real queued receipt
+    // replaces it with the cancellable queue entry. Ordinary Sessions keep
+    // their busy-send bubble policy and correlated server echo.
     const meta = { ...turn.meta, sendId }
-    const bubbleMinted = !busy && (text || files.length || sentQuote)
+    const bubbleMinted = (!!crewmate || !busy) && (text || files.length || sentQuote)
     if (bubbleMinted) {
+      if (crewmate) drainPendingChunks()
       dispatch(appendSlotMessage({
         slot: slotKey,
-        message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), ...(meta ? { meta } : {}) },
+        message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { ...meta, ...(crewmate ? { responsiveSend: true } : {}) } },
       }))
     }
     // Sending is explicit intent to be at the end, so the pane force-pins the
@@ -1306,7 +1298,7 @@ export default function ChatPane({
     // `response-late` proves no refusal either; restoring either one here could
     // invite a retry that duplicates a turn already in flight, side effects
     // included, so the optimistic composer row stays pending.
-    void sendTurn({ message: llm, slot: slotKey, meta, ...(steerNow ? { steer: true } : {}) }).then((receipt) => {
+    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: true } : {}) }).then((receipt) => {
       // Receipt policy, owned once in chat-core (issue #9457). This is the
       // PARTIAL copy: doSend is a full send, not only a steer, so the rulings
       // applySteerReceipt owns (echo short-circuit, refused/response-late/
@@ -1315,11 +1307,11 @@ export default function ChatPane({
       // card + blocking-ask resolution) stays here, AFTER the rulings, because
       // it must run on every accepted receipt including a `steered` one.
       applySteerReceipt(receipt, {
-        // A busy send always mints a sendId; the echo (queue/steer_push) that
-        // carries it reconciles the row. Only this send's id counts -- a queued
-        // card carries none and matching by text cannot tell this send from an
-        // identical one queued meanwhile.
+        // Exact send identity proves custody through either queue or user echo.
+        // Queue custody suppresses duplicate recovery, not the cancellable card;
+        // only the drain/user echo proves execution.
         echoReconciled: () => selectSendConfirmed(store.getState(), slotKey, sendId),
+        sendAccepted: () => !!crewmate && selectSendAccepted(store.getState(), slotKey, sendId),
         // A BUSY send minted no optimistic bubble (bubbleMinted false: the
         // server's queue/steer echo was to be the representation), so the text
         // exists nowhere on screen and must be handed back. The gate differs by
@@ -1363,6 +1355,11 @@ export default function ChatPane({
         // of when the correlated echo arrives, and confirmOptimisticSend no-ops
         // when a busy send skipped the bubble.
         resolveBubble: (outcome) => {
+          // A responsive send always has a bubble: a real queue or refusal
+          // replaces it, but an indeterminate response keeps it pending.
+          if (crewmate && outcome === 'drop' && receipt.status !== 'response-late') {
+            dispatch(resolveOptimisticSteer({ slot: slotKey, sendId, outcome: 'queued' }))
+          }
           if (outcome !== 'turn') return
           dispatch(confirmOptimisticSend({
             slot: slotKey,
@@ -1389,7 +1386,7 @@ export default function ChatPane({
       if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
     })
-  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash])
+  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the
@@ -1478,6 +1475,7 @@ export default function ChatPane({
         // the bubble: the steer landed, so an indeterminate transport outcome
         // is ignored.
         echoReconciled: () => selectSendConfirmed(store.getState(), slotKey, sendId),
+        sendAccepted: () => !!crewmate && selectSendAccepted(store.getState(), slotKey, sendId),
         // refused / response-late hand the payload back into this pane's
         // composer (raw text + files), addressed to the slot it was typed into.
         restore: () => restoreIntoComposer(recoverQuoteInto(raw, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, steerPastes, slotKey),
@@ -1502,7 +1500,7 @@ export default function ChatPane({
         void resolveAskAfterSend(receipt.body, askAtSteer, dispatch, slotKey)
       }
     })
-  }, [running, paneSlot?.running, doSend, input, pendingFiles, pasteBlocks, setPasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto, interceptPaneSlash])
+  }, [running, paneSlot?.running, doSend, input, pendingFiles, pasteBlocks, setPasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto, interceptPaneSlash, crewmate])
 
   // Stop mirrors ChatPage's press protocol (ChatPage.onStop): the first press
   // is the cooperative cancel, a second press while the slot reports
@@ -1554,7 +1552,7 @@ export default function ChatPane({
     // An attachment still uploading holds the composer: doSend owns that hold
     // (it ends the dictation and sends nothing) and doSteer has no copy of it.
     if (isComposerSendHeld(slotKey)) { doSend(); return }
-    const flag = busySteerFlag({ slotKey, busy, turnRunning: running, stopState: paneStopState, jevAutoConsented, busyMode })
+    const flag = busySteerFlag({ slotKey, busy, turnRunning: running, stopState: paneStopState, jevAutoConsented, busyMode: composerBusyMode })
     if (flag) doSteer(flag === 'auto' ? { auto: true } : undefined)
     else doSend()
   }
@@ -1999,27 +1997,15 @@ export default function ChatPane({
               </>
             ),
             belowRows: (
-              /* The same working indicator the full chat page shows (the ghost-pose
-                 carousel, theme-swappable via themeBranding): a running turn in a
-                 pane — a member DM, a split pane — was otherwise invisible between
-                 tool steps. Inside the scroll container, after the last message,
-                 so it reads as "the reply is coming" exactly where the reply will
-                 land. Stop/regenerate chrome stays page-level: the pane derives
-                 the footer's inputs from its own per-slot stream state. A
-                 crewmate's current step is the one-line status directly above
-                 it, mounted for the whole live turn so the indicator never
-                 moves while steps come and go (#18238). Keyed by the slot: the
-                 line holds each step briefly (useHeldActivity), and the Members
-                 page rebinds this one pane to another crewmate without
-                 remounting it, so without the key B's chat would open on A's
-                 held step. A new key is a fresh mount: B's reading at once. */
+              /* The existing footer reports liveness without naming tools or
+                 runtime stop/compaction phases on the crewmate surface.
+                 Ordinary session panes retain their full footer state. */
               <>
               {greetingShown && crewmateGreeting}
-              {crewmate && crewmateLive && <CrewmateLiveActivity key={slotKey} activity={liveActivity} />}
               <ChatFooter
-                running={running || !!paneSlot?.running}
-                stopping={streamState === 'stopping' || !!paneSlot?.stopping}
-                state={streamState}
+                running={running || !!paneSlot?.running || (!!crewmate && busy)}
+                stopping={!crewmate && (streamState === 'stopping' || !!paneSlot?.stopping)}
+                state={crewmate && streamState !== 'streaming' ? 'thinking' : streamState}
                 lastRole={messages[messages.length - 1]?.role ?? ''}
                 streamTick={
                   messages[messages.length - 1]?.role === 'streaming'
@@ -2055,9 +2041,9 @@ export default function ChatPane({
         <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={scrollToBottom} />
 
         <div className="dock-inert" data-testid="composer-status-stack">
-        <SubagentProgressBar slot={slotKey} />
+        {!crewmate && <SubagentProgressBar slot={slotKey} />}
 
-        <SubagentDeliveryProgress count={systemDeliveryCount} />
+        {!crewmate && <SubagentDeliveryProgress count={systemDeliveryCount} />}
         {/* Rendered on server state only. A `steer-only` host never ASKS for a
             queue, so in normal operation this stays empty there; it is not
             hidden by mode, because a message the server did park (a backend
@@ -2065,7 +2051,7 @@ export default function ChatPane({
             cancellable — hiding real state is worse than showing a card the
             surface did not intend. */}
         {queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} />
+          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={crewmate ? undefined : onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} />
         )}
 
         {/* The pending ask_question card shares the message column's gutter and
@@ -2145,21 +2131,22 @@ export default function ChatPane({
               // reconciled the bubble -- proof it landed, so no restore and no
               // duplicate. Only the `steer` POST flag and the pre-append chunk
               // drain differ between the two routes.
-              const steerLive = busy && pendingQuestion?.native === true
+              const steerLive = (busy || (!!crewmate && (running || !!paneSlot?.running))) && pendingQuestion?.native === true
               const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
               // Drain the per-frame chunk buffer before the append, as `doSteer`
               // does: a pre-steer chunk still buffered means the finalize-on-steer
               // finds no streaming row, so the bubble would flush BELOW it and
               // post-steer chunks would corrupt transcript order (#6075 class).
               // Only a live steer injects into a streaming turn, so only it drains.
-              if (steerLive) drainPendingChunks()
-              dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { ...(steerLive ? { steer: true } : {}), optimistic: true, sendId } } }))
-              void sendTurn({ message: text, slot: slotKey, meta: { sendId }, ...(steerLive ? { steer: true } : {}) }).then((receipt) => {
+              if (steerLive || crewmate) drainPendingChunks()
+              dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { ...(steerLive ? { steer: true } : {}), ...(crewmate ? { responsiveSend: true } : {}), optimistic: true, sendId } } }))
+              void sendTurn({ message: text, slot: slotKey, meta: { sendId }, ...(crewmate ? { responsive: true } : {}), ...(steerLive ? { steer: true } : {}) }).then((receipt) => {
                 applySteerReceipt(receipt, {
                   // A confirmed echo is stronger evidence than a missing/late HTTP
                   // response: if it landed, do NOT restore (the fix for the
                   // "confirmed steers restored as failed" finding).
                   echoReconciled: () => selectSendConfirmed(store.getState(), slotKey, sendId),
+                  sendAccepted: () => !!crewmate && selectSendAccepted(store.getState(), slotKey, sendId),
                   // The card cleared on submit, so the answer lives nowhere else:
                   // hand it back on every non-delivered ruling. The bubble is
                   // dropped by `resolveBubble` below, so this never leaves an
@@ -2276,22 +2263,22 @@ export default function ChatPane({
           terminalCommands={!paneSlot ? 'pending' : paneSlot.executor === 'remote' ? 'remote' : 'local'}
           hiddenCommands={paneHiddenCommands}
           isRunning={busy}
-          onStop={onStop}
+          onStop={crewmate ? undefined : onStop}
           isQueued={streamState === 'stopping' || !!paneSlot?.stopping}
           stopState={paneStopState}
           // Steer path on the pane too (it was queue-only before): busy panes
           // get the same mid-turn choice as the main chat, and a
           // `steer-only` host gets a plain send that steers.
-          canSteer={busy}
+          canSteer={!crewmate && busy}
           // `doSteer` takes no `text`: the pane derives its chips from the same
           // `busy` that gates the steer path, so a chip is never on screen while
           // a send would steer, and the composer draft is the only steer payload.
-          onSteer={doSteer}
+          onSteer={crewmate ? undefined : doSteer}
           // AND a turn actually running: `busy` also covers a slot whose
           // sub-agents are still working, where the send starts a fresh turn and
           // there is no running turn for the point to decide about.
           jevAutoAvailable={jevAutoConsented && running}
-          busyMode={busyMode}
+          busyMode={composerBusyMode}
           autoFocusKey={slotKey}
           agentName={paneAgentName}
           // The chip shows the inherited-default marker; `agentName` stays the

@@ -1466,6 +1466,16 @@ flow again. Replay remains merge-only and idempotent.
 
 ## Dashboard (`dashboard/`)
 
+`responsive_chat.py` coordinates owner-authenticated crewmate human priority on
+the existing send, steer and queue paths. Its prompt guidance and raw-to-wire
+steer identities are process-local; user rows retain the original text. Responsive
+acceptance shares the direct-send nudge notification and edition message observer,
+once per accepted send rather than again at queue drain. The human-input flag
+still comes only from authenticated dashboard claims, never caller metadata. The
+admission, cancellation, burst and pending-interaction limits are owned by
+[session](session.md#responsive-human-sends-in-a-crewmate-dm); the conversation
+presentation is owned by [crew-mode](crew-mode.md#a-crewmates-chat).
+
 The Developer → Config MCP Tool Search toggle saves `agent.tool_search` as a
 boolean through `PATCH /api/config/kirocrew`. The config watcher refreshes the
 defaults used by new sessions.

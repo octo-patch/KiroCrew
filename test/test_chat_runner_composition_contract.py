@@ -800,6 +800,8 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_synthetic_recovery_turn",
         "_replays_completion",
         "_steer_possibly_delivered",
+        "_responsive_human",
+        "_responsive_protected",
         "_directive_user_origin",
         "_turn_provenance_restored",
         "_directive_self_wake",
