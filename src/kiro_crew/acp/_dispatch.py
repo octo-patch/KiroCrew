@@ -20,7 +20,7 @@ import logging
 import math
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple, cast
@@ -1712,6 +1712,109 @@ TOOL_CALL_CACHE_MAX_KEY_CHARS = 512
 #: refused rather than the path cut -- a truncated path would name a different
 #: file to the target gate.
 TOOL_CALL_CACHE_MAX_PATH_CHARS = 4096
+
+#: Most tool calls the liveness bookkeeping holds at once -- the session
+#: handle's attribution map (``AcpSessionHandle._active_tool_calls``) and the
+#: ``AcpClient``'s open-call set alike. It is the provenance caches' count bound
+#: by name, not a second literal: all three bound the same population, the calls
+#: of one turn with no terminal result yet, and a turn cannot legitimately have
+#: this many open. Past it the oldest entry is evicted and the eviction counted.
+MAX_ACTIVE_TOOL_CALLS = TOOL_CALL_CACHE_MAX_ENTRIES
+
+#: The prefix a digested liveness key carries. Reserved: a raw id spelling it is
+#: digested as well (:func:`liveness_key`), so the prefix names a digest and
+#: nothing else.
+LIVENESS_DIGEST_PREFIX = "sha256:"
+
+
+def liveness_key(tool_call_id: object) -> str:
+    """The key the liveness bookkeeping holds for a call.
+
+    A ``toolCallId`` is backend-authored and bounded on the wire only by the
+    transport frame cap. An id within :data:`TOOL_CALL_CACHE_MAX_KEY_CHARS` is
+    kept as it is; a longer one is held as its digest, so the key is bounded
+    without the two ids a long key could collide on being conflated -- the same
+    id maps to the same digest at dispatch, at its streamed output and at its
+    terminal. An id that itself spells the digest prefix is digested too,
+    whatever its length, so no raw id can equal another call's digest key:
+    every key that starts with the prefix is a digest, and two digests agree
+    only when the ids do. A value that is not a string (a JSON number,
+    ``None``) is no key: the result parser hands the frame's ``toolCallId``
+    through as it arrived, and a harness that spells one as a number must not
+    crash the turn here.
+    """
+    if not isinstance(tool_call_id, str):
+        return ""
+    if len(tool_call_id) <= TOOL_CALL_CACHE_MAX_KEY_CHARS and not tool_call_id.startswith(
+        LIVENESS_DIGEST_PREFIX
+    ):
+        return tool_call_id
+    return (
+        LIVENESS_DIGEST_PREFIX
+        + hashlib.sha256(tool_call_id.encode("utf-8", "surrogatepass")).hexdigest()
+    )
+
+
+class InFlightIdSet:
+    """The ``AcpClient``'s bounded set of open tool-call ids.
+
+    That transport asks one question of its calls -- *is any still open* -- to
+    arm the tool-stall clock and disarm the stale clock, so it keeps ids only,
+    never a state. The ids are backend-authored, so the set is bounded like the
+    handle's attribution map: each id is held under :func:`liveness_key`, at
+    most :data:`MAX_ACTIVE_TOOL_CALLS` are held (insertion order is dispatch
+    order, so the OLDEST is evicted first and the call just dispatched is always
+    kept), and every eviction is counted until :meth:`clear`. Once a row has
+    been evicted an empty set does not prove that nothing runs, which is what
+    :attr:`possibly_open` reads; the counter is what the turn says out loud.
+    The empty id a backend omits is a member like any other, as it was in the
+    plain set this replaces.
+    """
+
+    __slots__ = ("_ids", "_max_ids", "_evicted_count")
+
+    def __init__(self, max_ids: int = MAX_ACTIVE_TOOL_CALLS) -> None:
+        self._ids: dict[str, None] = {}
+        self._max_ids = max_ids
+        self._evicted_count = 0
+
+    def add(self, tool_call_id: object) -> None:
+        key = liveness_key(tool_call_id)
+        if key not in self._ids and len(self._ids) >= self._max_ids:
+            self._ids.pop(next(iter(self._ids)))
+            self._evicted_count += 1
+        self._ids[key] = None
+
+    def discard(self, tool_call_id: object) -> None:
+        self._ids.pop(liveness_key(tool_call_id), None)
+
+    def difference_update(self, tool_call_ids: Iterable[object]) -> None:
+        for tool_call_id in tool_call_ids:
+            self.discard(tool_call_id)
+
+    def clear(self) -> None:
+        self._ids.clear()
+        self._evicted_count = 0
+
+    def __contains__(self, tool_call_id: object) -> bool:
+        return liveness_key(tool_call_id) in self._ids
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._ids)
+
+    def __len__(self) -> int:
+        return len(self._ids)
+
+    @property
+    def evicted_count(self) -> int:
+        """Ids evicted at the cap since the last :meth:`clear`."""
+        return self._evicted_count
+
+    @property
+    def possibly_open(self) -> bool:
+        """Whether a call may still be running: one is held, or one was evicted."""
+        return bool(self._ids) or self._evicted_count > 0
+
 
 #: Marker a caller-owned overflow record carries once it holds
 #: ``TOOL_CALL_CACHE_MAX_ENTRIES`` distinct scope digests: from then on EVERY

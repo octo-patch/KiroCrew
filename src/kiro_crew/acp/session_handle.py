@@ -30,6 +30,7 @@ from kiro_crew import acp_tool_gate, model_registry, permission_floor
 from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
+    MAX_ACTIVE_TOOL_CALLS,
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
     build_permission_event,
@@ -39,6 +40,7 @@ from kiro_crew.acp._dispatch import (
     is_mcp_tool_approval,
     is_unattributed_error_candidate,
     kas_crew_agent_id,
+    liveness_key,
     parse_codex_compaction_update,
     parse_metadata,
     parse_prompt_token_usage,
@@ -1243,7 +1245,13 @@ class AcpSessionHandle:
         # tracker's aux payload (``None`` for a non-shell tool). ``ToolCallState``
         # does not carry the id, and the ``waiting_input`` status must name the
         # call, so the tracker keeps it too (``_inflight_tool_call_id`` below).
-        self._tool_tracker = InFlightToolTracker()
+        # Bounded by ``MAX_ACTIVE_TOOL_CALLS``: a backend that emits distinct
+        # tool_call frames whose results never report a terminal status would
+        # otherwise grow the tracker for the length of the turn. At the cap the
+        # OLDEST attribution is evicted and the call just dispatched is always
+        # kept, so the oracle keeps reporting the tool actually in flight rather
+        # than failing permissive on stall detection.
+        self._tool_tracker = InFlightToolTracker(max_calls=MAX_ACTIVE_TOOL_CALLS)
         # toolCallIds that streamed output (a non-final tool_call_update with
         # content) this turn. A command that already produced output may have
         # already acted, so a non-interactive retry of it is never ``safe_retry``.
@@ -1887,6 +1895,7 @@ class AcpSessionHandle:
         # A new turn starts with no infrastructure verdict carried over.
         self.last_infra_error = None
         self._tool_dispatched = False
+        self._report_evicted_attributions()
         self._tool_tracker.clear()
         self._tool_output_seen.clear()
         self._status_rejected.clear()
@@ -2657,6 +2666,43 @@ class AcpSessionHandle:
         )
         await self.reject_tool(event.request_id)
         return True
+
+    def _report_evicted_attributions(self) -> None:
+        """Say the previous turn's liveness-map overflow once, by count.
+
+        Run at the turn reset, before the map is cleared: the one warning for
+        an overflowed turn, naming the bound and how far past it the turn went
+        (a map that dropped rows at its cap must not read like one that was
+        never that full). A turn that evicted nothing says nothing.
+        """
+        count = self._tool_tracker.evicted_count
+        if not count:
+            return
+        logger.warning(
+            "tool-call liveness map evicted %d attribution(s) at its bound of %d last turn; "
+            "once its retained calls settled, that turn was judged as an opaque tool in "
+            "flight (the build-scale tool-stall window, never the stale probe) [session=%s]",
+            count,
+            MAX_ACTIVE_TOOL_CALLS,
+            self._session_id,
+        )
+
+    def _no_tool_in_flight(self) -> bool:
+        """Whether the turn provably has no tool call running.
+
+        An empty attribution map proves it only while the map has never
+        evicted this turn: once the tracker's ``evicted`` is set, a call
+        whose row was evicted at the cap may still be running, and reading the
+        emptied map as "nothing in flight" would arm the stale clock against
+        it -- the cancel-probe would then stop a live call as a wedge that did
+        not exist. After an eviction the turn is treated as having a tool in
+        flight until its ``clear()``: with no state to read, the oracle answers
+        UNKNOWN and the tool branch keeps its full build-scale forbearance
+        (``tool_stall_suspect_secs`` under the hard cap) before the non-lethal
+        tool-stall recovery, the same window any opaque in-flight tool gets.
+        The stale clock gives up nothing it could prove.
+        """
+        return not self._tool_tracker.any_active and not self._tool_tracker.evicted
 
     def _release_settled_tool_call(self, update: object, scope: str) -> None:
         """Drop a settled call's provenance rows once its result frame reports a
@@ -7634,7 +7680,7 @@ class AcpSessionHandle:
             filtered_events.append(ev)
             if ev.kind == EVENT_TEXT_CHUNK:
                 self.last_prompt_stats.text_chunks += 1
-                self._stale_eligible = not self._tool_tracker.any_active
+                self._stale_eligible = self._no_tool_in_flight()
                 self._prompt_or_tool_seen = True
             elif ev.kind == EVENT_TOOL_CALL:
                 self._stale_eligible = False
@@ -7695,22 +7741,39 @@ class AcpSessionHandle:
                 # judged one (the interactive classification rides as the aux
                 # payload, read back via ``_inflight_interactive``). A dispatch
                 # always changes the judged call, so retire the oracle.
-                self._tool_tracker.dispatch(ev.tool_call_id or "", inflight_tool, interactive)
+                # At the cap the oldest attribution is evicted and counted; the
+                # turn's overflow is said once, by count, at the next reset
+                # (``_report_evicted_attributions``).
+                self._tool_tracker.dispatch(
+                    liveness_key(ev.tool_call_id or ""), inflight_tool, interactive
+                )
                 self._retire_liveness_state()
             elif ev.kind == EVENT_TOOL_RESULT:
                 if not ev.tool_final and ev.tool_call_id:
                     # Streamed partial output: the command has acted, so any
                     # later non-interactive retry of it is not a safe replay.
-                    self._tool_output_seen.add(ev.tool_call_id)
+                    # Bounded like the map, and by it: the key is the liveness
+                    # key, only a call the map still holds is admitted (an id
+                    # matters here only while its call is in flight, and an
+                    # evicted or unknown id must not grow a sibling store past
+                    # the shared cap), and at the cap the set is pruned to the
+                    # calls still in flight.
+                    _seen_key = liveness_key(ev.tool_call_id)
+                    if _seen_key and _seen_key in self._active_tool_calls:
+                        if len(self._tool_output_seen) >= MAX_ACTIVE_TOOL_CALLS:
+                            self._tool_output_seen &= set(self._active_tool_calls)
+                        self._tool_output_seen.add(_seen_key)
                 if ev.tool_status in TERMINAL_TOOL_STATUSES:
                     # The shared hand-off rule drops the finished call and, when
                     # it was the judged one, re-points to the newest remaining
                     # dispatch (or clears). It returns whether the judged call
                     # changed — only then is the oracle retired and the input
                     # wait reset.
-                    judged_changed = self._tool_tracker.result(ev.tool_call_id or "", terminal=True)
-                    self._tool_dispatched = self._tool_tracker.any_active
-                    self._stale_eligible = not self._tool_tracker.any_active
+                    judged_changed = self._tool_tracker.result(
+                        liveness_key(ev.tool_call_id or ""), terminal=True
+                    )
+                    self._tool_dispatched = not self._no_tool_in_flight()
+                    self._stale_eligible = self._no_tool_in_flight()
                     if judged_changed:
                         self._input_wait_emitted = False
                         self._retire_liveness_state()

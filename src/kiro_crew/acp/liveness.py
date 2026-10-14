@@ -775,6 +775,12 @@ def launch_matches(cmdline: str, launch: tuple[str, ...]) -> bool:
 # ── Command matching ──
 
 
+#: The marker :func:`bounded_command_text` joins a cut command's head and tail
+#: with. Defined beside :func:`match_fragment` because that reader must split on
+#: it: a fragment spanning the cut is not a substring of any real cmdline.
+_COMMAND_ELISION = " ...[elided]... "
+
+
 def match_fragment(command: str) -> str:
     """Extract the most distinctive fragment of a cached tool command.
 
@@ -791,9 +797,13 @@ def match_fragment(command: str) -> str:
     distinctive survives (caller degrades to the weaker program-name match).
     """
     text = _command_text(command)
-    # Split on redaction markers and quoting/control chars that differ between
-    # the cached rendering and the real argv.
-    fragments = re.split(r"\*{3,}|\[REDACTED[^\]]*\]|[\"'\\\n\r]", text)
+    # Split on redaction markers, the retention cut's elision marker (a
+    # fragment spanning the cut can never match a real cmdline) and
+    # quoting/control chars that differ between the cached rendering and the
+    # real argv.
+    fragments = re.split(
+        r"\*{3,}|\[REDACTED[^\]]*\]|" + re.escape(_COMMAND_ELISION) + r"|[\"'\\\n\r]", text
+    )
     best = max((f.strip() for f in fragments), key=len, default="")
     return best if len(best) >= _MIN_MATCH_FRAGMENT else ""
 
@@ -1152,7 +1162,10 @@ def _classify_segment(segment: str, *, last: bool) -> InteractiveClassification:
         rest = args[sub_i + 1 :]
         editor_quiet = settings.get("editor") in _NON_INTERACTIVE_EDITORS
         sequence_quiet = settings.get("sequence") in _NON_INTERACTIVE_EDITORS
-        editor_hint = "GIT_EDITOR=true git " + " ".join(args)
+        # Built from the command's own arguments, so bounded like the command:
+        # the classification is retained beside the tool-call row for the
+        # length of the call, and every other hint in this table is a literal.
+        editor_hint = bounded_command_text("GIT_EDITOR=true git " + " ".join(args))
         if (
             not editor_quiet
             and sub == "commit"
@@ -1308,12 +1321,64 @@ def non_interactive_hint(command: str) -> str:
     return classify_interactive_command(command).hint
 
 
+#: Longest ``title`` / ``command`` a :class:`ToolCallState` retains. Both are
+#: backend-authored strings bounded on the wire only by the transport's frame
+#: cap, and the handle keeps up to ``MAX_ACTIVE_TOOL_CALLS`` states for a turn.
+#: ``title`` is display text, so its head is kept. ``command`` has readers at
+#: both ends: ``parse_wait_seconds``, ``first_program`` and ``match_fragment``
+#: read its head, and the stall-recovery nudge's log-redirect hint
+#: (``extract_log_redirect_target``) reads the ``> file`` a long shell command
+#: typically ends with -- so a command over the bound keeps its first
+#: ``MAX_RETAINED_COMMAND_CHARS - MAX_RETAINED_COMMAND_TAIL_CHARS`` characters
+#: and its last ``MAX_RETAINED_COMMAND_TAIL_CHARS``, joined by a marker, on
+#: every harness alike. The residual is a redirect buried in the middle of a
+#: command longer than four kilobytes.
+MAX_RETAINED_TITLE_CHARS = 512
+MAX_RETAINED_COMMAND_CHARS = 4096
+MAX_RETAINED_COMMAND_TAIL_CHARS = 512
+#: Longest ``tool_name`` / ``mcp_server_name`` a state retains -- the bound
+#: Crew's own MCP tool surface places on a name, so a name the surface would
+#: list is kept whole and a longer one is a head.
+MAX_RETAINED_NAME_CHARS = 512
+
+
+def bounded_command_text(text: str) -> str:
+    """*text* cut to ``MAX_RETAINED_COMMAND_CHARS``, keeping its head and tail.
+
+    The one shape every command-derived string a tool-call row retains is cut
+    to: the state's ``command`` and the interactive classifier's editor hint,
+    which is built from the command's own arguments and travels beside the
+    state as the row's aux payload. Under the bound the text is returned as it
+    is.
+    """
+    if len(text) <= MAX_RETAINED_COMMAND_CHARS:
+        return text
+    head = MAX_RETAINED_COMMAND_CHARS - MAX_RETAINED_COMMAND_TAIL_CHARS - len(_COMMAND_ELISION)
+    return text[:head] + _COMMAND_ELISION + text[-MAX_RETAINED_COMMAND_TAIL_CHARS:]
+
+
 @dataclass
 class ToolCallState:
-    """Snapshot of the in-flight tool call the oracle reasons about."""
+    """Snapshot of the in-flight tool call the oracle reasons about.
+
+    ``title`` and ``command`` are bounded at construction (the point of
+    retention) by ``MAX_RETAINED_TITLE_CHARS`` / ``MAX_RETAINED_COMMAND_CHARS``:
+    a state is held until the call's terminal result, and a turn may hold many,
+    so an unbounded backend string here would be an unbounded row.
+    """
 
     title: str = ""
     command: str = ""  # redacted cached tool input
+
+    def __post_init__(self) -> None:
+        if len(self.title) > MAX_RETAINED_TITLE_CHARS:
+            self.title = self.title[:MAX_RETAINED_TITLE_CHARS]
+        self.command = bounded_command_text(self.command)
+        if len(self.tool_name) > MAX_RETAINED_NAME_CHARS:
+            self.tool_name = self.tool_name[:MAX_RETAINED_NAME_CHARS]
+        if len(self.mcp_server_name) > MAX_RETAINED_NAME_CHARS:
+            self.mcp_server_name = self.mcp_server_name[:MAX_RETAINED_NAME_CHARS]
+
     dispatch_ts: float = 0.0  # time.monotonic() at EVENT_TOOL_CALL
     is_shell: bool = False
     # ``boottime_now()`` at EVENT_TOOL_CALL — the SAME clock /proc dates process
@@ -1458,9 +1523,9 @@ class InFlightToolTracker:
     there, and the sub-agent carries ``None``. The tracker never reads it.
     """
 
-    __slots__ = ("_calls", "_current_id", "_idless")
+    __slots__ = ("_calls", "_current_id", "_evicted_count", "_idless", "_max_calls")
 
-    def __init__(self) -> None:
+    def __init__(self, max_calls: int | None = None) -> None:
         # Insertion order IS dispatch order, so the newest remaining call is
         # ``next(reversed(...))`` — the main agent's parallel calls can finish in
         # any order and the judged call must fall back to the most recent one
@@ -1475,6 +1540,16 @@ class InFlightToolTracker:
         # dispatch simply overwrites this slot. ``_current_id == ""`` with a
         # non-None ``_idless`` is exactly the id-less-judged state.
         self._idless: tuple[ToolCallState, object] | None = None
+        # Most stored calls at once (``None``: unbounded). A backend that emits
+        # distinct tool_call frames whose results never report a terminal status
+        # would otherwise grow the map for the length of the turn. At the cap the
+        # OLDEST call is evicted -- the one most likely never to get a terminal --
+        # and the call just dispatched is always kept, so the judged call stays
+        # the one actually in flight. ``_evicted_count`` counts the rows this
+        # turn lost, so an emptied map does not prove that nothing is running
+        # and the turn can say how many attributions it dropped.
+        self._max_calls = max_calls
+        self._evicted_count = 0
 
     @property
     def current(self) -> ToolCallState | None:
@@ -1508,6 +1583,24 @@ class InFlightToolTracker:
         return bool(self._calls)
 
     @property
+    def evicted(self) -> bool:
+        """Whether a dispatch evicted a stored call since the last :meth:`clear`.
+
+        Once set, an empty running set does not prove that no call is running:
+        the evicted call may still be live.
+        """
+        return self._evicted_count > 0
+
+    @property
+    def evicted_count(self) -> int:
+        """Stored calls evicted at the cap since the last :meth:`clear`.
+
+        The overflow, counted: the caller says it out loud once per turn, so a
+        map that dropped rows never reads like one that was never that full.
+        """
+        return self._evicted_count
+
+    @property
     def active_calls(self) -> dict[str, tuple[ToolCallState, object]]:
         """The live ``{toolCallId: (state, aux)}`` map, read-only by convention.
 
@@ -1530,6 +1623,13 @@ class InFlightToolTracker:
         self._current_id = call_id or ""
         if call_id:
             self._idless = None
+            if (
+                self._max_calls is not None
+                and call_id not in self._calls
+                and len(self._calls) >= self._max_calls
+            ):
+                self._calls.pop(next(iter(self._calls)), None)
+                self._evicted_count += 1
             self._calls[call_id] = (state, aux)
         else:
             self._idless = (state, aux)
@@ -1575,6 +1675,7 @@ class InFlightToolTracker:
         self._calls.clear()
         self._current_id = ""
         self._idless = None
+        self._evicted_count = 0
         return had
 
 

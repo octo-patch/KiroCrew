@@ -54,12 +54,57 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.config import paths as paths_mod
-from kiro_crew.kiro_cli import chat_sibling
+from kiro_crew.kiro_cli import chat_sibling, installed_kiro_cli_version
 from kiro_crew.mcp_gateway import session_servers as session_servers_mod
+from kiro_crew.platform.tool_names import kas_verified_releases, kas_vocabulary_drift
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["PROTOCOL_VERSION_KAS", "KasHarness", "resolve_projected_spec"]
+__all__ = [
+    "PROTOCOL_VERSION_KAS",
+    "KasHarness",
+    "resolve_projected_spec",
+    "warn_kas_vocabulary_drift",
+]
+
+#: The kiro-cli release the tool-vocabulary drift warning was last logged for in
+#: this process, ``None`` before the first. One slot, not a set: the warning is
+#: said once per release, and the release a gateway sees changes only when
+#: kiro-cli is upgraded under it, so the slot is what "once per release" needs
+#: and is bounded by its own shape.
+_DRIFT_WARNED_VERSION: tuple[int, int, int] | None = None
+
+
+def warn_kas_vocabulary_drift(version: tuple[int, int, int] | None) -> None:
+    """Say once per kiro-cli release, at KAS spawn, that the installed kiro-cli
+    is not one the KAS tool-vocabulary tables were measured on.
+
+    The mount direction fails silent on an id a different engine does not
+    recognise and the policy direction fails permissive on one the tables do
+    not know, so an operator relying on kiro-cli-spelled denies binding on KAS
+    should see the drift where sessions start, not only in a doctor command
+    they must run by hand. Same comparison as the doctor row
+    (``kas_vocabulary_drift``), on the same reading (the pinned binary's own
+    ``--version``: KAS reports no ``agentInfo.version`` on the wire). Lives on
+    this harness and nowhere shared (H13): the tables describe KAS only. An
+    unknown version is the doctor's "unknown" and says nothing.
+    """
+    global _DRIFT_WARNED_VERSION
+    drift = kas_vocabulary_drift(version)
+    if version is None or drift in ("", "unknown") or version == _DRIFT_WARNED_VERSION:
+        return
+    _DRIFT_WARNED_VERSION = version
+    logger.warning(
+        "kas backend: installed kiro-cli %s is %s the releases the KAS tool-name tables were "
+        "verified on (%s); a renamed, added or absent built-in would mount or be governed "
+        "under a name Crew does not know (kirocrew doctor reports the same; re-measure per "
+        "test/fixtures/kas_builtin_tool_ids.json and append the release to its "
+        "verified_kiro_cli_versions)",
+        ".".join(str(p) for p in version),
+        {"older": "older than", "newer": "newer than", "unverified": "not among"}[drift],
+        kas_verified_releases(),
+    )
+
 
 #: KAS numbers ACP revisions. It rejects the date-string spelling kiro-cli takes,
 #: so the TYPE here is part of the contract, not an encoding detail.
@@ -214,6 +259,11 @@ class KasHarness(MembershipHarness):
                     kiro_cli_not_found_message, environ=dict(ctx.environ), home=ctx.home
                 )
             )
+
+        # The vocabulary tables were measured on named releases; say so once per
+        # release when this is not one of them. Off the loop: one bounded
+        # ``--version`` spawn on the first call per binary, cached thereafter.
+        warn_kas_vocabulary_drift(await asyncio.to_thread(installed_kiro_cli_version))
 
         # Reads the vault off the loop and never raises.
         host_auth = await vault_holds_identity_off_loop()

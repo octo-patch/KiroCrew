@@ -1769,6 +1769,8 @@ def _report_kas_tool_vocabulary(issues: list[str]) -> None:
     print("               would mount or be governed under a name Crew does not know.")
     print("               Re-measure: test/fixtures/kas_builtin_tool_ids.json (its note says how),")
     print("               then append the release to its verified_kiro_cli_versions.")
+    print("               The kas backend logs this once per engine version when it spawns the")
+    print("               relay, reading this same pinned binary.")
 
 
 def _discord_intent_grants(token: str) -> intent_probe.IntentGrants:

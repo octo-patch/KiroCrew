@@ -2000,6 +2000,118 @@ class TestTheKindCarryOverIsKasOnly:
         assert flow(with_cache=True).tool_kind == "edit"
 
 
+class TestKasSpawnWarnsOnVocabularyDrift:
+    """The policy fold fails permissive on engine drift, so the KAS harness says
+    once per kiro-cli release when it spawns the relay -- where an operator sees
+    it without running ``kirocrew doctor`` -- that the installed kiro-cli is not
+    the one the tables were measured on. Same comparison and same reading (the
+    pinned binary's ``--version``) as the doctor row. It lives on the harness,
+    not on the shared runtime (H13)."""
+
+    def test_a_different_engine_release_is_logged_once_per_process(
+        self, caplog, monkeypatch
+    ) -> None:
+        import logging
+
+        from kiro_crew.acp.harness import kas as kas_mod
+        from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
+
+        newer = (*KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[-1][:2], 99)
+        monkeypatch.setattr(kas_mod, "_DRIFT_WARNED_VERSION", None)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.harness.kas"):
+            kas_mod.warn_kas_vocabulary_drift(newer)
+            kas_mod.warn_kas_vocabulary_drift(newer)
+        hits = [r for r in caplog.records if "tool-name tables" in r.getMessage()]
+        assert len(hits) == 1
+        shown = ".".join(str(p) for p in newer)
+        assert shown in hits[0].getMessage() and "newer" in hits[0].getMessage()
+
+    def test_the_warned_release_is_one_slot_and_a_changed_release_warns_again(
+        self, caplog, monkeypatch
+    ) -> None:
+        """The process keeps the one release it last warned for, nothing more: a
+        repeat is silent, a different release (kiro-cli upgraded under a running
+        gateway) warns, and what is retained is a fixed-shape tuple."""
+        import logging
+
+        from kiro_crew.acp.harness import kas as kas_mod
+
+        monkeypatch.setattr(kas_mod, "_DRIFT_WARNED_VERSION", None)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.harness.kas"):
+            kas_mod.warn_kas_vocabulary_drift((9, 1, 0))
+            kas_mod.warn_kas_vocabulary_drift((9, 1, 0))
+            assert kas_mod._DRIFT_WARNED_VERSION == (9, 1, 0)
+            kas_mod.warn_kas_vocabulary_drift((9, 2, 0))
+            assert kas_mod._DRIFT_WARNED_VERSION == (9, 2, 0)
+            kas_mod.warn_kas_vocabulary_drift((9, 2, 0))
+        drift = [r.getMessage() for r in caplog.records if "tool-name tables" in r.getMessage()]
+        assert len(drift) == 2
+        assert "9.1.0" in drift[0] and "9.2.0" in drift[1]
+
+    def test_the_measured_release_and_an_unknown_version_are_silent(
+        self, caplog, monkeypatch
+    ) -> None:
+        import logging
+
+        from kiro_crew.acp.harness import kas as kas_mod
+        from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
+
+        monkeypatch.setattr(kas_mod, "_DRIFT_WARNED_VERSION", None)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.harness.kas"):
+            kas_mod.warn_kas_vocabulary_drift(KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[0])
+            kas_mod.warn_kas_vocabulary_drift(None)
+        assert not [r for r in caplog.records if "tool-name tables" in r.getMessage()]
+        assert kas_mod._DRIFT_WARNED_VERSION is None
+
+    def test_the_warning_lives_on_the_kas_harness_and_nowhere_shared(self) -> None:
+        """Pin by source (H13): the KAS spawn feeds the warning the pinned
+        binary's version off the loop, and the shared runtime carries no
+        vocabulary comparison and no KAS-membership conditional for it."""
+        import inspect
+
+        from kiro_crew.acp import runtime as runtime_mod
+        from kiro_crew.acp.harness.kas import KasHarness
+
+        spawn = inspect.getsource(KasHarness.resolve_spawn)
+        assert (
+            "warn_kas_vocabulary_drift(await asyncio.to_thread(installed_kiro_cli_version))"
+            in spawn
+        )
+        runtime_src = inspect.getsource(runtime_mod)
+        assert "vocabulary_drift" not in runtime_src
+        assert "installed_kiro_cli_version" not in runtime_src
+
+    @pytest.mark.asyncio
+    async def test_the_kas_spawn_probes_the_pinned_binary_once_per_call(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The spawn hands the probe's answer to the warning; a probe that cannot
+        answer hands ``None`` and the spawn still resolves."""
+        from kiro_crew.acp.harness import kas as kas_mod
+        from kiro_crew.acp.harness.base import SpawnContext
+
+        seen: list[object] = []
+        monkeypatch.setattr(kas_mod, "installed_kiro_cli_version", lambda: (2, 30, 1))
+        monkeypatch.setattr(kas_mod, "warn_kas_vocabulary_drift", seen.append)
+
+        async def _bin(**_kw):
+            return str(tmp_path / "kiro-cli")
+
+        async def _no_vault():
+            return False
+
+        from kiro_crew.acp import client as client_mod
+
+        monkeypatch.setattr(client_mod, "_resolve_kiro_bin_for_spawn", _bin)
+        monkeypatch.setattr(kas_mod, "vault_holds_identity_off_loop", _no_vault)
+        ctx = SpawnContext(agent="a", work_dir=str(tmp_path), model=None, environ={}, home=tmp_path)
+        plan = await kas_mod.KasHarness().resolve_spawn(ctx)
+        assert plan.argv and seen == [(2, 30, 1)]
+        monkeypatch.setattr(kas_mod, "installed_kiro_cli_version", lambda: None)
+        await kas_mod.KasHarness().resolve_spawn(ctx)
+        assert seen == [(2, 30, 1), None]
+
+
 class TestKasPermissionFrameCarriesTheBuiltinId:
     def test_tool_id_on_the_permission_frame_becomes_the_tool_name(self) -> None:
         """Without this the only identity the gate sees for a KAS built-in is the

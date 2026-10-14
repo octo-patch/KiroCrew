@@ -66,7 +66,9 @@ from kiro_crew.acp import runtime_models, runtime_process_tree, seed_provenance,
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
     DRAIN_YIELD_AFTER_S,
+    MAX_ACTIVE_TOOL_CALLS,
     BackgroundLaunchRecord,
+    InFlightIdSet,
     _dumps_degraded,
     _loggable_request_id,
     _measure_tool_output,
@@ -2483,7 +2485,13 @@ class AcpClient:
         # single progress frame.  Gates the _TOOL_STALL_TIMEOUT watchdog so a
         # dispatched-but-never-resolved tool can't hang the whole turn.
         self._tool_dispatched: bool = False
-        self._active_tool_calls: set[str] = set()
+        # The open calls' ids, bounded like the session handle's attribution
+        # map (``_dispatch.InFlightIdSet``: the shared key and count bound, the
+        # oldest evicted first, evictions counted). After an eviction the set
+        # answers ``possibly_open`` until the turn resets, so the tool-stall
+        # clock (``_TOOL_STALL_TIMEOUT``) stays armed and the stale clock
+        # disarmed for a call whose row was dropped but may still be running.
+        self._active_tool_calls = InFlightIdSet()
         # Armed by _handle_compaction_status on a `failed` status and cleared at
         # turn start: gates the _COMPACTION_FAILED_TURN_BUDGET check in
         # _prompt_loop. _compaction_failed_turn records that the check fired, so
@@ -9918,6 +9926,15 @@ class AcpClient:
         getattr(self, "_permission_gate_events", {}).clear()
         self._stale_eligible = False
         self._tool_dispatched = False
+        if self._active_tool_calls.evicted_count:
+            # The previous turn's overflow, counted and said once (the same
+            # sentence the session handle says for its map).
+            logger.warning(
+                "tool-call open set evicted %d id(s) at its bound of %d last turn; the "
+                "tool-stall clock stayed armed for that turn",
+                self._active_tool_calls.evicted_count,
+                MAX_ACTIVE_TOOL_CALLS,
+            )
         self._active_tool_calls.clear()
         got_complete = False
         saw_agent_switch = False
@@ -10079,7 +10096,7 @@ class AcpClient:
                     kind = EVENT_THINKING_CHUNK if is_thinking else EVENT_TEXT_CHUNK
                     if not is_thinking:
                         self.last_prompt_stats.text_chunks += 1
-                        self._stale_eligible = not self._active_tool_calls
+                        self._stale_eligible = not self._active_tool_calls.possibly_open
                         self._prompt_or_tool_seen = True
                     yield AcpEvent(
                         kind=kind,
@@ -10144,8 +10161,8 @@ class AcpClient:
                 if tool_result_event:
                     if tool_result_event.tool_status in TERMINAL_TOOL_STATUSES:
                         self._active_tool_calls.discard(tool_result_event.tool_call_id or "")
-                        self._tool_dispatched = bool(self._active_tool_calls)
-                        self._stale_eligible = not self._active_tool_calls
+                        self._tool_dispatched = self._active_tool_calls.possibly_open
+                        self._stale_eligible = not self._active_tool_calls.possibly_open
                     # Fire the PostToolUse HOOK ENGINE now that the tool RESULT
                     # (and its output) exists — the Pre-vs-Post split is required
                     # because fire_tool_hooks above is PreToolUse-only. No-op
@@ -12625,8 +12642,8 @@ class AcpClient:
         results = await asyncio.to_thread(self._read_new_tool_results_sync)
         if results:
             self._active_tool_calls.difference_update(event.tool_call_id or "" for event in results)
-            self._tool_dispatched = bool(self._active_tool_calls)
-            self._stale_eligible = not self._active_tool_calls
+            self._tool_dispatched = self._active_tool_calls.possibly_open
+            self._stale_eligible = not self._active_tool_calls.possibly_open
         return results
 
     def _read_new_tool_results_sync(self) -> list[AcpEvent]:
