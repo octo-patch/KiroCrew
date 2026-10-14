@@ -3266,7 +3266,11 @@ worker threads. The per-directory `asyncio.Lock` from `_turn_lock` is the only l
 held across an await. The app's tests reach every module through one facade,
 `tests/routes_facade.py`, which patches each module that binds a name, so every
 shared name must be one object. `test_orchestration_composition_contract.py` pins
-that, the import order, the one-hop facade, and the lock order end to end.
+that, the import order, the one-hop facade, and the lock order end to end. The
+route tests are split by the behaviour they pin into `test_routes_<topic>.py` files
+beside `test_routes.py`, which keeps the route contract. They share state
+redirection, the autouse live-state guard and the client builders in
+`tests/routes_helpers.py`, and a new route test goes in the part for its behaviour.
 
 Writers: `apps/builtins/spec_builder/backend/handlers.py`, `runtime.py`,
 `decisions.py`, `orchestration/`; `apps/builtins/spec_builder/tests/routes_facade.py`
