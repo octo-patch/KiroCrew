@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import sys
 import threading
 import time
@@ -975,21 +974,39 @@ async def _handle_run_detail(request: web.Request) -> web.Response:
     return web.json_response({"run": run})
 
 
+def _rebanded_report(run_id: str, dismissed: dict) -> dict | None:
+    """The run's stored report with each row's band recomputed for its dismissals.
+
+    A row's band is fixed when the report is written, but a dismissed finding no
+    longer counts against the change, so the band the user sees must come from
+    ``classify()`` run again with that finding removed. ``report.reband`` keeps
+    every other reason a row is red or yellow (design verdict, blast, branch gate,
+    regression, an AI override) and only drops the dismissed finding's weight.
+    Sync: it reads report.json and the result records, so callers run it off
+    the event loop."""
+    payload = report.read_report(None, run_id)
+    if payload is None or not dismissed:
+        return payload
+    return report.reband(payload, dismissed, None, run_id, store.read_config_quiet())
+
+
 async def _handle_run_report(request: web.Request) -> web.Response:
     """GET .../runs/{run_id}/report — the run's Focus Report, as data.
 
     This is what makes the report viewable INSIDE the app. The rows come from the
     run's own ``report.json`` (already redacted by ``report.build_report``), so
     reading a report never depends on the artifact store — a run whose artifact
-    archive failed still renders here."""
+    archive failed still renders here. Rows whose findings were dismissed are
+    re-banded on the way out (see ``_rebanded_report``)."""
     run_id = _run_id_param(request)
     async with _LOCK:
         run = _find_run(run_id)
         known = run is not None
         status = str((run or {}).get("status") or "")
+        dismissed = dict((run or {}).get("dismissed") or {})
     if not known:
         return web.json_response({"code": "run_not_found", "error": f"no such run {run_id!r}"}, status=404)
-    payload = await asyncio.to_thread(report.read_report, None, run_id)
+    payload = await asyncio.to_thread(_rebanded_report, run_id, dismissed)
     if payload is None:
         # Not an error: a running run has no report yet, and the page renders
         # progress instead. Say so explicitly rather than 404-ing a live run.
@@ -1303,7 +1320,6 @@ async def _handle_run_post(request: web.Request) -> web.Response:
     })
 
 
-_DISMISS_KEY_RE = re.compile(r"^finding:\d{1,6}$")
 _DISMISS_REASON_MAX = 500
 
 
@@ -1356,7 +1372,7 @@ async def _handle_run_dismiss(request: web.Request) -> web.Response:
     undo = body.get("dismissed") is False
     raw_reason = body.get("reason")
     reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
-    if not _DISMISS_KEY_RE.match(key):
+    if not pipeline.FINDING_KEY_RE.match(key):
         return web.json_response(
             {"code": "bad_key", "error": "only a finding can be dismissed"}, status=400)
     if not undo and not reason:
@@ -1401,6 +1417,16 @@ async def _handle_run_dismiss(request: web.Request) -> web.Response:
         else:
             dismissed.pop(change_id, None)
         changes["dismissed"] = dismissed
+        # The run card's dots read the band tallies folded into the run summary
+        # when the review finished. A dismissal can move a row to another band,
+        # so refresh those tallies from the re-banded report; the report
+        # endpoint re-bands on read, and this keeps the card in step with it.
+        summary = run.get("summary")
+        if isinstance(summary, dict) and isinstance(summary.get("report"), dict):
+            rebanded = await asyncio.to_thread(_rebanded_report, run_id, dismissed)
+            if rebanded is not None:
+                changes["summary"] = {**summary, "report": {
+                    **summary["report"], "bands": rebanded["bands"]}}
         # Persist a staged copy first and touch the live run only once the write
         # lands: a concurrent /runs read holds the same run objects, and
         # `_save_runs` swallows a failed write. Either way a dismissal could show

@@ -23,7 +23,7 @@ import { i18nT } from '../../../i18n/t'
 /** Label keys as full literals in one indexable map, so the key-resolution
  *  gate can verify each one exists. Indexed at the call site, not read off a
  *  local — that indirection is what made these sites unverifiable. */
-const BAND_LABEL_KEY: Record<Band, string> = {
+export const BAND_LABEL_KEY: Record<Band, string> = {
   red: 'apps.codeReviewSage.components.bandChips.needs_review',
   yellow: 'apps.codeReviewSage.components.bandChips.worth_a_glance',
   green: 'apps.codeReviewSage.components.bandChips.clean',

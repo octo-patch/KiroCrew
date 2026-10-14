@@ -716,7 +716,8 @@
           "step_problem": "Problem",
           "step_solution_fit": "Solution fit",
           "step_why_it_matters": "Why it matters",
-          "finding_dimension_in_file": "{{dimension}} in {{file}}"
+          "finding_dimension_in_file": "{{dimension}} in {{file}}",
+          "moved_to": "Now in {{band}}. Stays here until you change the filter."
         },
         "reviewChat": {
           "error_generic": "The follow-up session could not be opened. Try again.",

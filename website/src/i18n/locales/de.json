@@ -1125,6 +1125,7 @@
           "draft_selected_other": "{{count}} ausgewählte Befunde als Entwurf anlegen",
           "finding_dimension_in_file": "{{dimension}} in {{file}}",
           "generated": "· erzeugt",
+          "moved_to": "Jetzt in {{band}}. Bleibt hier, bis du den Filter wechselst.",
           "no_changes_in_this_band": "Keine Änderungen in dieser Kategorie.",
           "nothing_flagged_in_this_review": "In diesem Review wurde nichts markiert.",
           "open_shared_copy": "Geteilte Kopie öffnen",

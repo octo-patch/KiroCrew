@@ -11,7 +11,7 @@
 // Security note: every model-authored prose field is rendered through
 // MarkdownRenderer (which sanitizes), the outbound PR link is validated with
 // safeHttpUrl, and code `snippet`s render verbatim in a <pre> (never markdown).
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ChevronRight, ClipboardCheck, ExternalLink, Loader2, MessageSquarePlus, Share2, ShieldCheck,
 } from 'lucide-react'
@@ -19,7 +19,7 @@ import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import { safeHttpUrl } from '../../../lib/safeUrl'
 import FindingCard from './FindingCard'
 import ShipSummaryCard, { SHIP_KEY } from './ShipSummaryCard'
-import BandChips from './BandChips'
+import BandChips, { BAND_LABEL_KEY } from './BandChips'
 import type { Band, DismissedFinding, ReportRow, RunReport } from '../lib/types'
 
 import { fmtDateTime } from '../../../i18n/format'
@@ -27,6 +27,9 @@ import { i18nT } from '../../../i18n/t'
 import ErrorNotice from '../../../components/ErrorNotice'
 /** Sort order for the three bands — the report leads with what needs review. */
 const BAND_RANK: Record<Band, number> = { red: 0, yellow: 1, green: 2 }
+
+/** The two things that decide where a row sits in the list. */
+type Placement = { band: Band; score: number }
 
 /** Per-band dot colour for the row marker. */
 const BAND_DOT: Record<Band, string> = {
@@ -174,9 +177,12 @@ export function liveSeverityCounts(
  * band rationale) over a collapsible detail area (design chain + findings). */
 function ReportRowCard({
   row, postedKeys, isPosting, onPostFinding, selected, onToggleKey,
-  dismissed, onDismissFinding,
+  dismissed, onDismissFinding, moved = false,
 }: {
   row: ReportRow
+  /** The row's band changed while it was on screen and the list holds it in
+   *  its old place (see ReportView); say where it moved to. */
+  moved?: boolean
   postedKeys?: string[]
   /** This row's dismissed findings, by comment key. */
   dismissed?: Record<string, DismissedFinding>
@@ -247,6 +253,12 @@ function ReportRowCard({
               {live.yellow > 0 && (
                 <span className="inline-flex items-center rounded-full bg-warn-subtle text-warn px-2 py-0.5 text-[11px] font-medium whitespace-nowrap">
                   {live.yellow} {i18nT('apps.codeReviewSage.components.reportView.should_fix')}
+                </span>
+              )}
+              {moved && (
+                <span className="text-[11px] text-muted whitespace-nowrap">
+                  {i18nT('apps.codeReviewSage.components.reportView.moved_to',
+                    { band: i18nT(BAND_LABEL_KEY[row.band]) })}
                 </span>
               )}
             </span>
@@ -397,15 +409,64 @@ export default function ReportView({
     [selected],
   )
 
-  // Sort defensively (red → yellow → green, then by descending score) even
-  // though the backend already emits them in this order, and narrow to the
-  // active band when one is selected.
-  const rows = useMemo(() => {
-    const sorted = [...report.rows].sort(
-      (a, b) => (BAND_RANK[a.band] - BAND_RANK[b.band]) || (b.score - a.score),
-    )
-    return active === 'all' ? sorted : sorted.filter((r) => r.band === active)
-  }, [report.rows, active])
+  // Where each row sat the last time it was shown, and the rows HELD there.
+  //
+  // Dismissing a finding refetches the report, and the backend serves the row
+  // with the band it now earns. Sorting and filtering on that band at once
+  // would make the card the user just acted on vanish from a filtered list
+  // (taking its "Undo dismiss" control with it) or jump to another place in
+  // the list. So a row whose band changed while it was on screen keeps its
+  // PLACE: it is filtered and ordered by the band and score it was shown with,
+  // while its dot and rationale show the new band. Changing the filter
+  // releases every hold, because the user has left the view the row was held
+  // in; so does opening another run's report.
+  //
+  // Refs, not state: the hold must apply in the SAME render that brings the
+  // new rows, or the card unmounts for a frame (losing its expanded state) and
+  // comes back. The bookkeeping is idempotent, so a repeated render of the same
+  // inputs computes the same hold.
+  const seen = useRef<Map<string, Placement>>(new Map())
+  const held = useRef<Map<string, Placement>>(new Map())
+  const heldIn = useRef<{ active: Band | 'all'; run: string }>({ active, run: report.run_id })
+
+  const { rows, moved } = useMemo(() => {
+    if (heldIn.current.run !== report.run_id) {
+      // Another run's report. Its rows are new to this view even when they
+      // share a change id with the last run (two reviews of one pull request),
+      // so forget what was seen as well as what was held, or a row of the new
+      // run would be held in the place a row of the old run had.
+      seen.current = new Map()
+      held.current = new Map()
+      heldIn.current = { active, run: report.run_id }
+    } else if (heldIn.current.active !== active) {
+      held.current = new Map()
+      heldIn.current = { active, run: report.run_id }
+    }
+    const next = new Map<string, Placement>()
+    for (const r of report.rows) {
+      const was = seen.current.get(r.change_id)
+      if (was && was.band !== r.band && !held.current.has(r.change_id)) {
+        held.current.set(r.change_id, was)
+      }
+      next.set(r.change_id, { band: r.band, score: r.score })
+    }
+    seen.current = next
+    const place = (r: ReportRow): Placement => held.current.get(r.change_id) ?? r
+    // Sort defensively (red → yellow → green, then by descending score) even
+    // though the backend already emits them in this order, and narrow to the
+    // active band when one is selected.
+    const sorted = [...report.rows].sort((a, b) => {
+      const pa = place(a)
+      const pb = place(b)
+      return (BAND_RANK[pa.band] - BAND_RANK[pb.band]) || (pb.score - pa.score)
+    })
+    const shown = active === 'all' ? sorted : sorted.filter((r) => place(r).band === active)
+    // The held rows whose band differs from the place they sit in: each gets a
+    // line saying where it moved to, so a yellow row under "Needs review" or an
+    // out-of-order row under "All" reads as a hold, not as a filter bug.
+    const moved = new Set(shown.filter((r) => place(r).band !== r.band).map((r) => r.change_id))
+    return { rows: shown, moved }
+  }, [report.rows, report.run_id, active])
 
   // fmtDateTime, not toLocaleString: the raw call reads the BROWSER's locale, so a
   // translated report would still carry an English timestamp.
@@ -509,6 +570,7 @@ export default function ReportView({
               onToggleKey={onPostSelection ? toggleKey : undefined}
               dismissed={dismissed?.[row.change_id]}
               onDismissFinding={dismissFinding}
+              moved={moved.has(row.change_id)}
             />
           ))}
         </div>

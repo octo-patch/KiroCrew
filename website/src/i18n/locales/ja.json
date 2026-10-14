@@ -1102,7 +1102,8 @@
           "step_problem": "課題",
           "step_solution_fit": "解決策の妥当性",
           "step_why_it_matters": "なぜ重要か",
-          "finding_dimension_in_file": "{{file}} の {{dimension}}"
+          "finding_dimension_in_file": "{{file}} の {{dimension}}",
+          "moved_to": "現在は{{band}}です。フィルターを変えるまでここに残ります。"
         },
         "reviewChat": {
           "error_generic": "フォローアップのセッションを開けませんでした。もう一度お試しください。",

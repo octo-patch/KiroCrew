@@ -847,7 +847,8 @@
           "step_problem": "[Þŕøƀĺèɱ ···········]",
           "step_solution_fit": "[Şøĺùţìøñ ƒìţ ···········]",
           "step_why_it_matters": "[Ẁĥý ìţ ɱàţţèŕş ·············]",
-          "finding_dimension_in_file": "[{{dimension}} ìñ {{file}} ······]"
+          "finding_dimension_in_file": "[{{dimension}} ìñ {{file}} ······]",
+          "moved_to": "[Ñøẁ ìñ {{band}}. Şţàýş ĥèŕè ùñţìĺ ýøù çĥàñğè ţĥè ƒìĺţèŕ. ························]"
         },
         "reviewChat": {
           "error_generic": "[Ţĥè ƒøĺĺøẁ-ùþ şèşşìøñ çøùĺð ñøţ ƀè øþèñèð. Ţŕý àğàìñ. ···················]",

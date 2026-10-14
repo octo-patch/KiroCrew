@@ -1093,6 +1093,7 @@
           "draft_selected_other": "起草已选中的 {{count}} 条发现",
           "finding_dimension_in_file": "{{file}} 中的 {{dimension}}",
           "generated": "· 生成于",
+          "moved_to": "现在属于{{band}}。更改筛选前会留在此处。",
           "no_changes_in_this_band": "这个类别里没有改动。",
           "nothing_flagged_in_this_review": "这次评审没有标记出任何问题。",
           "open_shared_copy": "打开共享副本",

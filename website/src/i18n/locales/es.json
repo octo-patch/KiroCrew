@@ -1157,6 +1157,7 @@
           "draft_selected_other": "Redactar {{count}} hallazgos seleccionados",
           "finding_dimension_in_file": "{{dimension}} en {{file}}",
           "generated": "· generado",
+          "moved_to": "Ahora en {{band}}. Se queda aquí hasta que cambies el filtro.",
           "no_changes_in_this_band": "No hay cambios en esta categoría.",
           "nothing_flagged_in_this_review": "No se marcó nada en esta revisión.",
           "open_shared_copy": "Abrir la copia compartida",

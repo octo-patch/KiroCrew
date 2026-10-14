@@ -1189,6 +1189,7 @@
           "draft_selected_other": "Составить черновик для {{count}} выбранных замечаний",
           "finding_dimension_in_file": "{{dimension}} в {{file}}",
           "generated": "· создан",
+          "moved_to": "Теперь в {{band}}. Останется здесь, пока ты не сменишь фильтр.",
           "no_changes_in_this_band": "В этой категории изменений нет.",
           "nothing_flagged_in_this_review": "В этом ревью ничего не отмечено.",
           "open_shared_copy": "Открыть общую копию",

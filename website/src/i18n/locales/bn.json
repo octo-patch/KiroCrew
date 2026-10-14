@@ -1125,6 +1125,7 @@
           "draft_selected_other": "{{count}}টি নির্বাচিত পর্যবেক্ষণের খসড়া করুন",
           "finding_dimension_in_file": "{{file}}-এ {{dimension}}",
           "generated": "· তৈরি",
+          "moved_to": "এখন {{band}}-এ আছে। ফিল্টার বদলানো পর্যন্ত এখানেই থাকবে।",
           "no_changes_in_this_band": "এই শ্রেণিতে কোনো পরিবর্তন নেই।",
           "nothing_flagged_in_this_review": "এই রিভিউয়ে কিছুই চিহ্নিত হয়নি।",
           "open_shared_copy": "ভাগ করা কপি খোলো",

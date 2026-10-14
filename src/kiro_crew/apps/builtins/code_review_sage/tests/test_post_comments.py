@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import shutil
 import tempfile
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from aiohttp import web
 from backend import routes
-from sage_lib import discovery, results
+from sage_lib import discovery, report, results
 from sage_lib import review_driver as D
 from sage_lib import store
 
@@ -629,6 +630,57 @@ class TestDismissFinding(_Base):
         self.assertIn("finding:1", everything)
         picked = routes._without_dismissed("run-d", run, "CR-1", ["finding:0"])
         self.assertEqual(picked, [])
+
+    async def test_dismissing_the_only_red_finding_rebands_the_row(self):
+        """The row is red for its one red finding alone (design CONCERNS, risk
+        medium, blast MEDIUM). Dismissing that finding must move the row to yellow
+        in the report endpoint AND in the run-card tallies; undoing it moves it
+        back. The two yellow findings and the medium blast keep it out of green."""
+        results.write_result(_record(), None, "run-d")
+        built = report.generate(None, run_id="run-d")["index"]
+        self.assertEqual(built["bands"], {"red": 1, "yellow": 0, "green": 0})
+        run = self._run(summary={"ok": True, "report": dict(built)})
+
+        async def _report() -> dict:
+            resp = await routes._handle_run_report(_FakeRequest("run-d"))
+            self.assertEqual(resp.status, 200)
+            return json.loads(resp.body)
+
+        before = await _report()
+        self.assertEqual(before["rows"][0]["band"], "red")
+
+        resp = await self._dismiss({"change_id": "CR-1", "key": "finding:0", "reason": "no"})
+        self.assertEqual(resp.status, 200)
+        after = await _report()
+        self.assertEqual(after["rows"][0]["band"], "yellow")
+        self.assertEqual(after["bands"], {"red": 0, "yellow": 1, "green": 0})
+        # The report's own finding tally is untouched; the dashboard subtracts
+        # the dismissal from it when it draws the chips.
+        self.assertEqual(after["rows"][0]["red"], 1)
+        self.assertEqual(run["summary"]["report"]["bands"],
+                         {"red": 0, "yellow": 1, "green": 0})
+        self.assertEqual(run["summary"]["report"]["total"], built["total"])
+
+        resp = await self._dismiss({"change_id": "CR-1", "key": "finding:0",
+                                    "dismissed": False})
+        self.assertEqual(resp.status, 200)
+        undone = await _report()
+        self.assertEqual(undone["rows"][0]["band"], "red")
+        self.assertEqual(run["summary"]["report"]["bands"],
+                         {"red": 1, "yellow": 0, "green": 0})
+
+    async def test_a_row_red_for_its_blast_stays_red_when_its_finding_is_dismissed(self):
+        rec = _record()
+        rec["blast_radius"] = {"rating": "LARGE", "signals": {}}
+        results.write_result(rec, None, "run-d")
+        report.generate(None, run_id="run-d")
+        self._run()
+        await self._dismiss({"change_id": "CR-1", "key": "finding:0", "reason": "no"})
+        resp = await routes._handle_run_report(_FakeRequest("run-d"))
+        data = json.loads(resp.body)
+        self.assertEqual(data["rows"][0]["band"], "red")
+        self.assertEqual(data["rows"][0]["why"], "blast=LARGE")
+        self.assertEqual(data["bands"]["red"], 1)
 
     async def _post_through_the_real_path(self, body: dict) -> list:
         """Run `_handle_run_post` and the real `_post_comments_bg` it schedules.

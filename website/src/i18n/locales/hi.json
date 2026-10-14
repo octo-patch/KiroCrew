@@ -1125,6 +1125,7 @@
           "draft_selected_other": "{{count}} चयनित निष्कर्षों का ड्राफ़्ट बनाएं",
           "finding_dimension_in_file": "{{file}} में {{dimension}}",
           "generated": "· बना",
+          "moved_to": "अब {{band}} में है। फ़िल्टर बदलने तक यहीं रहेगा।",
           "no_changes_in_this_band": "इस श्रेणी में कोई बदलाव नहीं।",
           "nothing_flagged_in_this_review": "इस समीक्षा में कुछ भी चिह्नित नहीं हुआ।",
           "open_shared_copy": "साझा प्रति खोलो",

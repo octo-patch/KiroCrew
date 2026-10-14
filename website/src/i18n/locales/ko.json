@@ -1093,6 +1093,7 @@
           "draft_selected_other": "선택한 지적 {{count}}건 초안 작성",
           "finding_dimension_in_file": "{{file}}의 {{dimension}}",
           "generated": "· 생성",
+          "moved_to": "지금은 {{band}}예요. 필터를 바꾸기 전까지 여기에 남아요.",
           "no_changes_in_this_band": "이 등급에 해당하는 변경이 없습니다.",
           "nothing_flagged_in_this_review": "이 리뷰에서 지적된 내용이 없습니다.",
           "open_shared_copy": "공유본 열기",
