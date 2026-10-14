@@ -191,7 +191,15 @@ class TestResponsiveThemeAndMotion:
 
     def test_no_third_party_brand_or_asset_is_present(self, html: str) -> None:
         lowered = html.lower()
-        for forbidden in ("blizzard", "warcraft", "battle.net", "<img", "url(http", "fetch(", "xmlhttprequest"):
+        for forbidden in (
+            "blizzard",
+            "warcraft",
+            "battle.net",
+            "<img",
+            "url(http",
+            "fetch(",
+            "xmlhttprequest",
+        ):
             assert forbidden not in lowered
 
 

@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import vm from 'node:vm'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 type Item = Record<string, unknown>
@@ -22,9 +21,14 @@ const sample = JSON.parse(readFileSync(resolve(root, 'test/fixtures/dashboard_te
   agentic_written_at: Record<string, string>
   folds: { work: { seq: number; value: { conductor: Record<string, unknown>; items: Item[]; omitted: number; forgotten: Record<string, number> } } }
 }
-const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
-const markup = html.replace(/<script>[\s\S]*?<\/script>/, '')
-if (!script) throw new Error('quest-log template has no script')
+
+function templateParts(): { scripts: string[]; body: HTMLElement } {
+  const parsed = new DOMParser().parseFromString(html, 'text/html')
+  const nodes = Array.from(parsed.querySelectorAll('script'))
+  const scripts = nodes.map(node => node.textContent ?? '')
+  for (const node of nodes) node.remove()
+  return { scripts, body: parsed.body }
+}
 
 function sampleFields(): Record<string, unknown> {
   const work = structuredClone(sample.folds.work.value)
@@ -50,7 +54,8 @@ function bind(fields: Record<string, unknown>): void {
 }
 
 function render(fields = sampleFields(), writtenAt = sample.agentic_written_at, agentic = ['advice']): void {
-  document.body.innerHTML = markup
+  const { scripts, body } = templateParts()
+  document.body.replaceChildren(...Array.from(body.childNodes))
   bind(fields)
   ;(window as DashboardWindow).kirocrew = {
     fields,
@@ -60,23 +65,11 @@ function render(fields = sampleFields(), writtenAt = sample.agentic_written_at, 
     seq: sample.folds.work.seq,
     stale: false,
   }
-  vm.runInNewContext(script, {
-    window,
-    document,
-    parent: window.parent,
-    setTimeout,
-    Date,
-    Object,
-    Array,
-    String,
-    Math,
-    RegExp,
-    isFinite,
-  })
+  for (const source of scripts) new Function(source)()
 }
 
 beforeEach(() => {
-  document.body.innerHTML = ''
+  document.body.replaceChildren()
 })
 
 describe('quest-log dashboard', () => {

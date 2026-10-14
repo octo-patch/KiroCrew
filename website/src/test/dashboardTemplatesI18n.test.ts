@@ -67,6 +67,10 @@ const PROBES: Record<string, { en: string; zh: string }> = {
     zh: '\u8fd8\u6ca1\u6709\u68c0\u67e5\u8bfb\u6570\u3002\u961f\u53cb\u5c1a\u672a\u5199\u5165\u3002',
   },
   flow: { en: 'No item on this board yet.', zh: '\u770b\u677f\u4e0a\u8fd8\u6ca1\u6709\u4efb\u4f55\u4e8b\u9879\u3002' },
+  'quest-log': {
+    en: 'Nothing needs you right now.',
+    zh: '\u73b0\u5728\u6ca1\u6709\u4e8b\u60c5\u9700\u8981\u4f60\u3002',
+  },
   standup: { en: 'no headline written', zh: '\u672a\u5199\u5165\u8981\u70b9' },
   swimlane: {
     en: 'No item on this board yet, so there is no lane to draw.',
@@ -110,8 +114,8 @@ function mount(id: string, locale: string | undefined) {
 }
 
 describe('built-in dashboard templates pick their words by the reader locale', () => {
-  it('finds all thirteen built-ins, so the cases below are not over an empty list', () => {
-    expect(IDS).toHaveLength(13)
+  it('finds all fourteen built-ins, so the cases below are not over an empty list', () => {
+    expect(IDS).toHaveLength(14)
   })
 
   it('labels the project-report All pill in the reader language', () => {
